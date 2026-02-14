@@ -83,21 +83,17 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         );",
     )?;
 
-    let current_version: i32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM _migrations",
-            [],
-            |row| row.get(0),
-        )?;
+    let current_version: i32 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+        [],
+        |row| row.get(0),
+    )?;
 
     for &(version, sql) in MIGRATIONS {
         if version > current_version {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(sql)?;
-            tx.execute(
-                "INSERT INTO _migrations (version) VALUES (?1)",
-                [version],
-            )?;
+            tx.execute("INSERT INTO _migrations (version) VALUES (?1)", [version])?;
             tx.commit()?;
         }
     }
@@ -112,6 +108,7 @@ pub fn init_db(path: &std::path::Path) -> Result<Connection> {
     Ok(conn)
 }
 
+#[cfg(test)]
 pub fn init_db_in_memory() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     configure_connection(&conn)?;
@@ -244,14 +241,39 @@ mod tests {
         conn.execute(
             "INSERT INTO local_user (id, public_key, email, display_name, avatar_url, token)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            ["user1", "pubkey123", "test@example.com", "Test User", "https://img.test/a.png", "token123"],
+            [
+                "user1",
+                "pubkey123",
+                "test@example.com",
+                "Test User",
+                "https://img.test/a.png",
+                "token123",
+            ],
         )
         .expect("should insert");
 
-        let (id, pk, email, name, avatar, token): (String, String, String, String, Option<String>, String) = conn
-            .query_row("SELECT id, public_key, email, display_name, avatar_url, token FROM local_user", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
-            })
+        let (id, pk, email, name, avatar, token): (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT id, public_key, email, display_name, avatar_url, token FROM local_user",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
             .expect("should query");
 
         assert_eq!(id, "user1");
@@ -272,9 +294,11 @@ mod tests {
         .expect("should insert");
 
         let (id, name, avatar): (String, String, Option<String>) = conn
-            .query_row("SELECT id, display_name, avatar_url FROM cached_users", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
+            .query_row(
+                "SELECT id, display_name, avatar_url FROM cached_users",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
             .expect("should query");
 
         assert_eq!(id, "u1");
@@ -288,14 +312,22 @@ mod tests {
         conn.execute(
             "INSERT INTO cached_guilds (id, name, owner_id, icon_url, joined_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            ["g1", "Test Guild", "owner1", "https://img.test/icon.png", "2024-01-01T00:00:00"],
+            [
+                "g1",
+                "Test Guild",
+                "owner1",
+                "https://img.test/icon.png",
+                "2024-01-01T00:00:00",
+            ],
         )
         .expect("should insert");
 
         let (id, name, owner, icon): (String, String, String, Option<String>) = conn
-            .query_row("SELECT id, name, owner_id, icon_url FROM cached_guilds", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
+            .query_row(
+                "SELECT id, name, owner_id, icon_url FROM cached_guilds",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
             .expect("should query");
 
         assert_eq!(id, "g1");
@@ -318,7 +350,15 @@ mod tests {
             .query_row(
                 "SELECT id, guild_id, name, channel_type, position FROM cached_channels",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("should query");
 
@@ -335,15 +375,30 @@ mod tests {
         conn.execute(
             "INSERT INTO cached_messages (id, channel_id, sender_id, content, nonce, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            ["m1", "c1", "u1", "hello world", "nonce123", "2024-01-01T00:00:00"],
+            [
+                "m1",
+                "c1",
+                "u1",
+                "hello world",
+                "nonce123",
+                "2024-01-01T00:00:00",
+            ],
         )
         .expect("should insert");
 
-        let (id, ch, sender, content, nonce): (String, String, String, String, Option<String>) = conn
-            .query_row(
+        let (id, ch, sender, content, nonce): (String, String, String, String, Option<String>) =
+            conn.query_row(
                 "SELECT id, channel_id, sender_id, content, nonce FROM cached_messages",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("should query");
 
@@ -361,7 +416,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("should query for index");
-        assert!(idx_exists, "index idx_cached_messages_channel_created should exist");
+        assert!(
+            idx_exists,
+            "index idx_cached_messages_channel_created should exist"
+        );
     }
 
     #[test]
@@ -370,7 +428,14 @@ mod tests {
         conn.execute(
             "INSERT INTO cached_files (id, message_id, file_name, file_size, mime_type, local_path)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            ["f1", "m1", "photo.jpg", "1024", "image/jpeg", "/tmp/photo.jpg"],
+            [
+                "f1",
+                "m1",
+                "photo.jpg",
+                "1024",
+                "image/jpeg",
+                "/tmp/photo.jpg",
+            ],
         )
         .expect("should insert");
 

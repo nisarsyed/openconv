@@ -23,24 +23,21 @@ async fn all_migrations_apply_successfully(pool: PgPool) {
 #[sqlx::test]
 async fn users_table_insert_and_select(pool: PgPool) {
     let id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(id)
-    .bind("pk_test_user_1")
-    .bind("test@example.com")
-    .bind("Test User")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(id)
+        .bind("pk_test_user_1")
+        .bind("test@example.com")
+        .bind("Test User")
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    let row: (uuid::Uuid, String, String, String) = sqlx::query_as(
-        "SELECT id, public_key, email, display_name FROM users WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let row: (uuid::Uuid, String, String, String) =
+        sqlx::query_as("SELECT id, public_key, email, display_name FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(row.0, id);
     assert_eq!(row.1, "pk_test_user_1");
@@ -51,25 +48,22 @@ async fn users_table_insert_and_select(pool: PgPool) {
 /// Users table enforces UNIQUE constraint on public_key.
 #[sqlx::test]
 async fn users_table_unique_public_key(pool: PgPool) {
-    sqlx::query(
-        "INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)",
-    )
-    .bind("same_pk")
-    .bind("user1@example.com")
-    .bind("User 1")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)")
+        .bind("same_pk")
+        .bind("user1@example.com")
+        .bind("User 1")
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    let err = sqlx::query(
-        "INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)",
-    )
-    .bind("same_pk")
-    .bind("user2@example.com")
-    .bind("User 2")
-    .execute(&pool)
-    .await
-    .unwrap_err();
+    let err =
+        sqlx::query("INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)")
+            .bind("same_pk")
+            .bind("user2@example.com")
+            .bind("User 2")
+            .execute(&pool)
+            .await
+            .unwrap_err();
 
     assert_eq!(pg_error_code(&err).as_deref(), Some(PG_UNIQUE_VIOLATION));
 }
@@ -77,25 +71,22 @@ async fn users_table_unique_public_key(pool: PgPool) {
 /// Users table enforces UNIQUE constraint on email.
 #[sqlx::test]
 async fn users_table_unique_email(pool: PgPool) {
-    sqlx::query(
-        "INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)",
-    )
-    .bind("pk_1")
-    .bind("same@example.com")
-    .bind("User 1")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)")
+        .bind("pk_1")
+        .bind("same@example.com")
+        .bind("User 1")
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    let err = sqlx::query(
-        "INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)",
-    )
-    .bind("pk_2")
-    .bind("same@example.com")
-    .bind("User 2")
-    .execute(&pool)
-    .await
-    .unwrap_err();
+    let err =
+        sqlx::query("INSERT INTO users (public_key, email, display_name) VALUES ($1, $2, $3)")
+            .bind("pk_2")
+            .bind("same@example.com")
+            .bind("User 2")
+            .execute(&pool)
+            .await
+            .unwrap_err();
 
     assert_eq!(pg_error_code(&err).as_deref(), Some(PG_UNIQUE_VIOLATION));
 }
@@ -104,16 +95,14 @@ async fn users_table_unique_email(pool: PgPool) {
 #[sqlx::test]
 async fn users_updated_at_trigger(pool: PgPool) {
     let id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(id)
-    .bind("pk_trigger_test")
-    .bind("trigger@example.com")
-    .bind("Before")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(id)
+        .bind("pk_trigger_test")
+        .bind("trigger@example.com")
+        .bind("Before")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let before: (chrono::DateTime<chrono::Utc>,) =
         sqlx::query_as("SELECT updated_at FROM users WHERE id = $1")
@@ -149,14 +138,12 @@ async fn users_updated_at_trigger(pool: PgPool) {
 #[sqlx::test]
 async fn guilds_fk_owner_id_rejects_nonexistent_user(pool: PgPool) {
     let fake_user = uuid::Uuid::new_v4();
-    let err = sqlx::query(
-        "INSERT INTO guilds (name, owner_id) VALUES ($1, $2)",
-    )
-    .bind("Test Guild")
-    .bind(fake_user)
-    .execute(&pool)
-    .await
-    .unwrap_err();
+    let err = sqlx::query("INSERT INTO guilds (name, owner_id) VALUES ($1, $2)")
+        .bind("Test Guild")
+        .bind(fake_user)
+        .execute(&pool)
+        .await
+        .unwrap_err();
 
     assert_eq!(pg_error_code(&err).as_deref(), Some(PG_FK_VIOLATION));
 }
@@ -165,16 +152,14 @@ async fn guilds_fk_owner_id_rejects_nonexistent_user(pool: PgPool) {
 #[sqlx::test]
 async fn guilds_updated_at_trigger(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_guild_trigger")
-    .bind("guild_trigger@example.com")
-    .bind("Owner")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_guild_trigger")
+        .bind("guild_trigger@example.com")
+        .bind("Owner")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let guild_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
@@ -218,16 +203,14 @@ async fn guilds_updated_at_trigger(pool: PgPool) {
 #[sqlx::test]
 async fn channels_cascade_delete_on_guild_delete(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_cascade_test")
-    .bind("cascade@example.com")
-    .bind("Cascade Tester")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_cascade_test")
+        .bind("cascade@example.com")
+        .bind("Cascade Tester")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let guild_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
@@ -253,12 +236,11 @@ async fn channels_cascade_delete_on_guild_delete(pool: PgPool) {
         .await
         .unwrap();
 
-    let count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM channels WHERE id = $1")
-            .bind(channel_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM channels WHERE id = $1")
+        .bind(channel_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(count.0, 0, "channel should be cascade deleted");
 }
@@ -267,16 +249,14 @@ async fn channels_cascade_delete_on_guild_delete(pool: PgPool) {
 #[sqlx::test]
 async fn channels_unique_guild_id_name(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_chan_unique")
-    .bind("chan_unique@example.com")
-    .bind("Chan Unique")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_chan_unique")
+        .bind("chan_unique@example.com")
+        .bind("Chan Unique")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let guild_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
@@ -308,16 +288,14 @@ async fn channels_unique_guild_id_name(pool: PgPool) {
 #[sqlx::test]
 async fn messages_check_rejects_both_null(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_msg_null")
-    .bind("msg_null@example.com")
-    .bind("Msg Null")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_msg_null")
+        .bind("msg_null@example.com")
+        .bind("Msg Null")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let err = sqlx::query(
         "INSERT INTO messages (sender_id, encrypted_content, nonce) VALUES ($1, $2, $3)",
@@ -336,16 +314,14 @@ async fn messages_check_rejects_both_null(pool: PgPool) {
 #[sqlx::test]
 async fn messages_check_rejects_both_set(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_msg_both")
-    .bind("msg_both@example.com")
-    .bind("Msg Both")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_msg_both")
+        .bind("msg_both@example.com")
+        .bind("Msg Both")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let guild_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
@@ -391,16 +367,14 @@ async fn messages_check_rejects_both_set(pool: PgPool) {
 #[sqlx::test]
 async fn messages_accepts_channel_id_only(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_msg_chan")
-    .bind("msg_chan@example.com")
-    .bind("Msg Chan")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_msg_chan")
+        .bind("msg_chan@example.com")
+        .bind("Msg Chan")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let guild_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
@@ -436,16 +410,14 @@ async fn messages_accepts_channel_id_only(pool: PgPool) {
 #[sqlx::test]
 async fn messages_accepts_dm_channel_id_only(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_msg_dm")
-    .bind("msg_dm@example.com")
-    .bind("Msg DM")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_msg_dm")
+        .bind("msg_dm@example.com")
+        .bind("Msg DM")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let dm_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO dm_channels (id) VALUES ($1)")
@@ -477,16 +449,14 @@ async fn messages_accepts_dm_channel_id_only(pool: PgPool) {
 #[sqlx::test]
 async fn guild_members_no_duplicate_membership(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_gm_dup")
-    .bind("gm_dup@example.com")
-    .bind("GM Dup")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_gm_dup")
+        .bind("gm_dup@example.com")
+        .bind("GM Dup")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let guild_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
@@ -518,16 +488,14 @@ async fn guild_members_no_duplicate_membership(pool: PgPool) {
 #[sqlx::test]
 async fn dm_channel_members_no_duplicate_membership(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_dm_dup")
-    .bind("dm_dup@example.com")
-    .bind("DM Dup")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_dm_dup")
+        .bind("dm_dup@example.com")
+        .bind("DM Dup")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let dm_id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO dm_channels (id) VALUES ($1)")
@@ -558,16 +526,14 @@ async fn dm_channel_members_no_duplicate_membership(pool: PgPool) {
 #[sqlx::test]
 async fn files_allows_null_message_id(pool: PgPool) {
     let user_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(user_id)
-    .bind("pk_file_null")
-    .bind("file_null@example.com")
-    .bind("File Null")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)")
+        .bind(user_id)
+        .bind("pk_file_null")
+        .bind("file_null@example.com")
+        .bind("File Null")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     sqlx::query(
         "INSERT INTO files (uploader_id, file_name, mime_type, size_bytes, storage_path, encrypted_blob_key) VALUES ($1, $2, $3, $4, $5, $6)",

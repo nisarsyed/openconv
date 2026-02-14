@@ -58,14 +58,17 @@ mod tests {
 
     #[test]
     fn test_internal_maps_to_500() {
-        let response = ServerError(OpenConvError::Internal("something broke".into())).into_response();
+        let response =
+            ServerError(OpenConvError::Internal("something broke".into())).into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
     async fn test_error_responses_are_json_with_error_field() {
         let response = ServerError(OpenConvError::NotFound).into_response();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("error").is_some());
         assert_eq!(json["error"], "not found");

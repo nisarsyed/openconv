@@ -1,5 +1,3 @@
-Section 08 has not been written yet, but I have the full plan and TDD file. I now have all the context needed. Here is the section content:
-
 # Section 09: Testing Infrastructure and Initial Tests
 
 ## Overview
@@ -689,3 +687,38 @@ The foundation is complete when ALL of the following pass:
 13. `cargo fmt --all --check` passes (all Rust code is formatted)
 
 Items 3-6 and 10-11 are manual verification steps (not automated tests). Items 1-2, 7-9, 12-13 are automated and should all pass from a single `just test && just lint && cargo fmt --all --check` invocation.
+
+---
+
+## Implementation Notes
+
+### What was actually done
+
+1. **Implemented `todo!()` stub in `apps/server/tests/health.rs`**: Replaced the `#[ignore]`/`todo!()` `test_health_ready_returns_200_when_db_connected` test with a proper `#[sqlx::test]` implementation that receives a real `PgPool`, constructs `AppState`, builds the router, sends `GET /health/ready`, and asserts both status 200 and JSON body `{"status": "ok"}`.
+
+2. **Fixed clippy lint in `apps/server/src/router.rs`**: Removed needless borrow in `tracing::Span::current().record("request_id", &request_id.as_str())` → `request_id.as_str()`.
+
+3. **Gated `init_db_in_memory` with `#[cfg(test)]` in `apps/desktop/src-tauri/src/db.rs`**: This function was only used by test code but was compiled in production builds, producing a `dead_code` warning. Adding `#[cfg(test)]` eliminates the warning while keeping the function accessible to all test modules in the desktop crate.
+
+4. **Applied `cargo fmt --all`**: Reformatted all Rust code across the workspace to pass `cargo fmt --all --check`. This affected files from prior sections that had accumulated minor formatting inconsistencies.
+
+### Test results
+
+- **Rust tests**: 76 tests across 3 crates (shared: 28, server: 33, desktop: 15) - all pass
+- **Frontend tests**: 5 tests in Vitest - all pass
+- **Total**: 81 tests, 0 failures, 0 ignored
+- **Clippy**: `cargo clippy --workspace -- -D warnings` passes with zero warnings
+- **Format**: `cargo fmt --all --check` passes
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `apps/server/tests/health.rs` | Implemented `todo!()` test with `#[sqlx::test]` |
+| `apps/server/src/router.rs` | Fixed clippy needless-borrow lint + `cargo fmt` |
+| `apps/desktop/src-tauri/src/db.rs` | Added `#[cfg(test)]` to `init_db_in_memory` + `cargo fmt` |
+| `apps/desktop/src-tauri/src/lib.rs` | `cargo fmt` only |
+| `apps/server/src/error.rs` | `cargo fmt` only |
+| `apps/server/tests/migrations.rs` | `cargo fmt` only |
+| `crates/shared/src/api/mod.rs` | `cargo fmt` (import reorder) |
+| `crates/shared/src/lib.rs` | `cargo fmt` (import reorder) |

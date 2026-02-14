@@ -35,17 +35,37 @@ async fn test_health_live_returns_200_with_status_ok() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok");
 }
 
-// TODO: Requires a live PgPool — enable after section-04 adds migrations.
-#[tokio::test]
-#[ignore]
-async fn test_health_ready_returns_200_when_db_connected() {
-    // Needs a real database connection. Use #[sqlx::test] once migrations exist.
-    todo!("implement with real database after section-04");
+#[sqlx::test]
+async fn test_health_ready_returns_200_when_db_connected(pool: sqlx::PgPool) {
+    let config = ServerConfig {
+        database_url: String::new(),
+        ..Default::default()
+    };
+    let state = AppState {
+        db: pool,
+        config: std::sync::Arc::new(config),
+    };
+    let app = build_router(state);
+    let request = Request::builder()
+        .uri("/health/ready")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
 }
 
 #[tokio::test]
@@ -70,7 +90,10 @@ async fn test_requests_include_x_request_id_header() {
 
     let response = app.oneshot(request).await.unwrap();
     let request_id = response.headers().get("x-request-id");
-    assert!(request_id.is_some(), "Response should include x-request-id header");
+    assert!(
+        request_id.is_some(),
+        "Response should include x-request-id header"
+    );
     // Verify the value is a valid UUID
     let id_str = request_id.unwrap().to_str().unwrap();
     uuid::Uuid::parse_str(id_str).expect("x-request-id should be a valid UUID");
@@ -89,7 +112,10 @@ async fn test_cors_headers_present() {
 
     let response = app.oneshot(request).await.unwrap();
     assert!(
-        response.headers().get("access-control-allow-origin").is_some(),
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_some(),
         "Response should include Access-Control-Allow-Origin header"
     );
 }

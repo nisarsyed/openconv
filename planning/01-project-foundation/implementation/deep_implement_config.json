@@ -45,6 +45,10 @@
     "section-07-react-frontend": {
       "status": "complete",
       "commit_hash": "47747e6"
+    },
+    "section-08-dev-tooling": {
+      "status": "complete",
+      "commit_hash": "e93ccb7"
     }
   },
   "pre_commit": {

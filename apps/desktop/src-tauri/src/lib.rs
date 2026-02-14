@@ -1,5 +1,5 @@
-pub(crate) mod db;
 pub(crate) mod commands;
+pub(crate) mod db;
 
 pub struct DbState {
     pub conn: std::sync::Mutex<rusqlite::Connection>,
@@ -16,35 +16,34 @@ impl DbState {
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::Manager;
 
-    let show_hide = tauri::menu::MenuItem::with_id(app, "show_hide", "Show/Hide", true, None::<&str>)?;
+    let show_hide =
+        tauri::menu::MenuItem::with_id(app, "show_hide", "Show/Hide", true, None::<&str>)?;
     let quit = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = tauri::menu::Menu::with_items(app, &[&show_hide, &quit])?;
 
     tauri::tray::TrayIconBuilder::new()
         .menu(&menu)
-        .on_menu_event(|app, event| {
-            match event.id().as_ref() {
-                "show_hide" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        if window.is_visible().unwrap_or(false) {
-                            if let Err(e) = window.hide() {
-                                tracing::warn!("Failed to hide window: {e}");
-                            }
-                        } else {
-                            if let Err(e) = window.show() {
-                                tracing::warn!("Failed to show window: {e}");
-                            }
-                            if let Err(e) = window.set_focus() {
-                                tracing::warn!("Failed to focus window: {e}");
-                            }
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show_hide" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_visible().unwrap_or(false) {
+                        if let Err(e) = window.hide() {
+                            tracing::warn!("Failed to hide window: {e}");
+                        }
+                    } else {
+                        if let Err(e) = window.show() {
+                            tracing::warn!("Failed to show window: {e}");
+                        }
+                        if let Err(e) = window.set_focus() {
+                            tracing::warn!("Failed to focus window: {e}");
                         }
                     }
                 }
-                "quit" => {
-                    app.exit(0);
-                }
-                _ => {}
             }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
         })
         .build(app)?;
     Ok(())
@@ -55,8 +54,8 @@ pub fn run() {
 
     tracing_subscriber::fmt::init();
 
-    let builder = tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![
+    let builder =
+        tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
             commands::health::health_check,
         ]);
 
@@ -78,8 +77,8 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
 
             let db_path = app_data_dir.join("openconv.db");
-            let conn = db::init_db(&db_path)
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            let conn =
+                db::init_db(&db_path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(DbState::new(conn));
 
             setup_tray(app)?;

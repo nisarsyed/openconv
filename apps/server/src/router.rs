@@ -1,8 +1,8 @@
+use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::middleware;
 use axum::routing::get;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use axum::extract::DefaultBodyLimit;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers;
@@ -46,11 +46,10 @@ async fn request_id_middleware(
     next: middleware::Next,
 ) -> axum::response::Response {
     let request_id = uuid::Uuid::new_v4().to_string();
-    tracing::Span::current().record("request_id", &request_id.as_str());
+    tracing::Span::current().record("request_id", request_id.as_str());
     let mut response = next.run(request).await;
-    response.headers_mut().insert(
-        "x-request-id",
-        HeaderValue::from_str(&request_id).unwrap(),
-    );
+    response
+        .headers_mut()
+        .insert("x-request-id", HeaderValue::from_str(&request_id).unwrap());
     response
 }
