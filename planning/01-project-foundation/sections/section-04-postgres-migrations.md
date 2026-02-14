@@ -388,6 +388,19 @@ Additional elements:
 6. Run `just sqlx-prepare` to generate/update the `.sqlx/` offline query data.
 7. Run the test suite (`cargo test --workspace`) and verify all migration tests pass.
 
+## Code Review Changes
+
+- Removed redundant `idx_users_email` index (UNIQUE constraint on email already creates an automatic index)
+- Strengthened all constraint-violation test assertions to check specific PostgreSQL error codes (23505, 23503, 23514) instead of generic `is_err()`
+- Added `chrono` as dev-dependency for timestamp assertions in trigger tests
+- Created `.env` file with `DATABASE_URL` for `sqlx::test` (gitignored, not committed)
+- PostgreSQL started via `docker run` for testing (docker-compose deferred to section 08)
+- Missing test coverage for pre_key_bundles, roles, guild_member_roles, sender_id non-cascade, and files ON DELETE SET NULL deferred to section 09
+
+## Test Summary
+
+- **Integration tests (16):** migrations apply (1), users CRUD + constraints (4), guilds FK + triggers (2), channels cascade + unique (2), messages CHECK constraints (4), guild/DM member PKs (2), files nullable FK (1)
+
 ## File Summary
 
 | File Path | Action |

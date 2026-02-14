@@ -446,3 +446,19 @@ This is necessary because integration tests (in `tests/`) can only access items 
 - **The `migrations/` directory** must exist for `sqlx::migrate!()` to compile. Create it with a `.keep` file. Section 04 will populate it with actual migration files.
 
 - **Test database for integration tests:** The health check integration tests that need a real database should use the `#[sqlx::test]` attribute, which automatically creates a temporary database, runs migrations, and cleans up after. For tests that do not need the database (liveness check, request ID header, unknown routes), build a router with a test `AppState` using a pool from a test database or skip the readiness-dependent tests until Section 04 is complete.
+
+## Code Review Changes
+
+- Added `migrate` feature to workspace `sqlx` dependency (required for `sqlx::migrate!()` macro)
+- Added `v4` feature to workspace `uuid` dependency (required for `Uuid::new_v4()` in request ID middleware)
+- Changed `DefaultBodyLimit` import from `tower_http::limit` to `axum::extract` (API change in axum 0.8)
+- Made `apply_env_overrides` return `Result` — invalid env var values (e.g., `PORT=abc`) now fail loudly instead of being silently ignored
+- Added `#[ignore]` test stub for `test_health_ready_returns_200_when_db_connected` (requires live DB, deferred to section 04)
+- Added request ID recording to tracing span in the request ID middleware
+- Removed unused `chrono` dependency from server crate
+- Removed duplicate `[dev-dependencies]` entries (`serde_json`, `uuid` already in `[dependencies]`)
+
+## Test Summary
+
+- **Unit tests (11):** config (4), error (6), state (1)
+- **Integration tests (6):** health live (1), health ready 503 (1), health ready 200 (1, ignored), request ID (1), CORS (1), 404 (1)

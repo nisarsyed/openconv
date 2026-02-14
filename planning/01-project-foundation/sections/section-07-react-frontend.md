@@ -283,23 +283,36 @@ Minimal Prettier config:
 
 ## File Listing Summary
 
-All files to be created by this section:
+All files created/modified by this section:
 
 | File | Purpose |
 |------|---------|
-| `/Users/nisar/personal/projects/openconv/apps/desktop/package.json` | npm package manifest with dependencies and scripts |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/vite.config.ts` | Vite build configuration (port 1420, React plugin) |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/tsconfig.json` | TypeScript strict mode configuration |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/postcss.config.js` | PostCSS config with Tailwind v4 plugin |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/index.html` | HTML entry point with dark class on root |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/src/main.tsx` | React root with StrictMode |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/src/App.tsx` | Application shell with health check IPC |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/src/index.css` | Base CSS with Tailwind v4 import |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/vitest.config.ts` | Vitest test configuration |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/src/__tests__/setup.ts` | Test setup (DOM matchers, Tauri mock) |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/src/__tests__/App.test.tsx` | App component smoke test |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/eslint.config.js` | ESLint v9 flat config |
-| `/Users/nisar/personal/projects/openconv/apps/desktop/.prettierrc` | Prettier formatting config |
+| `apps/desktop/package.json` | npm package manifest with dependencies and scripts (modified from section-05 skeleton) |
+| `apps/desktop/vite.config.ts` | Vite build configuration (port 1420, React plugin) |
+| `apps/desktop/tsconfig.json` | TypeScript strict mode configuration (added resolveJsonModule, isolatedModules, noEmit for Vite) |
+| `apps/desktop/postcss.config.js` | PostCSS config with Tailwind v4 plugin |
+| `apps/desktop/index.html` | HTML entry point with dark class on root (moved from src/ to root, added dark class + script tag) |
+| `apps/desktop/src/main.tsx` | React root with StrictMode |
+| `apps/desktop/src/App.tsx` | Application shell with health check via TauRPC bindings |
+| `apps/desktop/src/bindings.ts` | Placeholder TauRPC bindings stub (overwritten on Tauri debug build) |
+| `apps/desktop/src/index.css` | Base CSS with Tailwind v4 import |
+| `apps/desktop/vitest.config.ts` | Vitest test configuration |
+| `apps/desktop/src/__tests__/setup.ts` | Test setup (DOM matchers only, no global mocks) |
+| `apps/desktop/src/__tests__/App.test.tsx` | App component smoke test (5 tests including error state) |
+| `apps/desktop/eslint.config.js` | ESLint v9 flat config with React hooks + refresh plugins |
+| `apps/desktop/.prettierrc` | Prettier formatting config |
+| `package.json` | Root package.json (npm workspaces) |
+| `package-lock.json` | npm lockfile |
+
+## Deviations from Plan
+
+1. **TauRPC bindings stub added** (not in original plan): Created `src/bindings.ts` as a placeholder stub that mirrors the shape tauri-specta generates. App.tsx imports from this rather than raw `@tauri-apps/api/core` invoke. Code review identified this as important for type safety.
+2. **Error logging added**: `console.error` in the health check catch handler for debugging (code review fix).
+3. **5 tests instead of 4**: Added error state test to cover the IPC failure path (code review fix).
+4. **Mock scoped to test file**: TauRPC bindings mock lives in App.test.tsx rather than global setup.ts, preventing unintended mocking in future test files (code review fix).
+5. **index.html moved**: Was at `src/index.html` from section-05 scaffold; moved to `apps/desktop/index.html` per Vite convention.
+6. **Dark mode dual enforcement**: Both `index.html` class="dark" and useEffect `classList.add("dark")` are used — index.html prevents flash of unstyled content, useEffect ensures jsdom tests work.
+7. **ESLint plugins installed**: `typescript-eslint`, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `@eslint/js` added as devDependencies (required by flat config).
 
 ## Verification Checklist
 

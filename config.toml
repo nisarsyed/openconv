@@ -1,0 +1,10 @@
+# OpenConv Server Configuration
+# Development defaults -- safe for local use only.
+# Environment variables override these values (e.g., DATABASE_URL).
+
+host = "127.0.0.1"
+port = 3000
+database_url = "postgres://openconv:openconv@localhost:5432/openconv"
+max_db_connections = 5
+cors_origins = ["http://localhost:1420"]
+log_level = "debug"
