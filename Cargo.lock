@@ -2457,12 +2457,12 @@ name = "openconv-server"
 version = "0.1.0"
 dependencies = [
  "axum",
- "chrono",
  "dotenvy",
  "openconv-shared",
  "serde",
  "serde_json",
  "sqlx",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
  "tower",
