@@ -490,3 +490,14 @@ After implementation, verify:
 2. `cargo build -p openconv-shared --features sqlx` compiles with no errors or warnings
 3. `cargo test -p openconv-shared` passes all tests
 4. `cargo clippy -p openconv-shared -- -D warnings` produces no warnings
+
+---
+
+## Implementation Notes
+
+**Deviation from plan:** The `define_id!` macro uses `#[allow(clippy::new_without_default)]` instead of implementing `Default`. A `Default` that generates random UUIDs is semantically misleading; opted to suppress the clippy lint instead.
+
+**Code review additions:**
+- Doc comments added to all public items (constants, error enum, API structs, macro-generated types)
+- Roundtrip serialization test added for `UserProfileResponse` in `api/user.rs`
+- 28 total tests passing, clippy clean
