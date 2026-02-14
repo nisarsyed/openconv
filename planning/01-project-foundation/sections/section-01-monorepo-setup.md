@@ -241,6 +241,16 @@ The `build.rs` file is required by Tauri -- without it, the crate will not compi
 
 Section 05 (tauri-scaffold) replaces these stubs with the full Tauri app builder, IPC commands, and system tray setup.
 
+### Step 5b: Minimal tauri.conf.json (Added During Implementation)
+
+**File:** `/Users/nisar/personal/projects/openconv/apps/desktop/src-tauri/tauri.conf.json`
+
+**Deviation from plan:** This file was not in the original plan (Section 05 was supposed to create it), but `tauri_build::build()` in `build.rs` requires it to exist for `cargo build --workspace` to succeed. A minimal stub was added to satisfy the Section 01 verification requirement. Section 05 will overwrite this with the full configuration.
+
+Also added:
+- `.gitkeep` files in `apps/server/migrations/`, `apps/desktop/src-tauri/capabilities/` to preserve empty directories in Git
+- `apps/desktop/src/index.html` placeholder since `frontendDist` points to `../src`
+
 ### Step 6: Root package.json (npm Workspace)
 
 **File:** `/Users/nisar/personal/projects/openconv/package.json`

@@ -1,0 +1,1 @@
+//! OpenConv Tauri application library.

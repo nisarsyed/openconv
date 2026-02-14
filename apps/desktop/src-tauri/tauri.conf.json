@@ -1,0 +1,18 @@
+{
+  "productName": "OpenConv",
+  "version": "0.1.0",
+  "identifier": "com.openconv.app",
+  "build": {
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OpenConv",
+        "width": 1024,
+        "height": 768
+      }
+    ]
+  }
+}

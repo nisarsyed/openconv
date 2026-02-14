@@ -1,0 +1,21 @@
+# Rust
+target/
+
+# Node
+node_modules/
+
+# Environment
+.env
+
+# SQLite databases
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
