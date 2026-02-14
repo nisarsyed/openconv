@@ -3,6 +3,14 @@ name = "openconv-desktop"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "openconv_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "openconv-desktop"
+path = "src/main.rs"
+
 [dependencies]
 openconv-shared = { path = "../../../crates/shared" }
 serde = { workspace = true }
@@ -10,9 +18,12 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 rusqlite = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-build = { version = "2", features = [] }
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+specta-typescript = "0.0.9"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

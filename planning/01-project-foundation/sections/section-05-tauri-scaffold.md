@@ -90,9 +90,10 @@ Key dependency choices:
 | `rusqlite` | workspace = true (features: bundled) | Client SQLite database |
 | `openconv-shared` | path = "../../crates/shared" | Shared types (NO sqlx feature) |
 | `tracing` | workspace = true | Structured logging |
-| `tauri-specta` | 2 | Type-safe IPC bindings |
-| `specta` | 2 | TypeScript type generation |
-| `specta-typescript` | 0.0.7 | TypeScript export |
+| `tauri-specta` | =2.0.0-rc.21 | Type-safe IPC bindings (pinned RC) |
+| `specta` | =2.0.0-rc.22 (features: derive) | TypeScript type generation (pinned RC) |
+| `specta-typescript` | 0.0.9 | TypeScript export (updated from planned 0.0.7) |
+| `tracing-subscriber` | workspace = true | Structured logging initialization |
 
 The `[build-dependencies]` section includes `tauri-build` version 2.
 
@@ -237,11 +238,11 @@ impl DbState {
 }
 ```
 
-The module declarations in `lib.rs`:
+The module declarations in `lib.rs` use `pub(crate)` visibility (changed from plan's `mod` to allow cross-module access within the crate while keeping them out of the public API):
 
 ```rust
-mod db;
-mod commands;
+pub(crate) mod db;
+pub(crate) mod commands;
 ```
 
 ### 8. Database Module
@@ -292,12 +293,13 @@ pub struct AppHealth {
 The command function signature. It accesses the `DbState` from Tauri's managed state, attempts a simple query (`SELECT 1`) to verify the database is accessible, and returns the health status.
 
 ```rust
+/// Inner logic extracted for unit testing without Tauri state.
+pub fn health_check_inner(conn: &rusqlite::Connection) -> AppHealth { ... }
+
 #[tauri::command]
 #[specta::specta]
 pub fn health_check(db: tauri::State<'_, crate::DbState>) -> Result<AppHealth, String> {
-    // Lock the mutex to access the connection
-    // Execute "SELECT 1" to verify db is responsive
-    // Return AppHealth with version from env!("CARGO_PKG_VERSION") and db status
+    // Lock the mutex, delegate to health_check_inner
 }
 ```
 
@@ -351,7 +353,7 @@ builder.export(
 
 The `.commands()` call registers all IPC commands with both Tauri and Specta. The `.export()` call generates TypeScript types and function stubs that the React frontend imports. This only runs in debug builds to avoid generation during production builds.
 
-The builder is then integrated into the Tauri app via `.plugin(builder.into_plugin())`.
+The builder is then integrated into the Tauri app via `.invoke_handler(builder.invoke_handler())` on the Tauri builder, and `builder.mount_events(app)` inside the `.setup()` callback. (Note: the originally planned `.plugin(builder.into_plugin())` API does not exist in tauri-specta 2.0.0-rc.21.)
 
 ---
 
@@ -379,3 +381,15 @@ After implementing this section:
 3. The `tauri.conf.json` is valid JSON and accepted by Tauri's config parser
 4. TypeScript bindings file is generated at `apps/desktop/src/bindings.ts` when running in debug mode
 5. The app can be launched with `cargo tauri dev` (requires section-07 for the frontend, but the Rust side compiles independently)
+
+## Implementation Deviations
+
+- **specta-typescript version**: Used 0.0.9 (latest) instead of planned 0.0.7
+- **specta/tauri-specta versions**: Pinned to exact RC versions (`=2.0.0-rc.22` / `=2.0.0-rc.21`) for reproducibility
+- **Specta integration**: Used `invoke_handler()` + `mount_events()` pattern instead of planned `.plugin(builder.into_plugin())` which does not exist in the RC API
+- **Module visibility**: `pub(crate) mod` instead of private `mod` for `db` and `commands` (needed for cross-module access while keeping public API clean)
+- **health_check testability**: Extracted `health_check_inner(conn)` function to enable unit testing without Tauri state
+- **db.rs**: Added `configure_connection()` helper to share PRAGMA setup between `init_db` and `init_db_in_memory`
+- **Tray errors**: Used `tracing::warn!` on tray window operations instead of silently discarding errors
+- **Prettier formatter**: Omitted `.formatter(specta_typescript::formatter::prettier)` from TypeScript export (not essential for scaffold)
+- **Tests**: 4 passing (2 db, 2 health check)
