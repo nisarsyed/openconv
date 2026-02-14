@@ -41,6 +41,10 @@
     "section-06-sqlite-migrations": {
       "status": "complete",
       "commit_hash": "badca67"
+    },
+    "section-07-react-frontend": {
+      "status": "complete",
+      "commit_hash": "47747e6"
     }
   },
   "pre_commit": {

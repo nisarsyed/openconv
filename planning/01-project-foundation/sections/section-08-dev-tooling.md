@@ -48,7 +48,13 @@ From the TDD plan:
 
 | File Path | Change |
 |-----------|--------|
-| `/Users/nisar/personal/projects/openconv/.env.example` | Ensure DATABASE_URL matches docker-compose credentials (this file is created by section-01; verify and update if needed) |
+| `.env.example` | Verified DATABASE_URL matches docker-compose credentials. Also changed SERVER_HOST from 0.0.0.0 to 127.0.0.1 for localhost-only safety (code review fix). |
+
+## Deviations from Plan
+
+1. **Default justfile recipe added**: `default` recipe runs `just --list` so bare `just` shows available targets (code review fix).
+2. **SERVER_HOST fixed**: .env.example had SERVER_HOST=0.0.0.0 from section-01, contradicting the plan's safety requirement for localhost-only binding. Changed to 127.0.0.1 (code review fix).
+3. **Note on existing apps/server/config.toml**: A config.toml already exists at `apps/server/config.toml` from section-03. The root `config.toml` created here is used when running from the repo root (e.g., `just server`). Uses `postgres://` scheme (both `postgres://` and `postgresql://` are valid).
 
 ---
 
