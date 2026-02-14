@@ -352,5 +352,12 @@ let conn = db::init_db(&db_path).expect("failed to initialize database");
 
 | File | Action | Purpose |
 |------|--------|---------|
-| `apps/desktop/src-tauri/src/db.rs` | Create/Modify | Migration runner (`run_migrations`, `init_db`) and all migration SQL |
-| `apps/desktop/src-tauri/migrations/001_initial_schema.sql` | Create (optional) | SQL for migration 1, included via `include_str!` |
+| `apps/desktop/src-tauri/src/db.rs` | Modified | Migration runner (`run_migrations`, `init_db`) and all migration SQL inline |
+
+## Implementation Deviations
+
+- **Inline SQL**: Used inline `const MIGRATION_001: &str` instead of `include_str!` with separate SQL file. Simpler, fewer files.
+- **init_db calls run_migrations**: `init_db(path)` now calls `run_migrations` after configuring pragmas. `init_db_in_memory()` does NOT call migrations (test helper for section-05 tests that don't need migrations).
+- **Test helper `migrated_conn()`**: Calls `init_db_in_memory()` + `run_migrations()` explicitly for migration tests.
+- **unchecked_transaction**: Used `conn.unchecked_transaction()` for migration transactions (avoids nested transaction checks, appropriate since migrations run at startup).
+- **Tests**: 15 passing total (4 from section-05 + 11 new migration tests)
