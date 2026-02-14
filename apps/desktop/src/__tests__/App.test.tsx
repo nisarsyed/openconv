@@ -4,7 +4,9 @@ import App from "../App";
 
 vi.mock("../bindings", () => ({
   commands: {
-    healthCheck: vi.fn().mockResolvedValue({ version: "0.1.0", db_status: "ok" }),
+    healthCheck: vi
+      .fn()
+      .mockResolvedValue({ version: "0.1.0", db_status: "ok" }),
   },
 }));
 
