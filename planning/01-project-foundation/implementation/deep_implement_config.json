@@ -49,6 +49,10 @@
     "section-08-dev-tooling": {
       "status": "complete",
       "commit_hash": "e93ccb7"
+    },
+    "section-09-testing": {
+      "status": "complete",
+      "commit_hash": "da1a3d4"
     }
   },
   "pre_commit": {

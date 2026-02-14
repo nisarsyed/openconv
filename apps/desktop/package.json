@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "lint": "eslint src/",
     "fmt": "prettier --write src/",
-    "fmt:check": "prettier --check src/"
+    "fmt:check": "prettier --check src/",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@tailwindcss/postcss": "^4",
+    "@tauri-apps/cli": "^2.10.0",
     "@testing-library/jest-dom": "^6",
     "@testing-library/react": "^16",
     "@testing-library/user-event": "^14",
