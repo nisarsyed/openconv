@@ -5,8 +5,9 @@
 //! thresholds, and signed pre-key rotation.
 
 use libsignal_protocol::{
-    GenericSignedPreKey, KeyPair, PreKeyId, PreKeyRecord, PreKeyStore, SignedPreKeyId,
-    SignedPreKeyRecord, SignedPreKeyStore, Timestamp,
+    GenericSignedPreKey, KeyPair, KyberPreKeyId, KyberPreKeyRecord, KyberPreKeyStore,
+    PreKeyId, PreKeyRecord, PreKeyStore, SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore,
+    Timestamp, kem,
 };
 use rusqlite::Connection;
 
@@ -14,10 +15,14 @@ use crate::error::CryptoError;
 use crate::identity::get_identity;
 use crate::storage::CryptoStore;
 
-/// A serialized pre-key bundle containing the identity key and signed pre-key,
-/// ready for upload to the server. Recipients use this to establish X3DH sessions.
+/// A serialized pre-key bundle containing the identity key, signed pre-key,
+/// and Kyber (PQXDH) pre-key, ready for upload to the server.
+/// Recipients use this to establish PQXDH sessions.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SerializedPreKeyBundle {
+    /// The server-assigned user UUID that identifies this device's owner.
+    /// Used as the address name in `ProtocolAddress` for session lookup.
+    pub user_id: String,
     /// The local identity public key (Curve25519), serialized via libsignal
     pub identity_key: Vec<u8>,
     /// The ID of the signed pre-key
@@ -28,6 +33,12 @@ pub struct SerializedPreKeyBundle {
     pub signed_pre_key_signature: Vec<u8>,
     /// The local registration ID (14-bit range: 1..=16380)
     pub registration_id: u32,
+    /// The ID of the Kyber (post-quantum) last-resort pre-key
+    pub kyber_pre_key_id: u32,
+    /// The Kyber pre-key public key bytes
+    pub kyber_pre_key: Vec<u8>,
+    /// Signature over the Kyber pre-key, created with the identity private key
+    pub kyber_pre_key_signature: Vec<u8>,
 }
 
 /// A serialized one-time pre-key for upload to the server.
@@ -42,9 +53,12 @@ pub struct SerializedPreKey {
 
 /// Generate a pre-key bundle containing the identity key and a new signed pre-key.
 ///
+/// The `user_id` is the server-assigned UUID for this user, included in the bundle
+/// so recipients can construct a stable `ProtocolAddress`.
+///
 /// The returned bundle should be uploaded to the server so that other clients
-/// can establish X3DH sessions with this device.
-pub fn generate_pre_key_bundle(conn: &Connection) -> Result<SerializedPreKeyBundle, CryptoError> {
+/// can establish PQXDH sessions with this device.
+pub fn generate_pre_key_bundle(conn: &Connection, user_id: &str) -> Result<SerializedPreKeyBundle, CryptoError> {
     let identity = get_identity(conn)?;
 
     let mut store = CryptoStore::new(conn);
@@ -89,12 +103,41 @@ pub fn generate_pre_key_bundle(conn: &Connection) -> Result<SerializedPreKeyBund
     )
     .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
 
+    // Generate Kyber (PQXDH) last-resort pre-key
+    let next_kyber_id: u32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_kyber_pre_keys",
+            [],
+            |row| row.get(0),
+        )?;
+
+    let kyber_record = KyberPreKeyRecord::generate(
+        kem::KeyType::Kyber1024,
+        KyberPreKeyId::from(next_kyber_id),
+        identity.private_key(),
+    )
+    .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
+
+    let kyber_pub = kyber_record.public_key()
+        .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
+    let kyber_sig = kyber_record.signature()
+        .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
+
+    futures::executor::block_on(
+        store.save_kyber_pre_key(KyberPreKeyId::from(next_kyber_id), &kyber_record),
+    )
+    .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
+
     Ok(SerializedPreKeyBundle {
+        user_id: user_id.to_string(),
         identity_key: identity.public_key().serialize().to_vec(),
         signed_pre_key_id: next_spk_id,
         signed_pre_key: spk_pair.public_key.serialize().to_vec(),
         signed_pre_key_signature: Vec::from(signature.as_ref()),
         registration_id,
+        kyber_pre_key_id: next_kyber_id,
+        kyber_pre_key: kyber_pub.serialize().to_vec(),
+        kyber_pre_key_signature: kyber_sig.to_vec(),
     })
 }
 
@@ -168,8 +211,8 @@ pub fn needs_pre_key_replenishment(conn: &Connection, threshold: u32) -> Result<
 ///
 /// The old signed pre-key is retained in storage because existing sessions
 /// may still reference it. Returns an updated bundle for server upload.
-pub fn rotate_signed_pre_key(conn: &Connection) -> Result<SerializedPreKeyBundle, CryptoError> {
-    generate_pre_key_bundle(conn)
+pub fn rotate_signed_pre_key(conn: &Connection, user_id: &str) -> Result<SerializedPreKeyBundle, CryptoError> {
+    generate_pre_key_bundle(conn, user_id)
 }
 
 /// Check if the most recent signed pre-key is older than `max_age_days`.
@@ -211,12 +254,15 @@ mod tests {
         let conn = init_test_db();
         generate_identity(&conn).unwrap();
 
-        let bundle = generate_pre_key_bundle(&conn).unwrap();
+        let bundle = generate_pre_key_bundle(&conn, "test-user-id").unwrap();
         assert!(!bundle.identity_key.is_empty());
         assert!(!bundle.signed_pre_key.is_empty());
         assert!(!bundle.signed_pre_key_signature.is_empty());
         assert!(bundle.signed_pre_key_id > 0);
         assert!(bundle.registration_id >= 1 && bundle.registration_id <= 16380);
+        assert!(bundle.kyber_pre_key_id > 0);
+        assert!(!bundle.kyber_pre_key.is_empty());
+        assert!(!bundle.kyber_pre_key_signature.is_empty());
     }
 
     #[test]
@@ -224,7 +270,7 @@ mod tests {
         let conn = init_test_db();
         generate_identity(&conn).unwrap();
 
-        let bundle = generate_pre_key_bundle(&conn).unwrap();
+        let bundle = generate_pre_key_bundle(&conn, "test-user-id").unwrap();
 
         let row_count: u32 = conn
             .query_row(
@@ -345,8 +391,8 @@ mod tests {
         let conn = init_test_db();
         generate_identity(&conn).unwrap();
 
-        let first = generate_pre_key_bundle(&conn).unwrap();
-        let second = rotate_signed_pre_key(&conn).unwrap();
+        let first = generate_pre_key_bundle(&conn, "test-user-id").unwrap();
+        let second = rotate_signed_pre_key(&conn, "test-user-id").unwrap();
 
         assert_ne!(first.signed_pre_key_id, second.signed_pre_key_id);
 
@@ -365,7 +411,7 @@ mod tests {
         let conn = init_test_db();
         generate_identity(&conn).unwrap();
 
-        generate_pre_key_bundle(&conn).unwrap();
+        generate_pre_key_bundle(&conn, "test-user-id").unwrap();
         assert!(!is_signed_pre_key_stale(&conn, 7).unwrap());
     }
 
@@ -402,7 +448,7 @@ mod tests {
         let conn = init_test_db();
         generate_identity(&conn).unwrap();
 
-        generate_pre_key_bundle(&conn).unwrap();
+        generate_pre_key_bundle(&conn, "test-user-id").unwrap();
 
         // Backdate the signed pre-key to 8 days ago
         let eight_days_ago = std::time::SystemTime::now()

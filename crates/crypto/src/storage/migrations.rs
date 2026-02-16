@@ -3,7 +3,7 @@
 use crate::error::CryptoError;
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001)];
+const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
 
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS crypto_identity_keys (
@@ -61,6 +61,14 @@ CREATE TABLE IF NOT EXISTS crypto_config (
 );
 ";
 
+const MIGRATION_002: &str = "
+CREATE TABLE IF NOT EXISTS crypto_kyber_pre_keys (
+    key_id     INTEGER PRIMARY KEY,
+    record     BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+);
+";
+
 pub fn run_crypto_migrations(conn: &Connection) -> Result<(), CryptoError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _crypto_migrations (
@@ -106,6 +114,7 @@ mod tests {
             "crypto_sessions",
             "crypto_skipped_message_keys",
             "crypto_config",
+            "crypto_kyber_pre_keys",
         ];
         for table in &expected {
             let exists: bool = conn
