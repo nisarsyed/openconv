@@ -15,6 +15,9 @@ pub enum OpenConvError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("crypto error: {0}")]
+    Crypto(String),
 }
 
 #[cfg(test)]
@@ -47,6 +50,7 @@ mod tests {
             Box::new(OpenConvError::Forbidden),
             Box::new(OpenConvError::Validation("x".into())),
             Box::new(OpenConvError::Internal("y".into())),
+            Box::new(OpenConvError::Crypto("z".into())),
         ];
         for e in &errors {
             let _ = e.to_string();
