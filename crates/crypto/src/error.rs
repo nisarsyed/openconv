@@ -60,6 +60,10 @@ pub enum CryptoError {
     /// File encryption/decryption error.
     #[error("file encryption error: {0}")]
     FileEncryptionError(String),
+
+    /// Fingerprint generation or comparison error.
+    #[error("fingerprint error: {0}")]
+    FingerprintError(String),
 }
 
 impl From<rusqlite::Error> for CryptoError {
@@ -204,6 +208,7 @@ mod tests {
             Box::new(CryptoError::SerializationError("s".into())),
             Box::new(CryptoError::SignalProtocolError("s".into())),
             Box::new(CryptoError::FileEncryptionError("f".into())),
+            Box::new(CryptoError::FingerprintError("f".into())),
         ];
         for e in &errors {
             let _ = e.to_string();
