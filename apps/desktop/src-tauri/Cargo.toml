@@ -24,6 +24,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 specta-typescript = "0.0.9"
+tauri-plugin-decorum = "1"
+tauri-plugin-os = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
