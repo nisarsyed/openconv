@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router";
 import { useAppStore } from "../store";
 import { seedStores } from "../mock/seed";
 import { AppShell } from "../components/layout/AppShell";
+import { ModalRoot } from "../components/modals/ModalRoot";
 
 export function AppLayout() {
   const navigate = useNavigate();
@@ -40,5 +41,10 @@ export function AppLayout() {
     }
   }, [location.pathname, navigate]);
 
-  return <AppShell />;
+  return (
+    <>
+      <AppShell />
+      <ModalRoot />
+    </>
+  );
 }
