@@ -1,47 +1,54 @@
-import { useState, useEffect } from "react";
-import { commands } from "./bindings";
+import { useEffect, useRef } from "react";
+import { MemoryRouter, Routes, Route, Navigate } from "react-router";
+import { useAppStore } from "./store";
+import { LoginPage } from "./routes/LoginPage";
+import { RegisterPage } from "./routes/RegisterPage";
+import { RecoverPage } from "./routes/RecoverPage";
+import { ProtectedRoute } from "./routes/ProtectedRoute";
+
+function CatchAllRedirect() {
+  const isAuthenticated = useAppStore((state) => state.isAuthenticated);
+  return <Navigate to={isAuthenticated ? "/app" : "/login"} replace />;
+}
 
 function App() {
-  const [status, setStatus] = useState<"loading" | "connected" | "error">(
-    "loading",
+  const theme = useAppStore((state) => state.theme);
+  const initialEntry = useRef(
+    useAppStore.getState().isAuthenticated ? "/app" : "/login"
   );
 
   useEffect(() => {
-    document.documentElement.classList.add("dark");
-  }, []);
-
-  useEffect(() => {
-    commands
-      .healthCheck()
-      .then(() => setStatus("connected"))
-      .catch((err) => {
-        console.error("Health check failed:", err);
-        setStatus("error");
-      });
-  }, []);
+    if (theme === "dark") {
+      document.documentElement.classList.add("dark");
+      document.documentElement.classList.remove("light");
+    } else {
+      document.documentElement.classList.add("light");
+      document.documentElement.classList.remove("dark");
+    }
+  }, [theme]);
 
   return (
-    <div className="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center">
-      <h1 className="text-4xl font-bold mb-4">OpenConv</h1>
-      <div data-testid="status-indicator" className="flex items-center gap-2">
-        <span
-          className={`inline-block w-3 h-3 rounded-full ${
-            status === "connected"
-              ? "bg-green-500"
-              : status === "error"
-                ? "bg-red-500"
-                : "bg-gray-500"
-          }`}
+    <MemoryRouter initialEntries={[initialEntry.current]}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/recover" element={<RecoverPage />} />
+        <Route
+          path="/app/*"
+          element={
+            <ProtectedRoute>
+              <Routes>
+                <Route path="guild/:guildId/channel/:channelId" element={<div>Channel View</div>} />
+                <Route path="settings" element={<div>User Settings</div>} />
+                <Route path="guild/:guildId/settings" element={<div>Guild Settings</div>} />
+                <Route index element={<div>Welcome</div>} />
+              </Routes>
+            </ProtectedRoute>
+          }
         />
-        <span className="text-sm text-gray-400">
-          {status === "connected"
-            ? "IPC Connected"
-            : status === "error"
-              ? "IPC Error"
-              : "Connecting..."}
-        </span>
-      </div>
-    </div>
+        <Route path="*" element={<CatchAllRedirect />} />
+      </Routes>
+    </MemoryRouter>
   );
 }
 

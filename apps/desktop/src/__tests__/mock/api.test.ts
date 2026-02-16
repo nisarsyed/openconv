@@ -69,8 +69,10 @@ describe("mockFetchMessages", () => {
 
 describe("mockSendMessage", () => {
   it("returns created message with encryptedContent and nonce", async () => {
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
     const textChannel = mockChannels.find((c) => c.channelType === "text")!;
     const msg = await mockSendMessage(textChannel.id, "Hello world");
+    randomSpy.mockRestore();
     expect(msg.id).toMatch(UUID_REGEX);
     expect(msg.channelId).toBe(textChannel.id);
     expect(msg.encryptedContent).toBe("Hello world");

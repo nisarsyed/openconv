@@ -6,7 +6,7 @@ export interface AuthSlice {
   keyPair: { publicKey: string; privateKey: string } | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (email: string) => void;
+  login: (user: User, keyPair: { publicKey: string; privateKey: string }, token: string) => void;
   logout: () => void;
   updateProfile: (updates: Partial<Pick<User, "displayName" | "avatarUrl">>) => void;
 }
@@ -17,21 +17,11 @@ export const createAuthSlice: SliceCreator<AuthSlice> = (set) => ({
   token: null,
   isAuthenticated: false,
 
-  login: (email) =>
+  login: (user, keyPair, token) =>
     set((draft) => {
-      const id = crypto.randomUUID();
-      const name = email.split("@")[0];
-      draft.currentUser = {
-        id,
-        displayName: name,
-        avatarUrl: null,
-        email,
-      };
-      draft.keyPair = {
-        publicKey: `mock-pk-${id}`,
-        privateKey: `mock-sk-${id}`,
-      };
-      draft.token = `mock-token-${id}`;
+      draft.currentUser = user;
+      draft.keyPair = keyPair;
+      draft.token = token;
       draft.isAuthenticated = true;
     }),
 

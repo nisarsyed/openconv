@@ -25,7 +25,8 @@ describe("Combined Store", () => {
 
   it("cross-slice access works via get()", () => {
     const store = createAppStore();
-    store.getState().login("test@example.com");
+    const user = { id: "u1", displayName: "test", email: "test@example.com", avatarUrl: null };
+    store.getState().login(user, { publicKey: "pk", privateKey: "sk" }, "token");
     store.getState().createGuild("Test Guild", null);
     const guildId = store.getState().guildIds[0];
     const guild = store.getState().guildsById[guildId];
@@ -34,7 +35,8 @@ describe("Combined Store", () => {
 
   it("immer allows mutation syntax in actions", () => {
     const store = createAppStore();
-    store.getState().login("test@example.com");
+    const user = { id: "u1", displayName: "test", email: "test@example.com", avatarUrl: null };
+    store.getState().login(user, { publicKey: "pk", privateKey: "sk" }, "token");
     store.getState().createGuild("Guild A", null);
     store.getState().createGuild("Guild B", null);
     expect(store.getState().guildIds).toHaveLength(2);
