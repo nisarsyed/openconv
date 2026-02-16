@@ -11,6 +11,8 @@ export interface MessagesSlice {
   sendMessage: (channelId: string, content: string, attachments: FileAttachment[]) => void;
   deleteMessage: (id: string) => void;
   editMessage: (id: string, content: string) => void;
+  setLoadingMessages: (channelId: string, loading: boolean) => void;
+  setHasMore: (channelId: string, hasMore: boolean) => void;
 }
 
 export const createMessagesSlice: SliceCreator<MessagesSlice> = (set, get) => ({
@@ -82,5 +84,15 @@ export const createMessagesSlice: SliceCreator<MessagesSlice> = (set, get) => ({
       msg.content = content;
       msg.encryptedContent = content;
       msg.editedAt = new Date().toISOString();
+    }),
+
+  setLoadingMessages: (channelId, loading) =>
+    set((draft) => {
+      draft.loadingMessages[channelId] = loading;
+    }),
+
+  setHasMore: (channelId, hasMore) =>
+    set((draft) => {
+      draft.hasMore[channelId] = hasMore;
     }),
 });

@@ -6,6 +6,7 @@ import { RegisterPage } from "./routes/RegisterPage";
 import { RecoverPage } from "./routes/RecoverPage";
 import { ProtectedRoute } from "./routes/ProtectedRoute";
 import { AppLayout } from "./routes/AppLayout";
+import { ChannelView } from "./components/chat/ChannelView";
 
 function CatchAllRedirect() {
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
@@ -42,7 +43,7 @@ function App() {
             </ProtectedRoute>
           }
         >
-          <Route path="guild/:guildId/channel/:channelId" element={<div>Channel View</div>} />
+          <Route path="guild/:guildId/channel/:channelId" element={<ChannelView />} />
           <Route path="settings" element={<div>User Settings</div>} />
           <Route path="guild/:guildId/settings" element={<div>Guild Settings</div>} />
           <Route index element={<div>Welcome</div>} />

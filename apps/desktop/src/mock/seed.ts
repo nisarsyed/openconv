@@ -1,6 +1,7 @@
 import { useAppStore } from "../store";
-import type { Message } from "../types";
+import type { Message, User } from "../types";
 import {
+  mockUsers,
   mockGuilds,
   mockChannels,
   mockMessages,
@@ -97,9 +98,16 @@ export function seedStores(): void {
     }
   }
 
+  // Build usersById
+  const usersById: Record<string, User> = {};
+  for (const user of mockUsers) {
+    usersById[user.id] = user;
+  }
+
   useAppStore.setState({
     guildsById,
     guildIds,
+    usersById,
     channelsById,
     channelIdsByGuild,
     messagesById,

@@ -9,6 +9,7 @@ export function Spinner({ size = "md", className = "" }: SpinnerProps) {
   const px = sizeMap[size];
   return (
     <span
+      data-testid="spinner"
       role="status"
       aria-label="Loading"
       className={`inline-block animate-spin rounded-full border-2 border-[var(--bg-accent)] border-t-transparent ${className}`}
