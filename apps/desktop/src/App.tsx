@@ -7,6 +7,8 @@ import { RecoverPage } from "./routes/RecoverPage";
 import { ProtectedRoute } from "./routes/ProtectedRoute";
 import { AppLayout } from "./routes/AppLayout";
 import { ChannelView } from "./components/chat/ChannelView";
+import { UserSettings } from "./components/settings/UserSettings";
+import { GuildSettings } from "./components/settings/GuildSettings";
 
 function CatchAllRedirect() {
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
@@ -44,8 +46,8 @@ function App() {
           }
         >
           <Route path="guild/:guildId/channel/:channelId" element={<ChannelView />} />
-          <Route path="settings" element={<div>User Settings</div>} />
-          <Route path="guild/:guildId/settings" element={<div>Guild Settings</div>} />
+          <Route path="settings" element={<UserSettings />} />
+          <Route path="guild/:guildId/settings" element={<GuildSettings />} />
           <Route index element={<div>Welcome</div>} />
         </Route>
         <Route path="*" element={<CatchAllRedirect />} />

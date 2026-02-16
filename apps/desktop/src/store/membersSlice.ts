@@ -32,8 +32,8 @@ export const createMembersSlice: SliceCreator<MembersSlice> = (set) => ({
   updateMemberRole: (memberId, roleId) =>
     set((draft) => {
       const member = draft.membersById[memberId];
-      if (member && !member.roles.includes(roleId)) {
-        member.roles.push(roleId);
+      if (member) {
+        member.roles = [roleId];
       }
     }),
 });
