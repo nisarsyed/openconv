@@ -87,7 +87,7 @@ pub fn generate_pre_key_bundle(conn: &Connection, user_id: &str) -> Result<Seria
     let timestamp = Timestamp::from_epoch_millis(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before epoch")
+            .map_err(|_| CryptoError::StorageError("system clock before epoch".into()))?
             .as_millis() as u64,
     );
     let spk_record = SignedPreKeyRecord::new(
@@ -230,7 +230,7 @@ pub fn is_signed_pre_key_stale(conn: &Connection, max_age_days: u32) -> Result<b
         Ok(created_at) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock before epoch")
+                .map_err(|_| CryptoError::StorageError("system clock before epoch".into()))?
                 .as_secs() as i64;
             let max_age_secs = (max_age_days as i64) * 86400;
             Ok(now - created_at > max_age_secs)

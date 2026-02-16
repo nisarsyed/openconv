@@ -62,7 +62,12 @@ impl IdentityKeyStore for CryptoStore<'_> {
         let key_bytes = identity.serialize();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before epoch")
+            .map_err(|_| {
+                SignalProtocolError::InvalidState(
+                    "save_identity",
+                    "system clock before epoch".into(),
+                )
+            })?
             .as_secs() as i64;
 
         // Check if there's an existing key for this address

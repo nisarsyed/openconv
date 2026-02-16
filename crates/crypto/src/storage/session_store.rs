@@ -35,7 +35,12 @@ impl SessionStore for CryptoStore<'_> {
         let session_bytes = record.serialize()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before epoch")
+            .map_err(|_| {
+                SignalProtocolError::InvalidState(
+                    "store_session",
+                    "system clock before epoch".into(),
+                )
+            })?
             .as_secs() as i64;
 
         self.conn

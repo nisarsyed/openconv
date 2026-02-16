@@ -34,7 +34,7 @@ impl<'a> CryptoStore<'a> {
     ) -> Result<(), CryptoError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before epoch")
+            .map_err(|_| CryptoError::StorageError("system clock before epoch".into()))?
             .as_secs() as i64;
 
         self.conn.execute(
@@ -67,7 +67,7 @@ impl<'a> CryptoStore<'a> {
     pub fn prune_skipped_message_keys(&self, max_age_seconds: u64) -> Result<u32, CryptoError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock before epoch")
+            .map_err(|_| CryptoError::StorageError("system clock before epoch".into()))?
             .as_secs();
         let cutoff = now.saturating_sub(max_age_seconds) as i64;
 

@@ -156,7 +156,17 @@ pub fn apply_encryption_key(
     // x'...' hex key syntax is a SQL literal. If passed as a bound parameter,
     // SQLCipher treats it as a passphrase and applies PBKDF2, producing a
     // different key than intended.
-    conn.execute_batch(&format!("PRAGMA key = \"{}\";", db_key.as_pragma_value()))?;
+    let pragma_val = db_key.as_pragma_value();
+    if pragma_val.len() != 67
+        || !pragma_val.starts_with("x'")
+        || !pragma_val.ends_with('\'')
+        || !pragma_val[2..66].bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(CryptoError::InvalidKey(
+            "malformed database encryption key".into(),
+        ));
+    }
+    conn.execute_batch(&format!("PRAGMA key = \"{pragma_val}\";"))?;
 
     let cipher_version: String = conn
         .pragma_query_value(None, "cipher_version", |row| row.get(0))
