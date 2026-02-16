@@ -1,9 +1,11 @@
-import type { Member } from "../types";
+import type { Member, Role } from "../types";
 import type { SliceCreator } from "./index";
 
 export interface MembersSlice {
   membersById: Record<string, Member>;
   memberIdsByGuild: Record<string, string[]>;
+  rolesById: Record<string, Role>;
+  roleIdsByGuild: Record<string, string[]>;
   fetchMembers: (guildId: string, members: Member[]) => void;
   updateMemberRole: (memberId: string, roleId: string) => void;
 }
@@ -11,6 +13,8 @@ export interface MembersSlice {
 export const createMembersSlice: SliceCreator<MembersSlice> = (set) => ({
   membersById: {},
   memberIdsByGuild: {},
+  rolesById: {},
+  roleIdsByGuild: {},
 
   fetchMembers: (guildId, members) =>
     set((draft) => {
