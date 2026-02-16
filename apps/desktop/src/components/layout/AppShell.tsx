@@ -4,6 +4,7 @@ import { useAppStore } from "../../store";
 import { GuildSidebar } from "./GuildSidebar";
 import { ChannelSidebar } from "./ChannelSidebar";
 import { MainContent } from "./MainContent";
+import { MemberList } from "./MemberList";
 
 export function AppShell() {
   const channelSidebarVisible = useAppStore((s) => s.channelSidebarVisible);
@@ -60,7 +61,7 @@ export function AppShell() {
             collapsedSize={0}
           >
             <aside data-testid="member-list" className="h-full bg-[var(--bg-secondary)]">
-              {/* MemberList component will be implemented in Section 07 */}
+              <MemberList />
             </aside>
           </Panel>
         </Group>
