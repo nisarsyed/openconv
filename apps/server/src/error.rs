@@ -17,6 +17,7 @@ impl IntoResponse for ServerError {
             OpenConvError::Forbidden => (StatusCode::FORBIDDEN, self.0.to_string()),
             OpenConvError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             OpenConvError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            OpenConvError::Crypto(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
