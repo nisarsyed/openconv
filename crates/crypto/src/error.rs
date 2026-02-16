@@ -80,6 +80,12 @@ impl From<CryptoError> for openconv_shared::error::OpenConvError {
     }
 }
 
+impl From<libsignal_protocol::SignalProtocolError> for CryptoError {
+    fn from(err: libsignal_protocol::SignalProtocolError) -> Self {
+        CryptoError::SignalProtocolError(err.to_string())
+    }
+}
+
 impl From<keyring::Error> for CryptoError {
     fn from(err: keyring::Error) -> Self {
         match err {

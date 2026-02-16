@@ -30,8 +30,10 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
-rand = "0.8"
+rand = "0.9"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 futures = "0.3"
 tempfile = "3"
+async-trait = "0.1"
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.87.1" }

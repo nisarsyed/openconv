@@ -86,7 +86,7 @@ pub fn init_master_key_from_keychain() -> Result<MasterKey, CryptoError> {
         }
         Err(keyring::Error::NoEntry) => {
             let mut key = [0u8; 32];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
+            rand::RngCore::fill_bytes(&mut rand::rng(), &mut key);
             let mut hex_string = hex_encode(&key);
             entry
                 .set_password(&hex_string)
@@ -122,7 +122,7 @@ pub fn init_master_key_from_passphrase(
 /// Generate a random 16-byte salt for passphrase derivation.
 pub fn generate_salt() -> [u8; 16] {
     let mut salt = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut salt);
     salt
 }
 
