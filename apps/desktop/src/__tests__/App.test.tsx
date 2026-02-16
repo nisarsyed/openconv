@@ -30,12 +30,15 @@ describe("App", () => {
     });
   });
 
-  it("authenticated users can reach /app routes", () => {
+  it("authenticated users can reach /app routes", async () => {
     useAppStore.setState({
       isAuthenticated: true,
       currentUser: { id: "u1", displayName: "Test", email: "test@example.com", avatarUrl: null },
     });
     render(<App />);
-    expect(screen.getByText("Welcome")).toBeInTheDocument();
+    // AppLayout seeds mock data and redirects to a guild/channel route
+    await waitFor(() => {
+      expect(screen.getByTestId("guild-sidebar")).toBeInTheDocument();
+    });
   });
 });

@@ -5,6 +5,7 @@ import { LoginPage } from "./routes/LoginPage";
 import { RegisterPage } from "./routes/RegisterPage";
 import { RecoverPage } from "./routes/RecoverPage";
 import { ProtectedRoute } from "./routes/ProtectedRoute";
+import { AppLayout } from "./routes/AppLayout";
 
 function CatchAllRedirect() {
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
@@ -34,18 +35,18 @@ function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/recover" element={<RecoverPage />} />
         <Route
-          path="/app/*"
+          path="/app"
           element={
             <ProtectedRoute>
-              <Routes>
-                <Route path="guild/:guildId/channel/:channelId" element={<div>Channel View</div>} />
-                <Route path="settings" element={<div>User Settings</div>} />
-                <Route path="guild/:guildId/settings" element={<div>Guild Settings</div>} />
-                <Route index element={<div>Welcome</div>} />
-              </Routes>
+              <AppLayout />
             </ProtectedRoute>
           }
-        />
+        >
+          <Route path="guild/:guildId/channel/:channelId" element={<div>Channel View</div>} />
+          <Route path="settings" element={<div>User Settings</div>} />
+          <Route path="guild/:guildId/settings" element={<div>Guild Settings</div>} />
+          <Route index element={<div>Welcome</div>} />
+        </Route>
         <Route path="*" element={<CatchAllRedirect />} />
       </Routes>
     </MemoryRouter>
