@@ -12,6 +12,7 @@ export interface UISlice {
   toggleTheme: () => void;
   toggleChannelSidebar: () => void;
   toggleMemberList: () => void;
+  setMemberListVisible: (visible: boolean) => void;
   openModal: (type: string, props?: Record<string, unknown>) => void;
   closeModal: () => void;
   setTypingUsers: (channelId: string, userIds: string[]) => void;
@@ -43,6 +44,11 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
   toggleMemberList: () =>
     set((draft) => {
       draft.memberListVisible = !draft.memberListVisible;
+    }),
+
+  setMemberListVisible: (visible) =>
+    set((draft) => {
+      draft.memberListVisible = visible;
     }),
 
   openModal: (type, props) =>

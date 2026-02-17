@@ -5,6 +5,8 @@ import { GuildSidebar } from "./GuildSidebar";
 import { ChannelSidebar } from "./ChannelSidebar";
 import { MainContent } from "./MainContent";
 import { MemberList } from "./MemberList";
+import { DragRegion } from "./DragRegion";
+import { useResponsiveCollapse } from "../../hooks/useResponsiveCollapse";
 
 export function AppShell() {
   const channelSidebarVisible = useAppStore((s) => s.channelSidebarVisible);
@@ -12,6 +14,8 @@ export function AppShell() {
 
   const channelPanelRef = usePanelRef();
   const memberPanelRef = usePanelRef();
+
+  useResponsiveCollapse();
 
   useEffect(() => {
     if (channelSidebarVisible) {
@@ -31,6 +35,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
+      <DragRegion />
       <div className="flex flex-1 overflow-hidden">
         <GuildSidebar />
 

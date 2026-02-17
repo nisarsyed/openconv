@@ -69,6 +69,8 @@ pub fn run() {
         .expect("failed to export typescript bindings");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_decorum::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -82,6 +84,14 @@ pub fn run() {
             app.manage(DbState::new(conn));
 
             setup_tray(app)?;
+
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    tauri_plugin_decorum::WebviewWindowExt::create_overlay_titlebar(&window)
+                        .expect("failed to create overlay titlebar");
+                }
+            }
 
             Ok(())
         })
