@@ -50,7 +50,7 @@ export function ChannelItem({ channel, isSelected, isUnread }: ChannelItemProps)
       {isUnread && !isSelected && (
         <span
           data-testid="unread-dot"
-          className="h-2 w-2 shrink-0 rounded-full bg-white"
+          className="h-2 w-2 shrink-0 rounded-full bg-[var(--text-primary)]"
         />
       )}
       <span className="text-base opacity-60">{icon}</span>

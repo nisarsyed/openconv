@@ -5,12 +5,18 @@ export function DragRegion() {
 
   if (os !== "macos") return null;
 
+  // Only covers the guild sidebar area where traffic lights sit.
+  // Other panels use data-tauri-drag-region on their headers.
   return (
     <div
       data-tauri-drag-region
       aria-hidden="true"
-      className="h-7 w-full shrink-0"
-      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      className="absolute left-0 top-0 z-[60]"
+      style={{
+        width: 72,
+        height: "var(--titlebar-inset)",
+        WebkitAppRegion: "drag",
+      } as React.CSSProperties}
     />
   );
 }

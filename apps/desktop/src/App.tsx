@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { MemoryRouter, Routes, Route, Navigate } from "react-router";
 import { useAppStore } from "./store";
+import { usePlatform } from "./hooks/usePlatform";
 import { LoginPage } from "./routes/LoginPage";
 import { RegisterPage } from "./routes/RegisterPage";
 import { RecoverPage } from "./routes/RecoverPage";
@@ -17,6 +18,7 @@ function CatchAllRedirect() {
 
 function App() {
   const theme = useAppStore((state) => state.theme);
+  const os = usePlatform();
   const initialEntry = useRef(
     useAppStore.getState().isAuthenticated ? "/app" : "/login"
   );
@@ -30,6 +32,13 @@ function App() {
       document.documentElement.classList.remove("dark");
     }
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--titlebar-inset",
+      os === "macos" ? "2rem" : "0px",
+    );
+  }, [os]);
 
   return (
     <MemoryRouter initialEntries={[initialEntry.current]}>

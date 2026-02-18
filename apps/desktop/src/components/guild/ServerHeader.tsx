@@ -36,7 +36,11 @@ export function ServerHeader() {
   };
 
   return (
-    <div className="flex h-12 items-center border-b border-[var(--border-subtle)] px-4 shadow-sm">
+    <div
+      data-tauri-drag-region
+      className="flex h-12 items-center border-b border-[var(--border-subtle)] px-4 shadow-sm"
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+    >
       <Dropdown
         trigger={
           <button className="flex w-full items-center justify-between text-[var(--text-primary)] font-semibold text-sm hover:text-[var(--text-secondary)] transition-colors">

@@ -34,43 +34,43 @@ export function AppShell() {
   }, [memberListVisible, memberPanelRef]);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden">
+    <div className="relative flex h-screen w-screen overflow-hidden">
       <DragRegion />
-      <div className="flex flex-1 overflow-hidden">
-        <GuildSidebar />
+      <GuildSidebar />
 
-        <Group orientation="horizontal" className="flex-1">
-          <Panel
-            panelRef={channelPanelRef}
-            defaultSize={20}
-            minSize={15}
-            collapsible
-            collapsedSize={0}
-          >
-            <ChannelSidebar />
-          </Panel>
+      <Group orientation="horizontal" className="flex-1">
+        <Panel
+          panelRef={channelPanelRef}
+          defaultSize={20}
+          minSize="200px"
+          maxSize="340px"
+          collapsible
+          collapsedSize={0}
+        >
+          <ChannelSidebar />
+        </Panel>
 
-          <Separator className="w-0.5 bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
+        <Separator className="w-0.5 bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
 
-          <Panel minSize={30}>
-            <MainContent />
-          </Panel>
+        <Panel minSize="400px">
+          <MainContent />
+        </Panel>
 
-          <Separator className="w-0.5 bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
+        <Separator className="w-0.5 bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
 
-          <Panel
-            panelRef={memberPanelRef}
-            defaultSize={20}
-            minSize={15}
-            collapsible
-            collapsedSize={0}
-          >
-            <aside data-testid="member-list" className="h-full bg-[var(--bg-secondary)]">
-              <MemberList />
-            </aside>
-          </Panel>
-        </Group>
-      </div>
+        <Panel
+          panelRef={memberPanelRef}
+          defaultSize={18}
+          minSize="180px"
+          maxSize="300px"
+          collapsible
+          collapsedSize={0}
+        >
+          <aside data-testid="member-list" className="h-full bg-[var(--bg-secondary)]">
+            <MemberList />
+          </aside>
+        </Panel>
+      </Group>
     </div>
   );
 }

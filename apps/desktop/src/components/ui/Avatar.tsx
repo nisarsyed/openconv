@@ -8,9 +8,9 @@ export interface AvatarProps {
 const sizeMap = { sm: 24, md: 32, lg: 48 };
 
 const palette = [
-  "#5865f2", "#57f287", "#fee75c", "#eb459e",
-  "#ed4245", "#f47b67", "#3ba55c", "#faa61a",
-  "#e67e22", "#9b59b6",
+  "#06b6d4", "#10b981", "#f59e0b", "#ec4899",
+  "#ef4444", "#f97316", "#8b5cf6", "#14b8a6",
+  "#6366f1", "#0ea5e9",
 ];
 
 function hashName(name: string): number {

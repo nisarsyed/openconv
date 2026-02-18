@@ -38,24 +38,24 @@ export function GuildSidebar() {
   return (
     <nav
       data-testid="guild-sidebar"
-      className="flex flex-col items-center bg-[var(--bg-tertiary)] py-3 overflow-y-auto scrollbar-none"
-      style={{ width: 72 }}
+      className="flex flex-col items-center bg-[var(--bg-tertiary)] pb-3 overflow-y-auto scrollbar-none border-r border-[var(--border-subtle)]"
+      style={{ width: 72, paddingTop: "calc(var(--titlebar-inset) + 0.5rem)" }}
       aria-label="Guilds"
     >
       {/* Home button */}
       <button
         aria-label="Home"
         disabled
-        className="mb-2 ml-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--bg-secondary)] text-[var(--text-muted)] opacity-50 cursor-not-allowed"
+        className="mb-1.5 flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--bg-secondary)] text-[var(--text-muted)] opacity-50 cursor-not-allowed"
       >
-        <svg className="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
+        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
           <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
           <polyline points="9 22 9 12 15 12 15 22" />
         </svg>
       </button>
 
       {/* Separator */}
-      <div className="mx-auto mb-2 h-0.5 w-8 rounded-full bg-[var(--border-subtle)]" />
+      <div className="mx-auto mb-1.5 h-0.5 w-6 rounded-full bg-[var(--border-subtle)]" />
 
       {/* Guild icons */}
       {guildIds.map((gId) => {
@@ -77,7 +77,7 @@ export function GuildSidebar() {
       <button
         aria-label="Create guild"
         onClick={() => openModal("createGuild")}
-        className="ml-3 mt-2 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--bg-secondary)] text-green-500 transition-all duration-200 hover:rounded-2xl hover:bg-green-500 hover:text-white"
+        className="mt-1.5 flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--bg-secondary)] text-[var(--bg-accent)] transition-colors duration-150 hover:bg-[var(--bg-accent)] hover:text-white"
       >
         <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
           <line x1="12" y1="5" x2="12" y2="19" />

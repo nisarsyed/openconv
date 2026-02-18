@@ -1,28 +1,33 @@
 @import "tailwindcss";
 
+/* Titlebar inset for macOS traffic lights - set by App.tsx */
+:root {
+  --titlebar-inset: 0px;
+}
+
 /* Light theme (default) */
 :root {
   --bg-primary: #ffffff;
-  --bg-secondary: #f2f3f5;
-  --bg-tertiary: #e3e5e8;
-  --bg-accent: #5865f2;
+  --bg-secondary: #e9ecf5;
+  --bg-tertiary: #d5dae8;
+  --bg-accent: #0891b2;
 
-  --text-primary: #060607;
-  --text-secondary: #4e5058;
-  --text-muted: #6d6f78;
-  --text-link: #006ce7;
+  --text-primary: #0f1219;
+  --text-secondary: #3d4462;
+  --text-muted: #6b7294;
+  --text-link: #0891b2;
 
-  --border-primary: #e3e5e8;
-  --border-subtle: #ebedef;
+  --border-primary: #c9cfdf;
+  --border-subtle: #dfe3ef;
 
-  --interactive-normal: #4e5058;
-  --interactive-hover: #2e3035;
-  --interactive-active: #060607;
+  --interactive-normal: #3d4462;
+  --interactive-hover: #dfe3ef;
+  --interactive-active: #cdd2e2;
 
-  --status-online: #23a55a;
-  --status-idle: #f0b232;
-  --status-dnd: #f23f43;
-  --status-offline: #80848e;
+  --status-online: #10b981;
+  --status-idle: #f59e0b;
+  --status-dnd: #ef4444;
+  --status-offline: #6b7294;
 
   --surface-overlay: rgba(0, 0, 0, 0.5);
   --surface-popover: #ffffff;
@@ -30,30 +35,30 @@
 
 /* Dark theme */
 :root.dark {
-  --bg-primary: #313338;
-  --bg-secondary: #2b2d31;
-  --bg-tertiary: #1e1f22;
-  --bg-accent: #5865f2;
+  --bg-primary: #1a1d27;
+  --bg-secondary: #141722;
+  --bg-tertiary: #0e1018;
+  --bg-accent: #06b6d4;
 
-  --text-primary: #f2f3f5;
-  --text-secondary: #b5bac1;
-  --text-muted: #949ba4;
-  --text-link: #00a8fc;
+  --text-primary: #e4e7f0;
+  --text-secondary: #8b92a8;
+  --text-muted: #5a6180;
+  --text-link: #22d3ee;
 
-  --border-primary: #1e1f22;
-  --border-subtle: #3f4147;
+  --border-primary: #1f2333;
+  --border-subtle: #272b3a;
 
-  --interactive-normal: #b5bac1;
-  --interactive-hover: #dbdee1;
-  --interactive-active: #ffffff;
+  --interactive-normal: #8b92a8;
+  --interactive-hover: #262a3a;
+  --interactive-active: #2c3145;
 
-  --status-online: #23a55a;
-  --status-idle: #f0b232;
-  --status-dnd: #f23f43;
-  --status-offline: #80848e;
+  --status-online: #10b981;
+  --status-idle: #f59e0b;
+  --status-dnd: #ef4444;
+  --status-offline: #5a6180;
 
-  --surface-overlay: rgba(0, 0, 0, 0.7);
-  --surface-popover: #232428;
+  --surface-overlay: rgba(0, 0, 0, 0.75);
+  --surface-popover: #1e2130;
 }
 
 @keyframes slideIn {

@@ -14,7 +14,7 @@
         "title": "OpenConv",
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 20, "y": 22 },
+        "trafficLightPosition": { "x": 10, "y": 14 },
         "width": 1200,
         "height": 800,
         "minWidth": 800,

@@ -12,7 +12,11 @@ export function ChannelHeader() {
   const isVoice = channel.channelType === "voice";
 
   return (
-    <header className="flex h-12 items-center justify-between border-b border-[var(--border-subtle)] px-4">
+    <header
+      data-tauri-drag-region
+      className="flex h-12 items-center justify-between border-b border-[var(--border-subtle)] px-4"
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+    >
       <h2 className="flex items-center gap-1 text-sm font-semibold text-[var(--text-primary)]">
         <span className="text-[var(--text-muted)]">{isVoice ? "\u{1F50A}" : "#"}</span>
         {channel.name}
