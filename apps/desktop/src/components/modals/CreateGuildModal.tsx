@@ -29,13 +29,13 @@ export function CreateGuildModal() {
 
   return (
     <Modal open onClose={closeModal} title="Create a Server">
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-5">
         <div className="flex flex-col items-center gap-2">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             aria-label="Upload server icon"
-            className="w-20 h-20 rounded-full bg-[var(--bg-tertiary)] border-2 border-dashed border-[var(--border-primary)] flex items-center justify-center overflow-hidden hover:border-[var(--bg-accent)] transition-colors cursor-pointer"
+            className="w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] border-2 border-dashed border-[var(--border-primary)] flex items-center justify-center overflow-hidden hover:border-[var(--bg-accent)] transition-all duration-200 cursor-pointer"
           >
             {iconPreview ? (
               <img
@@ -44,8 +44,8 @@ export function CreateGuildModal() {
                 className="w-full h-full object-cover"
               />
             ) : (
-              <span className="text-[var(--text-muted)] text-xs text-center">
-                Upload Icon
+              <span className="text-[var(--text-muted)] text-xs text-center leading-tight">
+                Upload<br />Icon
               </span>
             )}
           </button>
@@ -64,8 +64,8 @@ export function CreateGuildModal() {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={closeModal}>
+        <div className="flex justify-end gap-2.5">
+          <Button variant="ghost" onClick={closeModal}>
             Cancel
           </Button>
           <Button disabled={!name.trim()} onClick={handleCreate}>

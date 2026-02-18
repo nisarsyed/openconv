@@ -20,7 +20,7 @@ export function FileAttachment({ attachment }: FileAttachmentProps) {
   if (isImage) {
     return (
       <button
-        className="mt-1 block max-w-[300px] cursor-pointer overflow-hidden rounded"
+        className="mt-1.5 block max-w-[300px] cursor-pointer overflow-hidden rounded-lg border border-[var(--border-subtle)]"
         onClick={() =>
           openModal("imageViewer", { imageUrl: attachment.thumbnailUrl ?? attachment.url })
         }
@@ -28,14 +28,14 @@ export function FileAttachment({ attachment }: FileAttachmentProps) {
         <img
           src={attachment.thumbnailUrl ?? attachment.url}
           alt={attachment.fileName}
-          className="max-h-[300px] w-auto rounded object-cover"
+          className="max-h-[300px] w-auto rounded-lg object-cover"
         />
       </button>
     );
   }
 
   return (
-    <div className="mt-1 flex items-center gap-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-3 max-w-[400px]">
+    <div className="mt-1.5 flex items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-3 max-w-[400px]">
       <svg className="h-8 w-8 shrink-0 text-[var(--text-muted)]" viewBox="0 0 24 24" fill="currentColor">
         <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
       </svg>
@@ -48,10 +48,10 @@ export function FileAttachment({ attachment }: FileAttachmentProps) {
       <a
         href={attachment.url}
         download={attachment.fileName}
-        className="rounded p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+        className="rounded-lg p-1.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--interactive-hover)] transition-colors"
         aria-label={`Download ${attachment.fileName}`}
       >
-        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
           <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
         </svg>
       </a>

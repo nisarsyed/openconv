@@ -42,7 +42,6 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
     previousFocusRef.current = document.activeElement as HTMLElement;
     document.addEventListener("keydown", handleKeyDown);
 
-    // Focus first focusable element
     requestAnimationFrame(() => {
       if (dialogRef.current) {
         const focusable = dialogRef.current.querySelector<HTMLElement>(
@@ -63,7 +62,8 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
   return createPortal(
     <div
       data-testid="modal-backdrop"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--surface-overlay)]"
+      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+      style={{ backgroundColor: "var(--surface-overlay)" }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -72,17 +72,20 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        className="relative rounded-lg bg-[var(--surface-popover)] p-4 shadow-xl min-w-[320px] max-w-lg"
+        className="relative rounded-xl glass border border-[var(--border-subtle)] p-5 shadow-[var(--shadow-lg)] min-w-[340px] max-w-lg animate-scale-in"
+        style={{ backgroundColor: "var(--surface-popover)" }}
       >
         <button
           onClick={onClose}
           aria-label="Close"
-          className="absolute top-3 right-3 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+          className="absolute top-3.5 right-3.5 rounded-md p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--interactive-hover)] transition-all duration-150"
         >
-          &#x2715;
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
         </button>
         {title && (
-          <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-3">
+          <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4 tracking-[-0.01em]">
             {title}
           </h2>
         )}

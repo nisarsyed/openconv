@@ -10,8 +10,8 @@ export function Badge({ count, color, children, className = "" }: BadgeProps) {
 
   return (
     <span
-      className={`inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-bold leading-none text-white ${className}`}
-      style={{ backgroundColor: color ?? "#ef4444" }}
+      className={`inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm ${className}`}
+      style={{ backgroundColor: color ?? "#ef4444", minWidth: 18 }}
     >
       {children ?? count}
     </span>

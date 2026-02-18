@@ -27,10 +27,10 @@ export function Tooltip({ content, children, position = "top" }: TooltipProps) {
   }, []);
 
   const positionClasses: Record<string, string> = {
-    top: "bottom-full left-1/2 -translate-x-1/2 mb-1",
-    bottom: "top-full left-1/2 -translate-x-1/2 mt-1",
-    left: "right-full top-1/2 -translate-y-1/2 mr-1",
-    right: "left-full top-1/2 -translate-y-1/2 ml-1",
+    top: "bottom-full left-1/2 -translate-x-1/2 mb-2",
+    bottom: "top-full left-1/2 -translate-x-1/2 mt-2",
+    left: "right-full top-1/2 -translate-y-1/2 mr-2",
+    right: "left-full top-1/2 -translate-y-1/2 ml-2",
   };
 
   return (
@@ -40,7 +40,7 @@ export function Tooltip({ content, children, position = "top" }: TooltipProps) {
         <span
           id={tooltipId}
           role="tooltip"
-          className={`absolute z-50 whitespace-nowrap rounded px-2 py-1 text-xs text-[var(--text-primary)] bg-[var(--surface-popover)] border border-[var(--border-subtle)] shadow-lg pointer-events-none ${positionClasses[position]}`}
+          className={`absolute z-50 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] bg-[var(--surface-popover)] border border-[var(--border-subtle)] shadow-[var(--shadow-md)] pointer-events-none animate-fade-in ${positionClasses[position]}`}
         >
           {content}
         </span>

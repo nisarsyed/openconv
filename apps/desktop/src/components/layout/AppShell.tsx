@@ -34,7 +34,7 @@ export function AppShell() {
   }, [memberListVisible, memberPanelRef]);
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden">
+    <div className="relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)]">
       <DragRegion />
       <GuildSidebar />
 
@@ -50,13 +50,13 @@ export function AppShell() {
           <ChannelSidebar />
         </Panel>
 
-        <Separator className="w-1 cursor-col-resize bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
+        <Separator className="w-[3px] cursor-col-resize bg-[var(--border-subtle)] transition-colors duration-200 hover:bg-[var(--bg-accent)]/50 active:bg-[var(--bg-accent)]" />
 
         <Panel minSize="400px">
           <MainContent />
         </Panel>
 
-        <Separator className="w-1 cursor-col-resize bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
+        <Separator className="w-[3px] cursor-col-resize bg-[var(--border-subtle)] transition-colors duration-200 hover:bg-[var(--bg-accent)]/50 active:bg-[var(--bg-accent)]" />
 
         <Panel
           panelRef={memberPanelRef}

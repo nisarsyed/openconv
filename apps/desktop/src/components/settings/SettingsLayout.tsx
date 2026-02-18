@@ -30,15 +30,15 @@ export function SettingsLayout({ sections, navFooter }: SettingsLayoutProps) {
 
   return (
     <div className="flex h-full">
-      <nav className="flex w-52 shrink-0 flex-col bg-[var(--bg-secondary)] py-4">
-        <div className="flex-1 space-y-0.5 px-2">
+      <nav className="flex w-52 shrink-0 flex-col bg-[var(--bg-secondary)] py-5">
+        <div className="flex-1 space-y-0.5 px-2.5">
           {sections.map((section) => (
             <button
               key={section.id}
-              className={`w-full rounded px-3 py-1.5 text-left text-sm font-medium transition-colors ${
+              className={`w-full rounded-lg px-3 py-1.5 text-left text-sm font-medium transition-all duration-150 ${
                 section.id === activeId
-                  ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-                  : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                  ? "bg-[var(--interactive-active)] text-[var(--text-primary)]"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)]"
               }`}
               onClick={() => setActiveId(section.id)}
             >
@@ -48,7 +48,7 @@ export function SettingsLayout({ sections, navFooter }: SettingsLayoutProps) {
         </div>
 
         {navFooter && (
-          <div className="border-t border-[var(--border-subtle)] px-2 pt-2">
+          <div className="border-t border-[var(--border-subtle)] mx-2.5 pt-3 mt-3">
             {navFooter}
           </div>
         )}
@@ -58,14 +58,10 @@ export function SettingsLayout({ sections, navFooter }: SettingsLayoutProps) {
         <button
           aria-label="Close settings"
           onClick={() => navigate(-1)}
-          className="absolute right-4 top-4 rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+          className="absolute right-4 top-4 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)] transition-all duration-150"
         >
-          <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path
-              fillRule="evenodd"
-              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-              clipRule="evenodd"
-            />
+          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+            <path d="M18 6L6 18M6 6l12 12" />
           </svg>
         </button>
         {activeSection?.content}

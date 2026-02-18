@@ -13,12 +13,12 @@ function formatDate(dateStr: string): string {
 
 export function DateSeparator({ date }: DateSeparatorProps) {
   return (
-    <div className="my-4 flex items-center gap-2 px-4" role="separator" aria-label={formatDate(date)}>
-      <div className="flex-1 border-t border-[var(--border-subtle)]" />
-      <span className="text-xs font-semibold text-[var(--text-muted)]">
+    <div className="my-5 flex items-center gap-3 px-4" role="separator" aria-label={formatDate(date)}>
+      <div className="divider-fade flex-1" />
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
         {formatDate(date)}
       </span>
-      <div className="flex-1 border-t border-[var(--border-subtle)]" />
+      <div className="divider-fade flex-1" />
     </div>
   );
 }

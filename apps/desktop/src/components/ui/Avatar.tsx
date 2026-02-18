@@ -8,9 +8,9 @@ export interface AvatarProps {
 const sizeMap = { sm: 24, md: 32, lg: 48 };
 
 const palette = [
-  "#06b6d4", "#10b981", "#f59e0b", "#ec4899",
-  "#ef4444", "#f97316", "#8b5cf6", "#14b8a6",
-  "#6366f1", "#0ea5e9",
+  "#d4a054", "#22c55e", "#ef4444", "#a78bfa",
+  "#f97316", "#06b6d4", "#ec4899", "#14b8a6",
+  "#8b5cf6", "#eab308",
 ];
 
 function hashName(name: string): number {
@@ -31,7 +31,7 @@ function getInitials(name: string): string {
 
 export function Avatar({ src, name, size = "md", className = "" }: AvatarProps) {
   const px = sizeMap[size];
-  const fontSize = Math.round(px * 0.4);
+  const fontSize = Math.round(px * 0.38);
 
   if (src) {
     return (
@@ -40,7 +40,7 @@ export function Avatar({ src, name, size = "md", className = "" }: AvatarProps) 
         alt={name}
         width={px}
         height={px}
-        className={`rounded-full object-cover ${className}`}
+        className={`rounded-full object-cover ring-1 ring-[var(--border-subtle)] ${className}`}
         style={{ width: px, height: px }}
       />
     );
@@ -49,8 +49,8 @@ export function Avatar({ src, name, size = "md", className = "" }: AvatarProps) 
   const bg = palette[hashName(name) % palette.length];
   return (
     <div
-      className={`flex items-center justify-center rounded-full text-white font-semibold select-none ${className}`}
-      style={{ width: px, height: px, backgroundColor: bg, fontSize }}
+      className={`flex items-center justify-center rounded-full font-semibold select-none ring-1 ring-white/10 ${className}`}
+      style={{ width: px, height: px, backgroundColor: bg, fontSize, color: "#fff" }}
       aria-label={name}
     >
       {getInitials(name)}

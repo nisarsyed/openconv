@@ -24,10 +24,10 @@ export function ConfirmDialog({
 
   return (
     <Modal open onClose={closeModal} title={title}>
-      <div className="flex flex-col gap-4">
-        <p className="text-sm text-[var(--text-secondary)]">{message}</p>
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={closeModal}>
+      <div className="flex flex-col gap-5">
+        <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{message}</p>
+        <div className="flex justify-end gap-2.5">
+          <Button variant="ghost" onClick={closeModal}>
             Cancel
           </Button>
           <Button variant="danger" onClick={handleConfirm}>

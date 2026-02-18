@@ -38,7 +38,6 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value);
-    // Auto-grow
     const el = e.target;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
@@ -48,7 +47,6 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
     if (e.target.files) {
       setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
     }
-    // Reset so the same file can be re-selected
     e.target.value = "";
   };
 
@@ -57,37 +55,39 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
   };
 
   return (
-    <div className="border-t border-[var(--border-subtle)] px-4 pb-2 pt-2">
+    <div className="px-4 pb-4 pt-1">
       {/* File previews */}
       {files.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {files.map((file, i) => (
             <div
               key={`${file.name}-${i}`}
-              className="flex items-center gap-1.5 rounded bg-[var(--bg-tertiary)] px-2 py-1 text-xs text-[var(--text-primary)]"
+              className="flex items-center gap-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-subtle)] px-2.5 py-1.5 text-xs text-[var(--text-primary)]"
               data-testid="file-preview"
             >
               <span className="max-w-[120px] truncate">{file.name}</span>
               <button
                 onClick={() => removeFile(i)}
-                className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
                 aria-label={`Remove ${file.name}`}
               >
-                ×
+                <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
               </button>
             </div>
           ))}
         </div>
       )}
 
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-2 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] px-3 py-2 transition-all duration-200 focus-within:border-[var(--bg-accent)]/40 focus-within:shadow-[0_0_0_3px_var(--bg-accent-subtle)]">
         {/* Attachment button */}
         <button
           onClick={() => fileInputRef.current?.click()}
           aria-label="Attach file"
-          className="mb-1 rounded p-1.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--interactive-hover)]"
+          className="mb-0.5 rounded-lg p-1 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
         >
-          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
@@ -108,7 +108,7 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
           onKeyDown={handleKeyDown}
           placeholder={`Message #${channelName}`}
           rows={1}
-          className="flex-1 resize-none rounded bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
+          className="flex-1 resize-none bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
           style={{ maxHeight: 144 }}
         />
 
@@ -117,7 +117,7 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
           onClick={handleSend}
           disabled={!canSend}
           aria-label="Send message"
-          className="mb-1 rounded p-1.5 text-[var(--bg-accent)] hover:bg-[var(--interactive-hover)] disabled:opacity-30 disabled:cursor-not-allowed"
+          className="mb-0.5 rounded-lg p-1 text-[var(--bg-accent)] hover:text-[var(--bg-accent-hover)] disabled:opacity-20 disabled:cursor-not-allowed transition-all duration-150"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
@@ -128,7 +128,7 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
       {/* Character count */}
       {showCharCount && (
         <div
-          className={`mt-1 text-right text-xs ${overLimit ? "text-[var(--status-danger)]" : "text-[var(--text-muted)]"}`}
+          className={`mt-1.5 text-right text-xs ${overLimit ? "text-red-400" : "text-[var(--text-muted)]"}`}
           data-testid="char-count"
         >
           {charCount} / {MAX_MESSAGE_SIZE}

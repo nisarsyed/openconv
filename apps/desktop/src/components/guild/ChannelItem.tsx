@@ -32,7 +32,13 @@ export function ChannelItem({ channel, isSelected, isUnread }: ChannelItemProps)
     }
   };
 
-  const icon = channel.channelType === "voice" ? "\u{1F50A}" : "#";
+  const icon = channel.channelType === "voice" ? (
+    <svg className="h-4 w-4 shrink-0 opacity-50" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" />
+    </svg>
+  ) : (
+    <span className="text-base leading-none opacity-40 shrink-0">#</span>
+  );
 
   return (
     <li
@@ -40,30 +46,28 @@ export function ChannelItem({ channel, isSelected, isUnread }: ChannelItemProps)
       tabIndex={0}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
-      className={`group flex items-center gap-1.5 rounded px-2 py-1 mx-2 cursor-pointer text-sm transition-colors ${
+      className={`group flex items-center gap-1.5 rounded-lg px-2 py-1.5 mx-1.5 cursor-pointer text-sm transition-all duration-150 ${
         isSelected
           ? "bg-[var(--interactive-active)] text-[var(--text-primary)]"
-          : "text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)]"
+          : "text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)]"
       }`}
     >
-      {/* Unread dot indicator */}
+      {icon}
+      <span className={`truncate ${isUnread && !isSelected ? "font-semibold text-[var(--text-primary)]" : ""}`}>
+        {channel.name}
+      </span>
       {isUnread && !isSelected && (
         <span
           data-testid="unread-dot"
-          className="h-2 w-2 shrink-0 rounded-full bg-[var(--text-primary)]"
+          className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--bg-accent)]"
         />
       )}
-      <span className="text-base opacity-60">{icon}</span>
-      <span className={isUnread && !isSelected ? "font-bold text-[var(--text-primary)]" : ""}>
-        {channel.name}
-      </span>
       {/* Gear icon on hover */}
       <button
         aria-label={`${channel.name} settings`}
-        className="ml-auto hidden rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] group-hover:block"
+        className="ml-auto hidden rounded-md p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] group-hover:block"
         onClick={(e) => {
           e.stopPropagation();
-          // Channel settings - placeholder for future implementation
         }}
       >
         <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">

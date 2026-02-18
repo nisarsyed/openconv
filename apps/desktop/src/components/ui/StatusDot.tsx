@@ -25,7 +25,7 @@ export function StatusDot({ status, size = "md", className = "" }: StatusDotProp
   return (
     <span
       aria-label={statusLabels[status]}
-      className={`inline-block rounded-full ${className}`}
+      className={`inline-block rounded-full ring-2 ring-[var(--bg-secondary)] ${className}`}
       style={{
         width: px,
         height: px,

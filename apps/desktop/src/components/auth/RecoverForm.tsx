@@ -18,11 +18,16 @@ export function RecoverForm() {
 
   if (submitted) {
     return (
-      <div className="flex flex-col gap-4 text-center">
-        <p className="text-[var(--text-primary)]">
+      <div className="flex flex-col gap-5 text-center animate-fade-in">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--bg-accent-subtle)]">
+          <svg className="h-6 w-6 text-[var(--bg-accent)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <p className="text-[var(--text-primary)] text-sm">
           Check your email for recovery instructions.
         </p>
-        <Link to="/login" className="text-[var(--text-link)] hover:underline">
+        <Link to="/login" className="text-[var(--text-link)] hover:brightness-125 transition-all text-sm">
           Back to Login
         </Link>
       </div>
@@ -30,7 +35,7 @@ export function RecoverForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
       <Input
         label="Email"
         type="email"
@@ -48,7 +53,7 @@ export function RecoverForm() {
         {isSubmitting ? "Sending..." : "Send Recovery Email"}
       </Button>
       <div className="text-center text-sm">
-        <Link to="/login" className="text-[var(--text-link)] hover:underline">
+        <Link to="/login" className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
           Back to Login
         </Link>
       </div>

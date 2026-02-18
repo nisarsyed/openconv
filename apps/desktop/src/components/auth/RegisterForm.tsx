@@ -44,7 +44,7 @@ export function RegisterForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
       <Input
         label="Email"
         type="email"
@@ -62,7 +62,7 @@ export function RegisterForm() {
         error={errors.displayName}
       />
       {serverError && (
-        <p role="alert" className="text-xs text-red-400">{serverError}</p>
+        <p role="alert" className="text-xs text-red-400 -mt-2">{serverError}</p>
       )}
       <Button
         type="submit"
@@ -74,8 +74,8 @@ export function RegisterForm() {
         {isSubmitting ? "Creating Account..." : "Create Account"}
       </Button>
       <div className="text-center text-sm">
-        <span className="text-[var(--text-secondary)]">Already have an account? </span>
-        <Link to="/login" className="text-[var(--text-link)] hover:underline">
+        <span className="text-[var(--text-muted)]">Already have an account? </span>
+        <Link to="/login" className="text-[var(--text-link)] hover:brightness-125 transition-all">
           Log In
         </Link>
       </div>

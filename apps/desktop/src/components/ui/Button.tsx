@@ -6,19 +6,19 @@ export interface ButtonProps
 
 const variantClasses: Record<NonNullable<ButtonProps["variant"]>, string> = {
   primary:
-    "bg-[var(--bg-accent)] text-white hover:brightness-110 active:brightness-90",
+    "accent-gradient text-[var(--text-on-accent)] shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] hover:brightness-110 active:brightness-95 active:scale-[0.98]",
   secondary:
-    "bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:brightness-110 active:brightness-90",
+    "bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--interactive-active)] active:scale-[0.98]",
   danger:
-    "bg-red-600 text-white hover:bg-red-700 active:bg-red-800",
+    "bg-red-600/90 text-white hover:bg-red-600 active:bg-red-700 active:scale-[0.98]",
   ghost:
-    "bg-transparent text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-secondary)]",
+    "bg-transparent text-[var(--text-secondary)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)] active:bg-[var(--interactive-active)]",
 };
 
 const sizeClasses: Record<NonNullable<ButtonProps["size"]>, string> = {
-  sm: "px-2 py-1 text-xs",
-  md: "px-3 py-1.5 text-sm",
-  lg: "px-4 py-2 text-base",
+  sm: "px-2.5 py-1 text-xs",
+  md: "px-3.5 py-1.5 text-sm",
+  lg: "px-5 py-2.5 text-sm",
 };
 
 export function Button({
@@ -31,7 +31,7 @@ export function Button({
 }: ButtonProps) {
   return (
     <button
-      className={`rounded font-medium transition-all duration-150 ${variantClasses[variant]} ${sizeClasses[size]} ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} ${className}`}
+      className={`inline-flex items-center justify-center rounded-lg font-semibold tracking-[-0.01em] transition-all duration-200 ease-out focus-ring ${variantClasses[variant]} ${sizeClasses[size]} ${disabled ? "opacity-40 cursor-not-allowed pointer-events-none" : "cursor-pointer"} ${className}`}
       disabled={disabled}
       {...rest}
     >

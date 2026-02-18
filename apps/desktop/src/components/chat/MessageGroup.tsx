@@ -53,27 +53,27 @@ export function MessageGroup({ senderId, messages }: MessageGroupProps) {
 
   return (
     <div className="mt-4 first:mt-0" data-testid="message-group">
-      <div className="flex gap-3 px-4 pt-1">
+      <div className="flex gap-3 px-4 pt-1.5">
         <div className="w-10 shrink-0 pt-0.5">
           <Avatar src={avatarUrl} name={displayName} size="md" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <span
-              className="text-sm font-semibold hover:underline cursor-pointer"
+              className="text-sm font-semibold hover:underline cursor-pointer tracking-[-0.01em]"
               style={nameColor ? { color: nameColor } : undefined}
               data-testid="message-author"
             >
               {displayName}
             </span>
-            <span className="text-xs text-[var(--text-muted)]">
+            <span className="text-[11px] text-[var(--text-muted)]">
               {formatTimestamp(messages[0].createdAt)}
             </span>
           </div>
         </div>
       </div>
 
-      {messages.map((msg, i) => (
+      {messages.map((msg) => (
         <div key={msg.id} className="pl-[52px]">
           <Message message={msg} isOwn={isOwn} />
         </div>

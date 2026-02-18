@@ -45,7 +45,6 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
     };
   }, [onClose]);
 
-  // Position to the left of anchor, clamped to viewport
   const style: React.CSSProperties = { width: 300 };
   if (anchorRect) {
     const popoverWidth = 300;
@@ -54,7 +53,6 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
       left = anchorRect.right + 8;
     }
     let top = anchorRect.top;
-    // Clamp vertically
     const maxTop = window.innerHeight - 400;
     if (top > maxTop) top = maxTop;
     if (top < 8) top = 8;
@@ -74,16 +72,16 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
       ref={popoverRef}
       role="dialog"
       aria-label={`${member.nickname ?? user.displayName} profile`}
-      className="overflow-hidden rounded-lg shadow-xl"
-      style={{ ...style, backgroundColor: "var(--bg-primary)" }}
+      className="overflow-hidden rounded-xl border border-[var(--border-subtle)] shadow-[var(--shadow-lg)] animate-scale-in"
+      style={{ ...style, backgroundColor: "var(--surface-popover)" }}
     >
       {/* Banner */}
-      <div className="h-14" style={{ backgroundColor: bannerColor }} />
+      <div className="h-16" style={{ background: `linear-gradient(135deg, ${bannerColor}, ${bannerColor}88)` }} />
 
       {/* Avatar + Name */}
       <div className="relative px-4 pb-3">
         <div className="-mt-8 mb-2">
-          <div className="relative inline-block rounded-full border-4 border-[var(--bg-primary)]">
+          <div className="relative inline-block rounded-full ring-4 ring-[var(--surface-popover)]">
             <Avatar src={user.avatarUrl} name={displayName} size="lg" />
             <span className="absolute -bottom-0.5 -right-0.5">
               <StatusDot status={presence} size="md" />
@@ -91,7 +89,7 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
           </div>
         </div>
 
-        <div className="text-lg font-bold text-[var(--text-primary)]">
+        <div className="text-lg font-bold text-[var(--text-primary)] tracking-[-0.01em]">
           {displayName}
         </div>
         <div className="text-sm text-[var(--text-muted)]">
@@ -99,21 +97,22 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
         </div>
       </div>
 
-      <div className="mx-4 border-t border-[var(--border-subtle)]" />
+      <div className="divider-fade mx-4" />
 
       {/* Roles */}
       {roles.length > 0 && (
         <div className="px-4 py-3">
-          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             Roles
           </div>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             {roles.map((role) => (
               <span
                 key={role.id}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-white"
-                style={{ backgroundColor: role.color }}
+                className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium"
+                style={{ borderColor: role.color + "40", color: role.color }}
               >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: role.color }} />
                 {role.name}
               </span>
             ))}
@@ -121,11 +120,11 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
         </div>
       )}
 
-      <div className="mx-4 border-t border-[var(--border-subtle)]" />
+      <div className="divider-fade mx-4" />
 
       {/* Member since */}
       <div className="px-4 py-3">
-        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
           Member Since
         </div>
         <div className="text-sm text-[var(--text-secondary)]">
@@ -133,13 +132,13 @@ export function UserPopover({ user, member, roles, presence, onClose, anchorRect
         </div>
       </div>
 
-      <div className="mx-4 border-t border-[var(--border-subtle)]" />
+      <div className="divider-fade mx-4" />
 
       {/* Message button */}
       <div className="px-4 py-3">
         <button
           disabled
-          className="w-full rounded bg-[var(--bg-tertiary)] px-3 py-1.5 text-sm text-[var(--text-muted)] opacity-50 cursor-not-allowed"
+          className="w-full rounded-lg bg-[var(--bg-tertiary)] px-3 py-2 text-sm font-medium text-[var(--text-muted)] opacity-40 cursor-not-allowed transition-colors"
           title="DMs coming soon"
         >
           Message

@@ -27,14 +27,14 @@ function AccountSection() {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-bold text-[var(--text-primary)]">My Account</h2>
+      <h2 className="mb-6 text-xl font-bold text-[var(--text-primary)] tracking-[-0.02em]">My Account</h2>
 
-      <div className="mb-6 flex items-center gap-4">
+      <div className="mb-8 flex items-center gap-4">
         <Avatar src={currentUser.avatarUrl} name={displayName || currentUser.displayName} size="lg" />
         <div className="text-sm text-[var(--text-muted)]">Avatar editing coming soon</div>
       </div>
 
-      <div className="max-w-md space-y-4">
+      <div className="max-w-md space-y-5">
         <Input
           label="Display Name"
           value={displayName}

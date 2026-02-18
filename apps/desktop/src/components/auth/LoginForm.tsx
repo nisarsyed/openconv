@@ -27,7 +27,7 @@ export function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
       <Input
         label="Email"
         type="email"
@@ -36,7 +36,7 @@ export function LoginForm() {
         placeholder="you@example.com"
       />
       {error && (
-        <p role="alert" className="text-xs text-red-400">{error}</p>
+        <p role="alert" className="text-xs text-red-400 -mt-2">{error}</p>
       )}
       <Button
         type="submit"
@@ -47,11 +47,11 @@ export function LoginForm() {
       >
         {isSubmitting ? "Logging in..." : "Log In"}
       </Button>
-      <div className="flex flex-col gap-2 text-center text-sm">
-        <Link to="/register" className="text-[var(--text-link)] hover:underline">
+      <div className="flex flex-col gap-2.5 text-center text-sm">
+        <Link to="/register" className="text-[var(--text-link)] hover:brightness-125 transition-all">
           Create Account
         </Link>
-        <Link to="/recover" className="text-[var(--text-link)] hover:underline">
+        <Link to="/recover" className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
           Forgot your account?
         </Link>
       </div>

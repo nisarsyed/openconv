@@ -38,14 +38,14 @@ export function ServerHeader() {
   return (
     <div
       data-tauri-drag-region
-      className="flex h-12 items-center border-b border-[var(--border-subtle)] px-4 shadow-sm"
+      className="flex h-12 items-center border-b border-[var(--border-subtle)] px-4"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       <Dropdown
         trigger={
-          <button className="flex w-full items-center justify-between text-[var(--text-primary)] font-semibold text-sm hover:text-[var(--text-secondary)] transition-colors">
-            <span>{guild.name}</span>
-            <svg className="h-4 w-4 ml-1" viewBox="0 0 20 20" fill="currentColor">
+          <button className="flex w-full items-center justify-between text-[var(--text-primary)] font-semibold text-sm tracking-[-0.01em] hover:text-[var(--text-secondary)] transition-colors">
+            <span className="truncate">{guild.name}</span>
+            <svg className="h-4 w-4 ml-1.5 text-[var(--text-muted)]" viewBox="0 0 20 20" fill="currentColor">
               <path
                 fillRule="evenodd"
                 d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
