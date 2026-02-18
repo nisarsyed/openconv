@@ -41,7 +41,7 @@ export function AppShell() {
       <Group orientation="horizontal" className="flex-1">
         <Panel
           panelRef={channelPanelRef}
-          defaultSize={20}
+          defaultSize="20%"
           minSize="200px"
           maxSize="340px"
           collapsible
@@ -50,17 +50,17 @@ export function AppShell() {
           <ChannelSidebar />
         </Panel>
 
-        <Separator className="w-0.5 bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
+        <Separator className="w-1 cursor-col-resize bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
 
         <Panel minSize="400px">
           <MainContent />
         </Panel>
 
-        <Separator className="w-0.5 bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
+        <Separator className="w-1 cursor-col-resize bg-[var(--border-subtle)] hover:bg-[var(--bg-accent)] transition-colors" />
 
         <Panel
           panelRef={memberPanelRef}
-          defaultSize={18}
+          defaultSize="18%"
           minSize="180px"
           maxSize="300px"
           collapsible

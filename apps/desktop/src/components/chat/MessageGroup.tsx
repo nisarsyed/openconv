@@ -74,7 +74,7 @@ export function MessageGroup({ senderId, messages }: MessageGroupProps) {
       </div>
 
       {messages.map((msg, i) => (
-        <div key={msg.id} className={i === 0 ? "" : "pl-[52px]"}>
+        <div key={msg.id} className="pl-[52px]">
           <Message message={msg} isOwn={isOwn} />
         </div>
       ))}
