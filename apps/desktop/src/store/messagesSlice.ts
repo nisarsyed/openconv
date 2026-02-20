@@ -8,7 +8,11 @@ export interface MessagesSlice {
   loadingMessages: Record<string, boolean>;
   addMessage: (channelId: string, message: Message) => void;
   prependMessages: (channelId: string, messages: Message[]) => void;
-  sendMessage: (channelId: string, content: string, attachments: FileAttachment[]) => void;
+  sendMessage: (
+    channelId: string,
+    content: string,
+    attachments: FileAttachment[],
+  ) => void;
   deleteMessage: (id: string) => void;
   editMessage: (id: string, content: string) => void;
   setLoadingMessages: (channelId: string, loading: boolean) => void;

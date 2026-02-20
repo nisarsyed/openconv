@@ -55,23 +55,29 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
   };
 
   return (
-    <div className="px-4 pb-4 pt-1">
+    <div className="px-4 pt-1 pb-4">
       {/* File previews */}
       {files.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-2">
           {files.map((file, i) => (
             <div
               key={`${file.name}-${i}`}
-              className="flex items-center gap-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-subtle)] px-2.5 py-1.5 text-xs text-[var(--text-primary)]"
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)]"
               data-testid="file-preview"
             >
               <span className="max-w-[120px] truncate">{file.name}</span>
               <button
                 onClick={() => removeFile(i)}
-                className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                className="text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
                 aria-label={`Remove ${file.name}`}
               >
-                <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <svg
+                  className="h-3 w-3"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
               </button>
@@ -80,14 +86,20 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
         </div>
       )}
 
-      <div className="flex items-end gap-2 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] px-3 py-2 transition-all duration-200 focus-within:border-[var(--bg-accent)]/40 focus-within:shadow-[0_0_0_3px_var(--bg-accent-subtle)]">
+      <div className="flex items-end gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-3 py-2 transition-all duration-200 focus-within:border-[var(--bg-accent)]/40 focus-within:shadow-[0_0_0_3px_var(--bg-accent-subtle)]">
         {/* Attachment button */}
         <button
           onClick={() => fileInputRef.current?.click()}
           aria-label="Attach file"
-          className="mb-0.5 rounded-lg p-1 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+          className="mb-0.5 rounded-lg p-1 text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
         >
-          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
@@ -117,7 +129,7 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
           onClick={handleSend}
           disabled={!canSend}
           aria-label="Send message"
-          className="mb-0.5 rounded-lg p-1 text-[var(--bg-accent)] hover:text-[var(--bg-accent-hover)] disabled:opacity-20 disabled:cursor-not-allowed transition-all duration-150"
+          className="mb-0.5 rounded-lg p-1 text-[var(--bg-accent)] transition-all duration-150 hover:text-[var(--bg-accent-hover)] disabled:cursor-not-allowed disabled:opacity-20"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />

@@ -4,7 +4,10 @@ import { UserPanel } from "../members/UserPanel";
 
 export function ChannelSidebar() {
   return (
-    <div data-testid="channel-sidebar" className="flex h-full flex-col bg-[var(--bg-secondary)]">
+    <div
+      data-testid="channel-sidebar"
+      className="flex h-full flex-col bg-[var(--bg-secondary)]"
+    >
       <ServerHeader />
       <ChannelList />
       <UserPanel />

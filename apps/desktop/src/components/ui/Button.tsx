@@ -1,5 +1,4 @@
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: "primary" | "secondary" | "danger" | "ghost";
   size?: "sm" | "md" | "lg";
 }
@@ -31,7 +30,7 @@ export function Button({
 }: ButtonProps) {
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-lg font-semibold tracking-[-0.01em] transition-all duration-200 ease-out focus-ring ${variantClasses[variant]} ${sizeClasses[size]} ${disabled ? "opacity-40 cursor-not-allowed pointer-events-none" : "cursor-pointer"} ${className}`}
+      className={`focus-ring inline-flex items-center justify-center rounded-lg font-semibold tracking-[-0.01em] transition-all duration-200 ease-out ${variantClasses[variant]} ${sizeClasses[size]} ${disabled ? "pointer-events-none cursor-not-allowed opacity-40" : "cursor-pointer"} ${className}`}
       disabled={disabled}
       {...rest}
     >

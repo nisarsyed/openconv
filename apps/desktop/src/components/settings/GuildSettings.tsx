@@ -14,7 +14,8 @@ function OverviewSection({ guildId }: { guildId: string }) {
 
   const [name, setName] = useState(guild?.name ?? "");
 
-  if (!guild) return <div className="text-[var(--text-muted)]">Guild not found</div>;
+  if (!guild)
+    return <div className="text-[var(--text-muted)]">Guild not found</div>;
 
   const hasChanges = name !== guild.name;
 
@@ -26,11 +27,15 @@ function OverviewSection({ guildId }: { guildId: string }) {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-bold text-[var(--text-primary)]">Overview</h2>
+      <h2 className="mb-6 text-xl font-bold text-[var(--text-primary)]">
+        Overview
+      </h2>
 
       <div className="mb-6 flex items-center gap-4">
         <Avatar src={guild.iconUrl} name={guild.name} size="lg" />
-        <div className="text-sm text-[var(--text-muted)]">Icon editing coming soon</div>
+        <div className="text-sm text-[var(--text-muted)]">
+          Icon editing coming soon
+        </div>
       </div>
 
       <div className="max-w-md space-y-4">
@@ -96,7 +101,9 @@ function ChannelsSection({ guildId }: { guildId: string }) {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-xl font-bold text-[var(--text-primary)]">Channels</h2>
+        <h2 className="text-xl font-bold text-[var(--text-primary)]">
+          Channels
+        </h2>
         <Button disabled title="Coming in Section 09">
           Create Channel
         </Button>
@@ -111,15 +118,21 @@ function ChannelsSection({ guildId }: { guildId: string }) {
             <span className="text-[var(--text-muted)]">
               {ch.channelType === "text" ? "#" : "🔊"}
             </span>
-            <span className="flex-1 text-sm text-[var(--text-primary)]">{ch.name}</span>
+            <span className="flex-1 text-sm text-[var(--text-primary)]">
+              {ch.name}
+            </span>
             {ch.category && (
-              <span className="text-xs text-[var(--text-muted)]">{ch.category}</span>
+              <span className="text-xs text-[var(--text-muted)]">
+                {ch.category}
+              </span>
             )}
             <Button
               variant="danger"
               size="sm"
               onClick={() => {
-                if (window.confirm(`Delete #${ch.name}? This cannot be undone.`)) {
+                if (
+                  window.confirm(`Delete #${ch.name}? This cannot be undone.`)
+                ) {
                   deleteChannel(ch.id);
                 }
               }}
@@ -146,7 +159,9 @@ function MembersSection({ guildId }: { guildId: string }) {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-bold text-[var(--text-primary)]">Members</h2>
+      <h2 className="mb-6 text-xl font-bold text-[var(--text-primary)]">
+        Members
+      </h2>
 
       <div className="space-y-2">
         {memberKeys.map((key) => {
@@ -170,7 +185,9 @@ function MembersSection({ guildId }: { guildId: string }) {
               </span>
               <div className="flex gap-1">
                 {memberRoles.map((r) => (
-                  <Badge key={r.id} color={r.color}>{r.name}</Badge>
+                  <Badge key={r.id} color={r.color}>
+                    {r.name}
+                  </Badge>
                 ))}
               </div>
               <Select
@@ -193,10 +210,26 @@ export function GuildSettings() {
   if (!guildId) return null;
 
   const sections = [
-    { id: "overview", label: "Overview", content: <OverviewSection guildId={guildId} /> },
-    { id: "roles", label: "Roles", content: <RolesSection guildId={guildId} /> },
-    { id: "channels", label: "Channels", content: <ChannelsSection guildId={guildId} /> },
-    { id: "members", label: "Members", content: <MembersSection guildId={guildId} /> },
+    {
+      id: "overview",
+      label: "Overview",
+      content: <OverviewSection guildId={guildId} />,
+    },
+    {
+      id: "roles",
+      label: "Roles",
+      content: <RolesSection guildId={guildId} />,
+    },
+    {
+      id: "channels",
+      label: "Channels",
+      content: <ChannelsSection guildId={guildId} />,
+    },
+    {
+      id: "members",
+      label: "Members",
+      content: <MembersSection guildId={guildId} />,
+    },
   ];
 
   return <SettingsLayout sections={sections} />;

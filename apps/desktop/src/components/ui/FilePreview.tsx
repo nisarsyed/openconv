@@ -31,19 +31,19 @@ export function FilePreview({ file, onRemove }: FilePreviewProps) {
           className="h-8 w-8 rounded object-cover"
         />
       ) : (
-        <span className="text-[var(--text-secondary)] truncate max-w-[160px]">
+        <span className="max-w-[160px] truncate text-[var(--text-secondary)]">
           {file.name} ({formatSize(file.size)})
         </span>
       )}
       {isImage && (
-        <span className="text-[var(--text-secondary)] truncate max-w-[120px]">
+        <span className="max-w-[120px] truncate text-[var(--text-secondary)]">
           {file.name}
         </span>
       )}
       <button
         aria-label="Remove file"
         onClick={onRemove}
-        className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors ml-auto"
+        className="ml-auto text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
       >
         &#x2715;
       </button>

@@ -11,7 +11,10 @@ export function RegisterForm() {
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [errors, setErrors] = useState<{ email?: string; displayName?: string }>({});
+  const [errors, setErrors] = useState<{
+    email?: string;
+    displayName?: string;
+  }>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const login = useAppStore((state) => state.login);
   const navigate = useNavigate();
@@ -38,7 +41,9 @@ export function RegisterForm() {
       login(result.user, result.keyPair, result.token);
       navigate("/app", { replace: true });
     } catch (err) {
-      setServerError(err instanceof Error ? err.message : "Registration failed");
+      setServerError(
+        err instanceof Error ? err.message : "Registration failed",
+      );
       setIsSubmitting(false);
     }
   };
@@ -62,7 +67,9 @@ export function RegisterForm() {
         error={errors.displayName}
       />
       {serverError && (
-        <p role="alert" className="text-xs text-red-400 -mt-2">{serverError}</p>
+        <p role="alert" className="-mt-2 text-xs text-red-400">
+          {serverError}
+        </p>
       )}
       <Button
         type="submit"
@@ -74,8 +81,13 @@ export function RegisterForm() {
         {isSubmitting ? "Creating Account..." : "Create Account"}
       </Button>
       <div className="text-center text-sm">
-        <span className="text-[var(--text-muted)]">Already have an account? </span>
-        <Link to="/login" className="text-[var(--text-link)] hover:brightness-125 transition-all">
+        <span className="text-[var(--text-muted)]">
+          Already have an account?{" "}
+        </span>
+        <Link
+          to="/login"
+          className="text-[var(--text-link)] transition-all hover:brightness-125"
+        >
           Log In
         </Link>
       </div>

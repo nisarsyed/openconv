@@ -35,7 +35,9 @@ describe("CreateGuildModal", () => {
 
     expect(useAppStore.getState().guildIds.length).toBe(initialGuildCount + 1);
     const newGuildId =
-      useAppStore.getState().guildIds[useAppStore.getState().guildIds.length - 1];
+      useAppStore.getState().guildIds[
+        useAppStore.getState().guildIds.length - 1
+      ];
     expect(useAppStore.getState().guildsById[newGuildId].name).toBe(
       "My New Server",
     );

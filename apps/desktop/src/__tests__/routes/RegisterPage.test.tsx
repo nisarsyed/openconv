@@ -33,7 +33,9 @@ describe("RegisterPage", () => {
     renderRegisterPage();
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/display name/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /create account/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create account/i }),
+    ).toBeInTheDocument();
   });
 
   it("validates email format -- shows error for invalid email", async () => {
@@ -61,7 +63,12 @@ describe("RegisterPage", () => {
   it("calls mockRegister on valid form submit", async () => {
     const user = userEvent.setup();
     vi.mocked(mockRegister).mockResolvedValue({
-      user: { id: "u1", displayName: "New User", email: "new@example.com", avatarUrl: null },
+      user: {
+        id: "u1",
+        displayName: "New User",
+        email: "new@example.com",
+        avatarUrl: null,
+      },
       keyPair: { publicKey: "pk", privateKey: "sk" },
       token: "token-123",
     });
@@ -75,7 +82,12 @@ describe("RegisterPage", () => {
   it("navigates to /app on successful registration", async () => {
     const user = userEvent.setup();
     vi.mocked(mockRegister).mockResolvedValue({
-      user: { id: "u1", displayName: "New User", email: "new@example.com", avatarUrl: null },
+      user: {
+        id: "u1",
+        displayName: "New User",
+        email: "new@example.com",
+        avatarUrl: null,
+      },
       keyPair: { publicKey: "pk", privateKey: "sk" },
       token: "token-123",
     });

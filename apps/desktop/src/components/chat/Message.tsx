@@ -45,7 +45,7 @@ export function Message({ message, isOwn }: MessageProps) {
 
   return (
     <div
-      className="group relative py-0.5 px-4 rounded-md transition-colors duration-100 hover:bg-[var(--interactive-hover)]"
+      className="group relative rounded-md px-4 py-0.5 transition-colors duration-100 hover:bg-[var(--interactive-hover)]"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       data-testid={`message-${message.id}`}
@@ -57,28 +57,48 @@ export function Message({ message, isOwn }: MessageProps) {
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
             onKeyDown={handleEditKeyDown}
-            className="w-full resize-none rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--bg-accent)] transition-colors"
+            className="w-full resize-none rounded-lg border border-[var(--border-primary)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--bg-accent)] focus:outline-none"
             rows={1}
             data-testid="edit-input"
           />
           <div className="mt-1 text-xs text-[var(--text-muted)]">
-            escape to <button className="text-[var(--bg-accent)] hover:underline" onClick={() => { setEditText(message.content); setIsEditing(false); }}>cancel</button> · enter to <button className="text-[var(--bg-accent)] hover:underline" onClick={handleEditSave}>save</button>
+            escape to{" "}
+            <button
+              className="text-[var(--bg-accent)] hover:underline"
+              onClick={() => {
+                setEditText(message.content);
+                setIsEditing(false);
+              }}
+            >
+              cancel
+            </button>{" "}
+            · enter to{" "}
+            <button
+              className="text-[var(--bg-accent)] hover:underline"
+              onClick={handleEditSave}
+            >
+              save
+            </button>
           </div>
         </div>
       ) : (
         <>
-          <div className="text-sm text-[var(--text-primary)] leading-relaxed">
+          <div className="text-sm leading-relaxed text-[var(--text-primary)]">
             {segments.map((seg, i) => {
               switch (seg.type) {
                 case "bold":
-                  return <strong key={i} className="font-semibold">{seg.content}</strong>;
+                  return (
+                    <strong key={i} className="font-semibold">
+                      {seg.content}
+                    </strong>
+                  );
                 case "italic":
                   return <em key={i}>{seg.content}</em>;
                 case "code":
                   return (
                     <code
                       key={i}
-                      className="rounded-md bg-[var(--bg-tertiary)] px-1.5 py-0.5 text-xs font-mono text-[var(--bg-accent)]"
+                      className="rounded-md bg-[var(--bg-tertiary)] px-1.5 py-0.5 font-mono text-xs text-[var(--bg-accent)]"
                     >
                       {seg.content}
                     </code>
@@ -100,7 +120,9 @@ export function Message({ message, isOwn }: MessageProps) {
               }
             })}
             {message.editedAt && (
-              <span className="ml-1 text-[10px] text-[var(--text-muted)]">(edited)</span>
+              <span className="ml-1 text-[10px] text-[var(--text-muted)]">
+                (edited)
+              </span>
             )}
           </div>
 

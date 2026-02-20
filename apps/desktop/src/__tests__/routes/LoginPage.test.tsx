@@ -52,7 +52,12 @@ describe("LoginPage", () => {
   it("calls mockLogin on form submit with the entered email", async () => {
     const user = userEvent.setup();
     vi.mocked(mockLogin).mockResolvedValue({
-      user: { id: "u1", displayName: "Test", email: "test@example.com", avatarUrl: null },
+      user: {
+        id: "u1",
+        displayName: "Test",
+        email: "test@example.com",
+        avatarUrl: null,
+      },
       keyPair: { publicKey: "pk", privateKey: "sk" },
       token: "token-123",
     });
@@ -65,7 +70,12 @@ describe("LoginPage", () => {
   it("navigates to /app on successful login", async () => {
     const user = userEvent.setup();
     vi.mocked(mockLogin).mockResolvedValue({
-      user: { id: "u1", displayName: "Test", email: "test@example.com", avatarUrl: null },
+      user: {
+        id: "u1",
+        displayName: "Test",
+        email: "test@example.com",
+        avatarUrl: null,
+      },
       keyPair: { publicKey: "pk", privateKey: "sk" },
       token: "token-123",
     });
@@ -92,14 +102,21 @@ describe("LoginPage", () => {
     const user = userEvent.setup();
     let resolveLogin!: (value: any) => void;
     vi.mocked(mockLogin).mockReturnValue(
-      new Promise((resolve) => { resolveLogin = resolve; }),
+      new Promise((resolve) => {
+        resolveLogin = resolve;
+      }),
     );
     renderLoginPage();
     await user.type(screen.getByLabelText(/email/i), "test@example.com");
     await user.click(screen.getByRole("button", { name: /log in/i }));
     expect(screen.getByRole("button", { name: /logging in/i })).toBeDisabled();
     resolveLogin({
-      user: { id: "u1", displayName: "Test", email: "test@example.com", avatarUrl: null },
+      user: {
+        id: "u1",
+        displayName: "Test",
+        email: "test@example.com",
+        avatarUrl: null,
+      },
       keyPair: { publicKey: "pk", privateKey: "sk" },
       token: "token-123",
     });

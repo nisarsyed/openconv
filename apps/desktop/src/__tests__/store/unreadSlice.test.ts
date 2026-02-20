@@ -3,7 +3,9 @@ import { createAppStore } from "./helpers";
 
 describe("UnreadSlice", () => {
   let store: ReturnType<typeof createAppStore>;
-  beforeEach(() => { store = createAppStore(); });
+  beforeEach(() => {
+    store = createAppStore();
+  });
 
   it("markChannelRead updates lastReadByChannel and resets unreadCountByChannel", () => {
     store.getState().incrementUnread("ch-1");

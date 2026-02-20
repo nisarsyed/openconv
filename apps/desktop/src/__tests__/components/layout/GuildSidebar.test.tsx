@@ -50,7 +50,9 @@ describe("GuildSidebar", () => {
     const channelId = mockChannels[0].id;
     renderSidebar(`/app/guild/${guildId}/channel/${channelId}`);
 
-    const selectedGuild = screen.getByLabelText(mockGuilds[0].name).closest("[data-testid^='guild-icon-']");
+    const selectedGuild = screen
+      .getByLabelText(mockGuilds[0].name)
+      .closest("[data-testid^='guild-icon-']");
     expect(selectedGuild).not.toBeNull();
 
     const pill = selectedGuild!.querySelector("[data-testid='guild-pill']");
@@ -102,7 +104,9 @@ describe("GuildSidebar", () => {
     });
 
     // Guild 2 should have a small pill (h-2 for unread)
-    const guildIcon = screen.getByLabelText(guild2.name).closest("[data-testid^='guild-icon-']");
+    const guildIcon = screen
+      .getByLabelText(guild2.name)
+      .closest("[data-testid^='guild-icon-']");
     const pill = guildIcon!.querySelector("[data-testid='guild-pill']");
     expect(pill).toBeInTheDocument();
     expect(pill).toHaveClass("h-2");

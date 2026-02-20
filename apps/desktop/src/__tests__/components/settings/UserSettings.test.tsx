@@ -89,7 +89,9 @@ describe("UserSettings", () => {
     const themeButton = screen.getByRole("button", { name: targetName });
     await user.click(themeButton);
 
-    expect(useAppStore.getState().theme).toBe(initialTheme === "dark" ? "light" : "dark");
+    expect(useAppStore.getState().theme).toBe(
+      initialTheme === "dark" ? "light" : "dark",
+    );
   });
 
   it("log out button calls logout and redirects to /login", async () => {

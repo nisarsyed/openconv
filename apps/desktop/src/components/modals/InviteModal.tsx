@@ -10,7 +10,8 @@ interface InviteModalProps {
 }
 
 function generateInviteCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let code = "";
   for (let i = 0; i < 8; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -22,7 +23,7 @@ export function InviteModal({ guildId: _guildId }: InviteModalProps) {
   const closeModal = useAppStore((s) => s.closeModal);
   const [expiration, setExpiration] = useState("7d");
   const [copied, setCopied] = useState(false);
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const inviteLink = useMemo(
     () => `https://openconv.app/invite/${generateInviteCode()}`,

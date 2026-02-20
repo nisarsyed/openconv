@@ -8,7 +8,9 @@ import { mockGuilds, mockChannels } from "../../../mock/data";
 
 function renderChannelView(guildId?: string, channelId?: string) {
   const gid = guildId ?? mockGuilds[0].id;
-  const cid = channelId ?? mockChannels.find((c) => c.guildId === gid && c.channelType === "text")!.id;
+  const cid =
+    channelId ??
+    mockChannels.find((c) => c.guildId === gid && c.channelType === "text")!.id;
 
   return renderWithProviders(
     <Routes>
@@ -50,7 +52,9 @@ describe("ChannelView / MessageView", () => {
 
   it("shows loading spinner when loadingMessages is true", () => {
     const gid = mockGuilds[0].id;
-    const cid = mockChannels.find((c) => c.guildId === gid && c.channelType === "text")!.id;
+    const cid = mockChannels.find(
+      (c) => c.guildId === gid && c.channelType === "text",
+    )!.id;
 
     renderWithProviders(
       <Routes>

@@ -6,8 +6,7 @@ export type MarkdownSegment =
   | { type: "link"; url: string };
 
 // Combined regex for all markdown tokens, applied in priority order
-const TOKEN_RE =
-  /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)|(https?:\/\/[^\s]+)/g;
+const TOKEN_RE = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)|(https?:\/\/[^\s]+)/g;
 
 export function parseMarkdown(input: string): MarkdownSegment[] {
   const segments: MarkdownSegment[] = [];
@@ -18,7 +17,10 @@ export function parseMarkdown(input: string): MarkdownSegment[] {
 
     // Add preceding plain text
     if (matchStart > lastIndex) {
-      segments.push({ type: "text", content: input.slice(lastIndex, matchStart) });
+      segments.push({
+        type: "text",
+        content: input.slice(lastIndex, matchStart),
+      });
     }
 
     if (match[1]) {

@@ -11,7 +11,11 @@ const items = [
 describe("Dropdown", () => {
   it("opens menu on trigger click", async () => {
     render(
-      <Dropdown trigger={<button>Actions</button>} items={items} onSelect={() => {}} />,
+      <Dropdown
+        trigger={<button>Actions</button>}
+        items={items}
+        onSelect={() => {}}
+      />,
     );
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
     await userEvent.click(screen.getByText("Actions"));
@@ -21,7 +25,11 @@ describe("Dropdown", () => {
   it("closes menu on outside click", async () => {
     render(
       <div>
-        <Dropdown trigger={<button>Actions</button>} items={items} onSelect={() => {}} />
+        <Dropdown
+          trigger={<button>Actions</button>}
+          items={items}
+          onSelect={() => {}}
+        />
         <button>Outside</button>
       </div>,
     );
@@ -34,7 +42,11 @@ describe("Dropdown", () => {
   it("calls onSelect for selected item", async () => {
     const onSelect = vi.fn();
     render(
-      <Dropdown trigger={<button>Actions</button>} items={items} onSelect={onSelect} />,
+      <Dropdown
+        trigger={<button>Actions</button>}
+        items={items}
+        onSelect={onSelect}
+      />,
     );
     await userEvent.click(screen.getByText("Actions"));
     await userEvent.click(screen.getByText("Edit"));
@@ -43,7 +55,11 @@ describe("Dropdown", () => {
 
   it("closes after selection", async () => {
     render(
-      <Dropdown trigger={<button>Actions</button>} items={items} onSelect={() => {}} />,
+      <Dropdown
+        trigger={<button>Actions</button>}
+        items={items}
+        onSelect={() => {}}
+      />,
     );
     await userEvent.click(screen.getByText("Actions"));
     await userEvent.click(screen.getByText("Edit"));

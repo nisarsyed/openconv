@@ -7,7 +7,10 @@ import { ChannelSidebar } from "../../../components/layout/ChannelSidebar";
 import { useAppStore } from "../../../store";
 import { mockGuilds, mockChannels } from "../../../mock/data";
 
-function renderChannelSidebar(route?: string, overrides?: Record<string, unknown>) {
+function renderChannelSidebar(
+  route?: string,
+  overrides?: Record<string, unknown>,
+) {
   const guildId = mockGuilds[0].id;
   const channelId = mockChannels[0].id;
   const entry = route ?? `/app/guild/${guildId}/channel/${channelId}`;
@@ -66,7 +69,9 @@ describe("ChannelSidebar", () => {
     renderChannelSidebar();
 
     // First channel (general) is selected via the route
-    const channelItem = screen.getByText("general").closest("[data-testid^='channel-item-']");
+    const channelItem = screen
+      .getByText("general")
+      .closest("[data-testid^='channel-item-']");
     expect(channelItem).toHaveClass("bg-[var(--interactive-active)]");
   });
 

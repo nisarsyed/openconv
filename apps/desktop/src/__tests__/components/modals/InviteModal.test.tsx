@@ -67,7 +67,9 @@ describe("InviteModal", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /copied/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /copied/i }),
+      ).toBeInTheDocument();
     });
   });
 });

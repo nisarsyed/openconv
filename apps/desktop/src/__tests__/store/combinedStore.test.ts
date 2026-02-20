@@ -25,8 +25,15 @@ describe("Combined Store", () => {
 
   it("cross-slice access works via get()", () => {
     const store = createAppStore();
-    const user = { id: "u1", displayName: "test", email: "test@example.com", avatarUrl: null };
-    store.getState().login(user, { publicKey: "pk", privateKey: "sk" }, "token");
+    const user = {
+      id: "u1",
+      displayName: "test",
+      email: "test@example.com",
+      avatarUrl: null,
+    };
+    store
+      .getState()
+      .login(user, { publicKey: "pk", privateKey: "sk" }, "token");
     store.getState().createGuild("Test Guild", null);
     const guildId = store.getState().guildIds[0];
     const guild = store.getState().guildsById[guildId];
@@ -35,8 +42,15 @@ describe("Combined Store", () => {
 
   it("immer allows mutation syntax in actions", () => {
     const store = createAppStore();
-    const user = { id: "u1", displayName: "test", email: "test@example.com", avatarUrl: null };
-    store.getState().login(user, { publicKey: "pk", privateKey: "sk" }, "token");
+    const user = {
+      id: "u1",
+      displayName: "test",
+      email: "test@example.com",
+      avatarUrl: null,
+    };
+    store
+      .getState()
+      .login(user, { publicKey: "pk", privateKey: "sk" }, "token");
     store.getState().createGuild("Guild A", null);
     store.getState().createGuild("Guild B", null);
     expect(store.getState().guildIds).toHaveLength(2);
@@ -45,7 +59,17 @@ describe("Combined Store", () => {
   it("persist partialize only saves the expected keys", async () => {
     // Import the real store to test persist config
     const { useAppStore } = await import("../../store/index");
-    const persistOptions = (useAppStore as unknown as { persist: { getOptions: () => { partialize?: (state: Record<string, unknown>) => Record<string, unknown> } } }).persist.getOptions();
+    const persistOptions = (
+      useAppStore as unknown as {
+        persist: {
+          getOptions: () => {
+            partialize?: (
+              state: Record<string, unknown>,
+            ) => Record<string, unknown>;
+          };
+        };
+      }
+    ).persist.getOptions();
     expect(persistOptions.partialize).toBeDefined();
 
     const fakeState = {

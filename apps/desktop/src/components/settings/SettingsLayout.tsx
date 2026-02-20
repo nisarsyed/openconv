@@ -48,19 +48,29 @@ export function SettingsLayout({ sections, navFooter }: SettingsLayoutProps) {
         </div>
 
         {navFooter && (
-          <div className="border-t border-[var(--border-subtle)] mx-2.5 pt-3 mt-3">
+          <div className="mx-2.5 mt-3 border-t border-[var(--border-subtle)] pt-3">
             {navFooter}
           </div>
         )}
       </nav>
 
-      <div data-testid="settings-content" className="relative flex-1 overflow-y-auto p-8">
+      <div
+        data-testid="settings-content"
+        className="relative flex-1 overflow-y-auto p-8"
+      >
         <button
           aria-label="Close settings"
           onClick={() => navigate(-1)}
-          className="absolute right-4 top-4 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)] transition-all duration-150"
+          className="absolute top-4 right-4 rounded-lg p-1.5 text-[var(--text-muted)] transition-all duration-150 hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)]"
         >
-          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+          >
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
         </button>

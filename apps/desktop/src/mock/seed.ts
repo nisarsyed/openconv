@@ -56,7 +56,8 @@ export function seedStores(): void {
   // For each text channel, sort by createdAt and take last INITIAL_PAGE_SIZE
   for (const [channelId, msgs] of Object.entries(messagesByChannel)) {
     msgs.sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
     const recentIds = msgs.slice(-INITIAL_PAGE_SIZE).map((m) => m.id);
     messageIdsByChannel[channelId] = recentIds;

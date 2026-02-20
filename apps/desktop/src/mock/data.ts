@@ -12,76 +12,346 @@ import type {
 // --- Users (12) ---
 
 export const mockUsers: User[] = [
-  { id: "a1b2c3d4-0001-4000-8000-000000000001", displayName: "Alice Chen", email: "alice@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0002-4000-8000-000000000002", displayName: "Bob Martinez", email: "bob@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0003-4000-8000-000000000003", displayName: "Charlie Kim", email: "charlie@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0004-4000-8000-000000000004", displayName: "Diana Okafor", email: "diana@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0005-4000-8000-000000000005", displayName: "Ethan Nakamura", email: "ethan@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0006-4000-8000-000000000006", displayName: "Fiona Walsh", email: "fiona@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0007-4000-8000-000000000007", displayName: "George Patel", email: "george@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0008-4000-8000-000000000008", displayName: "Hannah Berg", email: "hannah@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-0009-4000-8000-000000000009", displayName: "Isaac Torres", email: "isaac@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-000a-4000-8000-000000000010", displayName: "Julia Sato", email: "julia@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-000b-4000-8000-000000000011", displayName: "Kevin Osei", email: "kevin@example.com", avatarUrl: null },
-  { id: "a1b2c3d4-000c-4000-8000-000000000012", displayName: "Lena Volkov", email: "lena@example.com", avatarUrl: null },
+  {
+    id: "a1b2c3d4-0001-4000-8000-000000000001",
+    displayName: "Alice Chen",
+    email: "alice@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0002-4000-8000-000000000002",
+    displayName: "Bob Martinez",
+    email: "bob@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0003-4000-8000-000000000003",
+    displayName: "Charlie Kim",
+    email: "charlie@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0004-4000-8000-000000000004",
+    displayName: "Diana Okafor",
+    email: "diana@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0005-4000-8000-000000000005",
+    displayName: "Ethan Nakamura",
+    email: "ethan@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0006-4000-8000-000000000006",
+    displayName: "Fiona Walsh",
+    email: "fiona@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0007-4000-8000-000000000007",
+    displayName: "George Patel",
+    email: "george@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0008-4000-8000-000000000008",
+    displayName: "Hannah Berg",
+    email: "hannah@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-0009-4000-8000-000000000009",
+    displayName: "Isaac Torres",
+    email: "isaac@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-000a-4000-8000-000000000010",
+    displayName: "Julia Sato",
+    email: "julia@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-000b-4000-8000-000000000011",
+    displayName: "Kevin Osei",
+    email: "kevin@example.com",
+    avatarUrl: null,
+  },
+  {
+    id: "a1b2c3d4-000c-4000-8000-000000000012",
+    displayName: "Lena Volkov",
+    email: "lena@example.com",
+    avatarUrl: null,
+  },
 ];
 
 // --- Guilds (4) ---
 
 export const mockGuilds: Guild[] = [
-  { id: "b1000000-0001-4000-8000-000000000001", name: "OpenConv Dev", ownerId: mockUsers[0].id, iconUrl: null },
-  { id: "b1000000-0002-4000-8000-000000000002", name: "Design Team", ownerId: mockUsers[3].id, iconUrl: null },
-  { id: "b1000000-0003-4000-8000-000000000003", name: "Gaming Lounge", ownerId: mockUsers[6].id, iconUrl: null },
-  { id: "b1000000-0004-4000-8000-000000000004", name: "Music Fans", ownerId: mockUsers[9].id, iconUrl: null },
+  {
+    id: "b1000000-0001-4000-8000-000000000001",
+    name: "OpenConv Dev",
+    ownerId: mockUsers[0].id,
+    iconUrl: null,
+  },
+  {
+    id: "b1000000-0002-4000-8000-000000000002",
+    name: "Design Team",
+    ownerId: mockUsers[3].id,
+    iconUrl: null,
+  },
+  {
+    id: "b1000000-0003-4000-8000-000000000003",
+    name: "Gaming Lounge",
+    ownerId: mockUsers[6].id,
+    iconUrl: null,
+  },
+  {
+    id: "b1000000-0004-4000-8000-000000000004",
+    name: "Music Fans",
+    ownerId: mockUsers[9].id,
+    iconUrl: null,
+  },
 ];
 
 // --- Channels (5-8 per guild) ---
 
 export const mockChannels: Channel[] = [
   // OpenConv Dev (7 channels)
-  { id: "c1000000-0101-4000-8000-000000000001", guildId: mockGuilds[0].id, name: "general", channelType: "text", position: 0, category: "General" },
-  { id: "c1000000-0102-4000-8000-000000000002", guildId: mockGuilds[0].id, name: "announcements", channelType: "text", position: 1, category: "General" },
-  { id: "c1000000-0103-4000-8000-000000000003", guildId: mockGuilds[0].id, name: "frontend", channelType: "text", position: 2, category: "Development" },
-  { id: "c1000000-0104-4000-8000-000000000004", guildId: mockGuilds[0].id, name: "backend", channelType: "text", position: 3, category: "Development" },
-  { id: "c1000000-0105-4000-8000-000000000005", guildId: mockGuilds[0].id, name: "code-review", channelType: "text", position: 4, category: "Development" },
-  { id: "c1000000-0106-4000-8000-000000000006", guildId: mockGuilds[0].id, name: "General Voice", channelType: "voice", position: 5, category: "Voice" },
-  { id: "c1000000-0107-4000-8000-000000000007", guildId: mockGuilds[0].id, name: "Pair Programming", channelType: "voice", position: 6, category: "Voice" },
+  {
+    id: "c1000000-0101-4000-8000-000000000001",
+    guildId: mockGuilds[0].id,
+    name: "general",
+    channelType: "text",
+    position: 0,
+    category: "General",
+  },
+  {
+    id: "c1000000-0102-4000-8000-000000000002",
+    guildId: mockGuilds[0].id,
+    name: "announcements",
+    channelType: "text",
+    position: 1,
+    category: "General",
+  },
+  {
+    id: "c1000000-0103-4000-8000-000000000003",
+    guildId: mockGuilds[0].id,
+    name: "frontend",
+    channelType: "text",
+    position: 2,
+    category: "Development",
+  },
+  {
+    id: "c1000000-0104-4000-8000-000000000004",
+    guildId: mockGuilds[0].id,
+    name: "backend",
+    channelType: "text",
+    position: 3,
+    category: "Development",
+  },
+  {
+    id: "c1000000-0105-4000-8000-000000000005",
+    guildId: mockGuilds[0].id,
+    name: "code-review",
+    channelType: "text",
+    position: 4,
+    category: "Development",
+  },
+  {
+    id: "c1000000-0106-4000-8000-000000000006",
+    guildId: mockGuilds[0].id,
+    name: "General Voice",
+    channelType: "voice",
+    position: 5,
+    category: "Voice",
+  },
+  {
+    id: "c1000000-0107-4000-8000-000000000007",
+    guildId: mockGuilds[0].id,
+    name: "Pair Programming",
+    channelType: "voice",
+    position: 6,
+    category: "Voice",
+  },
 
   // Design Team (6 channels)
-  { id: "c1000000-0201-4000-8000-000000000008", guildId: mockGuilds[1].id, name: "general", channelType: "text", position: 0, category: "General" },
-  { id: "c1000000-0202-4000-8000-000000000009", guildId: mockGuilds[1].id, name: "inspiration", channelType: "text", position: 1, category: "General" },
-  { id: "c1000000-0203-4000-8000-000000000010", guildId: mockGuilds[1].id, name: "ui-ux", channelType: "text", position: 2, category: "Design" },
-  { id: "c1000000-0204-4000-8000-000000000011", guildId: mockGuilds[1].id, name: "branding", channelType: "text", position: 3, category: "Design" },
-  { id: "c1000000-0205-4000-8000-000000000012", guildId: mockGuilds[1].id, name: "feedback", channelType: "text", position: 4, category: "Design" },
-  { id: "c1000000-0206-4000-8000-000000000013", guildId: mockGuilds[1].id, name: "Design Call", channelType: "voice", position: 5, category: "Voice" },
+  {
+    id: "c1000000-0201-4000-8000-000000000008",
+    guildId: mockGuilds[1].id,
+    name: "general",
+    channelType: "text",
+    position: 0,
+    category: "General",
+  },
+  {
+    id: "c1000000-0202-4000-8000-000000000009",
+    guildId: mockGuilds[1].id,
+    name: "inspiration",
+    channelType: "text",
+    position: 1,
+    category: "General",
+  },
+  {
+    id: "c1000000-0203-4000-8000-000000000010",
+    guildId: mockGuilds[1].id,
+    name: "ui-ux",
+    channelType: "text",
+    position: 2,
+    category: "Design",
+  },
+  {
+    id: "c1000000-0204-4000-8000-000000000011",
+    guildId: mockGuilds[1].id,
+    name: "branding",
+    channelType: "text",
+    position: 3,
+    category: "Design",
+  },
+  {
+    id: "c1000000-0205-4000-8000-000000000012",
+    guildId: mockGuilds[1].id,
+    name: "feedback",
+    channelType: "text",
+    position: 4,
+    category: "Design",
+  },
+  {
+    id: "c1000000-0206-4000-8000-000000000013",
+    guildId: mockGuilds[1].id,
+    name: "Design Call",
+    channelType: "voice",
+    position: 5,
+    category: "Voice",
+  },
 
   // Gaming Lounge (6 channels)
-  { id: "c1000000-0301-4000-8000-000000000014", guildId: mockGuilds[2].id, name: "general", channelType: "text", position: 0, category: "Chat" },
-  { id: "c1000000-0302-4000-8000-000000000015", guildId: mockGuilds[2].id, name: "lfg", channelType: "text", position: 1, category: "Chat" },
-  { id: "c1000000-0303-4000-8000-000000000016", guildId: mockGuilds[2].id, name: "memes", channelType: "text", position: 2, category: "Fun" },
-  { id: "c1000000-0304-4000-8000-000000000017", guildId: mockGuilds[2].id, name: "clips", channelType: "text", position: 3, category: "Fun" },
-  { id: "c1000000-0305-4000-8000-000000000018", guildId: mockGuilds[2].id, name: "strategy", channelType: "text", position: 4, category: "Games" },
-  { id: "c1000000-0306-4000-8000-000000000019", guildId: mockGuilds[2].id, name: "Game Night", channelType: "voice", position: 5, category: "Voice" },
+  {
+    id: "c1000000-0301-4000-8000-000000000014",
+    guildId: mockGuilds[2].id,
+    name: "general",
+    channelType: "text",
+    position: 0,
+    category: "Chat",
+  },
+  {
+    id: "c1000000-0302-4000-8000-000000000015",
+    guildId: mockGuilds[2].id,
+    name: "lfg",
+    channelType: "text",
+    position: 1,
+    category: "Chat",
+  },
+  {
+    id: "c1000000-0303-4000-8000-000000000016",
+    guildId: mockGuilds[2].id,
+    name: "memes",
+    channelType: "text",
+    position: 2,
+    category: "Fun",
+  },
+  {
+    id: "c1000000-0304-4000-8000-000000000017",
+    guildId: mockGuilds[2].id,
+    name: "clips",
+    channelType: "text",
+    position: 3,
+    category: "Fun",
+  },
+  {
+    id: "c1000000-0305-4000-8000-000000000018",
+    guildId: mockGuilds[2].id,
+    name: "strategy",
+    channelType: "text",
+    position: 4,
+    category: "Games",
+  },
+  {
+    id: "c1000000-0306-4000-8000-000000000019",
+    guildId: mockGuilds[2].id,
+    name: "Game Night",
+    channelType: "voice",
+    position: 5,
+    category: "Voice",
+  },
 
   // Music Fans (5 channels)
-  { id: "c1000000-0401-4000-8000-000000000020", guildId: mockGuilds[3].id, name: "general", channelType: "text", position: 0, category: "Chat" },
-  { id: "c1000000-0402-4000-8000-000000000021", guildId: mockGuilds[3].id, name: "recommendations", channelType: "text", position: 1, category: "Chat" },
-  { id: "c1000000-0403-4000-8000-000000000022", guildId: mockGuilds[3].id, name: "production", channelType: "text", position: 2, category: "Music" },
-  { id: "c1000000-0404-4000-8000-000000000023", guildId: mockGuilds[3].id, name: "vinyl-corner", channelType: "text", position: 3, category: "Music" },
-  { id: "c1000000-0405-4000-8000-000000000024", guildId: mockGuilds[3].id, name: "Listening Party", channelType: "voice", position: 4, category: "Voice" },
+  {
+    id: "c1000000-0401-4000-8000-000000000020",
+    guildId: mockGuilds[3].id,
+    name: "general",
+    channelType: "text",
+    position: 0,
+    category: "Chat",
+  },
+  {
+    id: "c1000000-0402-4000-8000-000000000021",
+    guildId: mockGuilds[3].id,
+    name: "recommendations",
+    channelType: "text",
+    position: 1,
+    category: "Chat",
+  },
+  {
+    id: "c1000000-0403-4000-8000-000000000022",
+    guildId: mockGuilds[3].id,
+    name: "production",
+    channelType: "text",
+    position: 2,
+    category: "Music",
+  },
+  {
+    id: "c1000000-0404-4000-8000-000000000023",
+    guildId: mockGuilds[3].id,
+    name: "vinyl-corner",
+    channelType: "text",
+    position: 3,
+    category: "Music",
+  },
+  {
+    id: "c1000000-0405-4000-8000-000000000024",
+    guildId: mockGuilds[3].id,
+    name: "Listening Party",
+    channelType: "voice",
+    position: 4,
+    category: "Voice",
+  },
 ];
 
 // --- Roles (3 per guild) ---
 
 export const mockRoles: Role[] = mockGuilds.flatMap((guild, gi) => [
-  { id: `r1000000-${String(gi + 1).padStart(2, "0")}01-4000-8000-000000000001`, guildId: guild.id, name: "Admin", color: "#e74c3c", position: 2 },
-  { id: `r1000000-${String(gi + 1).padStart(2, "0")}02-4000-8000-000000000002`, guildId: guild.id, name: "Moderator", color: "#e67e22", position: 1 },
-  { id: `r1000000-${String(gi + 1).padStart(2, "0")}03-4000-8000-000000000003`, guildId: guild.id, name: "Member", color: "#3498db", position: 0 },
+  {
+    id: `r1000000-${String(gi + 1).padStart(2, "0")}01-4000-8000-000000000001`,
+    guildId: guild.id,
+    name: "Admin",
+    color: "#e74c3c",
+    position: 2,
+  },
+  {
+    id: `r1000000-${String(gi + 1).padStart(2, "0")}02-4000-8000-000000000002`,
+    guildId: guild.id,
+    name: "Moderator",
+    color: "#e67e22",
+    position: 1,
+  },
+  {
+    id: `r1000000-${String(gi + 1).padStart(2, "0")}03-4000-8000-000000000003`,
+    guildId: guild.id,
+    name: "Member",
+    color: "#3498db",
+    position: 0,
+  },
 ]);
 
 // --- Members ---
 
-function getRolesForGuild(guildIndex: number): { admin: string; mod: string; member: string } {
+function getRolesForGuild(guildIndex: number): {
+  admin: string;
+  mod: string;
+  member: string;
+} {
   const base = guildIndex * 3;
   return {
     admin: mockRoles[base].id,
@@ -197,7 +467,10 @@ function generateMessages(
 
   for (let i = 0; i < count; i++) {
     // Switch sender every 3-5 messages
-    if (messagesFromCurrentSender >= maxFromSameSender || (messagesFromCurrentSender >= 2 && i % 3 === 0)) {
+    if (
+      messagesFromCurrentSender >= maxFromSameSender ||
+      (messagesFromCurrentSender >= 2 && i % 3 === 0)
+    ) {
       currentSenderIdx = (currentSenderIdx + 1) % senderIds.length;
       messagesFromCurrentSender = 0;
     }
@@ -206,7 +479,8 @@ function generateMessages(
     const timeOffset = sevenDaysMs - (i / count) * sevenDaysMs;
     const jitter = (((i * 7 + 13) % 30) + 1) * 60 * 1000; // 1-30 min jitter
     const timestamp = new Date(now - timeOffset + jitter).toISOString();
-    const content = MESSAGE_CONTENT_POOL[(i * 7 + 3) % MESSAGE_CONTENT_POOL.length];
+    const content =
+      MESSAGE_CONTENT_POOL[(i * 7 + 3) % MESSAGE_CONTENT_POOL.length];
     const msgId = `${baseUuidPrefix}-${String(i + 1).padStart(4, "0")}-4000-8000-000000000000`;
 
     const attachments: FileAttachment[] = [];
@@ -218,14 +492,19 @@ function generateMessages(
         fileName: isImage ? "screenshot.png" : "document.pdf",
         fileSize: isImage ? 245760 : 102400,
         mimeType: isImage ? "image/png" : "application/pdf",
-        url: isImage ? "https://placeholder.test/screenshot.png" : "https://placeholder.test/document.pdf",
-        thumbnailUrl: isImage ? "https://placeholder.test/screenshot-thumb.png" : null,
+        url: isImage
+          ? "https://placeholder.test/screenshot.png"
+          : "https://placeholder.test/document.pdf",
+        thumbnailUrl: isImage
+          ? "https://placeholder.test/screenshot-thumb.png"
+          : null,
       });
     }
 
-    const editedAt = i % 25 === 0 && i > 0
-      ? new Date(now - timeOffset + jitter + 300000).toISOString()
-      : null;
+    const editedAt =
+      i % 25 === 0 && i > 0
+        ? new Date(now - timeOffset + jitter + 300000).toISOString()
+        : null;
 
     messages.push({
       id: msgId,

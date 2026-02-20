@@ -11,13 +11,11 @@ export function MemberGroup({ role, count, children }: MemberGroupProps) {
     <div data-testid="member-group">
       <h3
         data-testid="role-header"
-        className="px-3 pt-5 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"
+        className="px-3 pt-5 pb-1.5 text-[11px] font-semibold tracking-wider text-[var(--text-muted)] uppercase"
       >
         {role.name} — {count}
       </h3>
-      <div className="px-1.5 space-y-0.5">
-        {children}
-      </div>
+      <div className="space-y-0.5 px-1.5">{children}</div>
     </div>
   );
 }

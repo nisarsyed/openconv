@@ -1,4 +1,11 @@
-import { useState, useRef, useCallback, useEffect, cloneElement, useId } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  cloneElement,
+  useId,
+} from "react";
 
 export interface TooltipProps {
   content: string;
@@ -34,13 +41,19 @@ export function Tooltip({ content, children, position = "top" }: TooltipProps) {
   };
 
   return (
-    <span className="relative inline-block" onMouseEnter={show} onMouseLeave={hide}>
-      {cloneElement(children, { "aria-describedby": visible ? tooltipId : undefined } as Record<string, unknown>)}
+    <span
+      className="relative inline-block"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+    >
+      {cloneElement(children, {
+        "aria-describedby": visible ? tooltipId : undefined,
+      } as Record<string, unknown>)}
       {visible && (
         <span
           id={tooltipId}
           role="tooltip"
-          className={`absolute z-50 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] bg-[var(--surface-popover)] border border-[var(--border-subtle)] shadow-[var(--shadow-md)] pointer-events-none animate-fade-in ${positionClasses[position]}`}
+          className={`animate-fade-in pointer-events-none absolute z-50 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-popover)] px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-[var(--text-primary)] shadow-[var(--shadow-md)] ${positionClasses[position]}`}
         >
           {content}
         </span>

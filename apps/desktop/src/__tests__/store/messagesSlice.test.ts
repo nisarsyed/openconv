@@ -7,9 +7,14 @@ describe("MessagesSlice", () => {
   beforeEach(() => {
     store = createAppStore();
     store.getState().login(
-      { id: "u1", displayName: "test", email: "user@test.com", avatarUrl: null },
+      {
+        id: "u1",
+        displayName: "test",
+        email: "user@test.com",
+        avatarUrl: null,
+      },
       { publicKey: "pk", privateKey: "sk" },
-      "mock-token"
+      "mock-token",
     );
   });
 

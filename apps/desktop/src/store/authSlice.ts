@@ -6,9 +6,15 @@ export interface AuthSlice {
   keyPair: { publicKey: string; privateKey: string } | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (user: User, keyPair: { publicKey: string; privateKey: string }, token: string) => void;
+  login: (
+    user: User,
+    keyPair: { publicKey: string; privateKey: string },
+    token: string,
+  ) => void;
   logout: () => void;
-  updateProfile: (updates: Partial<Pick<User, "displayName" | "avatarUrl">>) => void;
+  updateProfile: (
+    updates: Partial<Pick<User, "displayName" | "avatarUrl">>,
+  ) => void;
 }
 
 export const createAuthSlice: SliceCreator<AuthSlice> = (set) => ({

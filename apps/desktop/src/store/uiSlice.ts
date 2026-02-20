@@ -81,5 +81,6 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
       draft.scrollPositionByChannel[channelId] = position;
     }),
 
-  getScrollPosition: (channelId) => get().scrollPositionByChannel[channelId] ?? 0,
+  getScrollPosition: (channelId) =>
+    get().scrollPositionByChannel[channelId] ?? 0,
 });

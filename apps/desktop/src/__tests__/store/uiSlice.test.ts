@@ -3,7 +3,9 @@ import { createAppStore } from "./helpers";
 
 describe("UISlice", () => {
   let store: ReturnType<typeof createAppStore>;
-  beforeEach(() => { store = createAppStore(); });
+  beforeEach(() => {
+    store = createAppStore();
+  });
 
   it("toggleTheme switches between dark and light", () => {
     expect(store.getState().theme).toBe("dark");

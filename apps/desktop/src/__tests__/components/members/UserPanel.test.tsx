@@ -26,10 +26,7 @@ function renderUserPanel() {
           </>
         }
       />
-      <Route
-        path="/app/settings"
-        element={<LocationDisplay />}
-      />
+      <Route path="/app/settings" element={<LocationDisplay />} />
     </Routes>,
     {
       initialEntries: [`/app/guild/${guildId}/channel/${channelId}`],
