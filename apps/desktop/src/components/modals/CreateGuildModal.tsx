@@ -35,17 +35,19 @@ export function CreateGuildModal() {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             aria-label="Upload server icon"
-            className="w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] border-2 border-dashed border-[var(--border-primary)] flex items-center justify-center overflow-hidden hover:border-[var(--bg-accent)] transition-all duration-200 cursor-pointer"
+            className="flex h-20 w-20 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-[var(--border-primary)] bg-[var(--bg-tertiary)] transition-all duration-200 hover:border-[var(--bg-accent)]"
           >
             {iconPreview ? (
               <img
                 src={iconPreview}
                 alt="Server icon preview"
-                className="w-full h-full object-cover"
+                className="h-full w-full object-cover"
               />
             ) : (
-              <span className="text-[var(--text-muted)] text-xs text-center leading-tight">
-                Upload<br />Icon
+              <span className="text-center text-xs leading-tight text-[var(--text-muted)]">
+                Upload
+                <br />
+                Icon
               </span>
             )}
           </button>

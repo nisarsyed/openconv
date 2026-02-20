@@ -69,7 +69,7 @@ export function ImageViewer({ imageUrl, allImages }: ImageViewerProps) {
       <button
         onClick={closeModal}
         aria-label="Close"
-        className="absolute top-4 right-4 z-10 text-white/80 hover:text-white text-2xl leading-none p-2"
+        className="absolute top-4 right-4 z-10 p-2 text-2xl leading-none text-white/80 hover:text-white"
       >
         &#x2715;
       </button>
@@ -82,7 +82,7 @@ export function ImageViewer({ imageUrl, allImages }: ImageViewerProps) {
             goPrev();
           }}
           aria-label="Previous image"
-          className="absolute left-4 z-10 text-white/80 hover:text-white text-3xl leading-none p-2"
+          className="absolute left-4 z-10 p-2 text-3xl leading-none text-white/80 hover:text-white"
         >
           &#x2039;
         </button>
@@ -103,7 +103,7 @@ export function ImageViewer({ imageUrl, allImages }: ImageViewerProps) {
             goNext();
           }}
           aria-label="Next image"
-          className="absolute right-4 z-10 text-white/80 hover:text-white text-3xl leading-none p-2"
+          className="absolute right-4 z-10 p-2 text-3xl leading-none text-white/80 hover:text-white"
         >
           &#x203A;
         </button>
@@ -111,7 +111,7 @@ export function ImageViewer({ imageUrl, allImages }: ImageViewerProps) {
 
       {/* Image counter */}
       {hasMultiple && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/80 text-sm">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-sm text-white/80">
           {currentIndex + 1} / {allImages.length}
         </div>
       )}

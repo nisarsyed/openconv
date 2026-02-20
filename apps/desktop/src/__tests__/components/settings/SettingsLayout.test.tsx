@@ -6,7 +6,11 @@ import { SettingsLayout } from "../../../components/settings/SettingsLayout";
 
 const sections = [
   { id: "account", label: "My Account", content: <div>Account Content</div> },
-  { id: "appearance", label: "Appearance", content: <div>Appearance Content</div> },
+  {
+    id: "appearance",
+    label: "Appearance",
+    content: <div>Appearance Content</div>,
+  },
 ];
 
 function renderSettingsLayout() {

@@ -48,8 +48,7 @@ describe("seedStores", () => {
 
   it("populates membersById and memberIdsByGuild", () => {
     seedStores();
-    const { membersById, memberIdsByGuild, guildIds } =
-      useAppStore.getState();
+    const { membersById, memberIdsByGuild, guildIds } = useAppStore.getState();
     expect(Object.keys(membersById).length).toBeGreaterThan(0);
     for (const guildId of guildIds) {
       expect(memberIdsByGuild[guildId]).toBeDefined();

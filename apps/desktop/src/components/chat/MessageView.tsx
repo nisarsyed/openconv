@@ -41,7 +41,10 @@ export function MessageView() {
     channelId ? (s.hasMore[channelId] ?? false) : false,
   );
 
-  const displayItems = useMemo(() => groupMessages(channelMessages), [channelMessages]);
+  const displayItems = useMemo(
+    () => groupMessages(channelMessages),
+    [channelMessages],
+  );
 
   useEffect(() => {
     if (messageIds.length > prevMessageCountRef.current && !isAtBottom) {
@@ -66,9 +69,14 @@ export function MessageView() {
     }
 
     try {
-      const olderMessages = await mockFetchMessages(channelId, oldest.createdAt);
+      const olderMessages = await mockFetchMessages(
+        channelId,
+        oldest.createdAt,
+      );
       if (olderMessages.length > 0) {
-        useAppStore.getState().prependMessages(channelId, [...olderMessages].reverse());
+        useAppStore
+          .getState()
+          .prependMessages(channelId, [...olderMessages].toReversed());
       }
       if (olderMessages.length < 20) {
         useAppStore.getState().setHasMore(channelId, false);
@@ -86,17 +94,12 @@ export function MessageView() {
     setHasNewMessages(false);
   }, [displayItems.length]);
 
-  const renderItem = useCallback(
-    (_index: number, item: DisplayItem) => {
-      if (item.type === "date-separator") {
-        return <DateSeparator date={item.date} />;
-      }
-      return (
-        <MessageGroup senderId={item.senderId} messages={item.messages} />
-      );
-    },
-    [],
-  );
+  const renderItem = useCallback((_index: number, item: DisplayItem) => {
+    if (item.type === "date-separator") {
+      return <DateSeparator date={item.date} />;
+    }
+    return <MessageGroup senderId={item.senderId} messages={item.messages} />;
+  }, []);
 
   if (!channelId) {
     return (
@@ -109,7 +112,7 @@ export function MessageView() {
   return (
     <div className="relative flex-1 overflow-hidden" data-testid="message-view">
       {loading && (
-        <div className="absolute left-1/2 top-2 z-10 -translate-x-1/2">
+        <div className="absolute top-2 left-1/2 z-10 -translate-x-1/2">
           <Spinner size="sm" />
         </div>
       )}

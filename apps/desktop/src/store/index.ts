@@ -44,21 +44,17 @@ const storeSlices: StateCreator<
 
 export const useAppStore = create<AppStore>()(
   devtools(
-    persist(
-      subscribeWithSelector(immer(storeSlices)),
-      {
-        name: "openconv-store",
-        partialize: (state) => ({
-          lastVisitedGuildId: state.lastVisitedGuildId,
-          lastVisitedChannelByGuild: state.lastVisitedChannelByGuild,
-          theme: state.theme,
-          channelSidebarVisible: state.channelSidebarVisible,
-          memberListVisible: state.memberListVisible,
-        }),
-      },
-    ),
+    persist(subscribeWithSelector(immer(storeSlices)), {
+      name: "openconv-store",
+      partialize: (state) => ({
+        lastVisitedGuildId: state.lastVisitedGuildId,
+        lastVisitedChannelByGuild: state.lastVisitedChannelByGuild,
+        theme: state.theme,
+        channelSidebarVisible: state.channelSidebarVisible,
+        memberListVisible: state.memberListVisible,
+      }),
+    }),
   ),
 );
 
-export const createAppStore = () =>
-  create<AppStore>()(immer(storeSlices));
+export const createAppStore = () => create<AppStore>()(immer(storeSlices));

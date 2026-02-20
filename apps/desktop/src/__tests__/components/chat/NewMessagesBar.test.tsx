@@ -12,9 +12,7 @@ describe("NewMessagesBar", () => {
   });
 
   it("is visible when visible is true", () => {
-    render(
-      <NewMessagesBar visible={true} onScrollToBottom={vi.fn()} />,
-    );
+    render(<NewMessagesBar visible={true} onScrollToBottom={vi.fn()} />);
     expect(screen.getByText(/jump to latest/i)).toBeInTheDocument();
   });
 

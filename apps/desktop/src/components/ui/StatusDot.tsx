@@ -20,7 +20,11 @@ const statusColors: Record<StatusDotProps["status"], string> = {
 
 const sizeMap = { sm: 8, md: 12 };
 
-export function StatusDot({ status, size = "md", className = "" }: StatusDotProps) {
+export function StatusDot({
+  status,
+  size = "md",
+  className = "",
+}: StatusDotProps) {
   const px = sizeMap[size];
   return (
     <span

@@ -60,7 +60,7 @@ export function MessageGroup({ senderId, messages }: MessageGroupProps) {
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <span
-              className="text-sm font-semibold hover:underline cursor-pointer tracking-[-0.01em]"
+              className="cursor-pointer text-sm font-semibold tracking-[-0.01em] hover:underline"
               style={nameColor ? { color: nameColor } : undefined}
               data-testid="message-author"
             >

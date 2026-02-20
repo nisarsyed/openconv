@@ -2,10 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
-const cssContent = readFileSync(
-  resolve(__dirname, "../index.css"),
-  "utf-8",
-);
+const cssContent = readFileSync(resolve(__dirname, "../index.css"), "utf-8");
 
 const DARK_TOKENS = [
   "--bg-primary",
@@ -53,7 +50,10 @@ describe("Theme system", () => {
     let match;
     while ((match = regex.exec(cssContent)) !== null) {
       // Exclude :root.dark by checking what's before the brace
-      const before = cssContent.slice(Math.max(0, match.index - 5), match.index + 5);
+      const before = cssContent.slice(
+        Math.max(0, match.index - 5),
+        match.index + 5,
+      );
       if (!before.includes(".dark")) {
         rootBlocks.push(match[1]);
       }
@@ -72,7 +72,10 @@ describe("Theme system", () => {
     const regex = /:root\s*\{([^}]+)\}/gs;
     let match;
     while ((match = regex.exec(cssContent)) !== null) {
-      const before = cssContent.slice(Math.max(0, match.index - 5), match.index + 5);
+      const before = cssContent.slice(
+        Math.max(0, match.index - 5),
+        match.index + 5,
+      );
       if (!before.includes(".dark")) {
         rootBlocks.push(match[1]);
       }

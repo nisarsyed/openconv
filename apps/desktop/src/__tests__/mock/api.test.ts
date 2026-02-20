@@ -36,7 +36,10 @@ describe("mockFetchMessages", () => {
     const firstPage = await mockFetchMessages(textChannel.id);
     expect(firstPage.length).toBeGreaterThan(0);
     const oldest = firstPage[firstPage.length - 1];
-    const secondPage = await mockFetchMessages(textChannel.id, oldest.createdAt);
+    const secondPage = await mockFetchMessages(
+      textChannel.id,
+      oldest.createdAt,
+    );
     if (secondPage.length > 0) {
       const firstPageIds = new Set(firstPage.map((m) => m.id));
       for (const msg of secondPage) {
@@ -87,8 +90,9 @@ describe("mockSendMessage", () => {
     const runs = 200;
     for (let i = 0; i < runs; i++) {
       let failed = false;
-      const promise = mockSendMessage(textChannel.id, `msg-${i}`)
-        .catch(() => { failed = true; });
+      const promise = mockSendMessage(textChannel.id, `msg-${i}`).catch(() => {
+        failed = true;
+      });
       await vi.advanceTimersByTimeAsync(500);
       await promise;
       if (failed) failures++;
@@ -96,7 +100,7 @@ describe("mockSendMessage", () => {
     vi.useRealTimers();
     const rate = failures / runs;
     expect(rate).toBeGreaterThan(0.005);
-    expect(rate).toBeLessThan(0.20);
+    expect(rate).toBeLessThan(0.2);
   });
 });
 

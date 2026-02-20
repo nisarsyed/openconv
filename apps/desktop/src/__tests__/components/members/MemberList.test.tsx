@@ -101,7 +101,9 @@ describe("MemberList", () => {
     const { container } = renderMemberList({ memberListVisible: false });
 
     // MemberList should not render content when collapsed
-    expect(container.querySelector("[data-testid='member-list-content']")).not.toBeInTheDocument();
+    expect(
+      container.querySelector("[data-testid='member-list-content']"),
+    ).not.toBeInTheDocument();
   });
 
   it("roles are ordered by position (highest first)", () => {

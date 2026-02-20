@@ -32,8 +32,9 @@ export function AppLayout() {
     if (!channelId) {
       const guildChannelIds = state.channelIdsByGuild[guildId] ?? [];
       channelId =
-        guildChannelIds.find((cid) => state.channelsById[cid]?.channelType === "text") ??
-        guildChannelIds[0];
+        guildChannelIds.find(
+          (cid) => state.channelsById[cid]?.channelType === "text",
+        ) ?? guildChannelIds[0];
     }
 
     if (channelId) {

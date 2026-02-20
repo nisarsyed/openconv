@@ -10,7 +10,13 @@ export interface MemberItemProps {
   onClick: (e: React.MouseEvent) => void;
 }
 
-export function MemberItem({ user, member, presence, roleColor, onClick }: MemberItemProps) {
+export function MemberItem({
+  user,
+  member,
+  presence,
+  roleColor,
+  onClick,
+}: MemberItemProps) {
   const displayName = member.nickname ?? user.displayName;
   const isOffline = presence === "offline";
 
@@ -23,7 +29,7 @@ export function MemberItem({ user, member, presence, roleColor, onClick }: Membe
     >
       <div className="relative shrink-0">
         <Avatar src={user.avatarUrl} name={displayName} size="md" />
-        <span className="absolute -bottom-0.5 -right-0.5">
+        <span className="absolute -right-0.5 -bottom-0.5">
           <StatusDot status={presence} size="sm" />
         </span>
       </div>

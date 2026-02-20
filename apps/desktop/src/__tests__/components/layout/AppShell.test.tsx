@@ -18,7 +18,10 @@ function renderAppShell(route?: string) {
   return renderWithProviders(
     <Routes>
       <Route path="/app" element={<AppShell />}>
-        <Route path="guild/:guildId/channel/:channelId" element={<div data-testid="channel-view">Channel</div>} />
+        <Route
+          path="guild/:guildId/channel/:channelId"
+          element={<div data-testid="channel-view">Channel</div>}
+        />
         <Route path="settings" element={<div>Settings</div>} />
         <Route index element={<div>Welcome</div>} />
       </Route>

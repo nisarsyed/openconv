@@ -33,9 +33,7 @@ describe("mock data - guilds", () => {
 describe("mock data - channels", () => {
   it("each guild has 5-8 channels", () => {
     for (const guild of mockGuilds) {
-      const guildChannels = mockChannels.filter(
-        (c) => c.guildId === guild.id,
-      );
+      const guildChannels = mockChannels.filter((c) => c.guildId === guild.id);
       expect(guildChannels.length).toBeGreaterThanOrEqual(5);
       expect(guildChannels.length).toBeLessThanOrEqual(8);
     }
@@ -82,9 +80,7 @@ describe("mock data - users", () => {
 
 describe("mock data - messages", () => {
   it("messages exist for text channels", () => {
-    const textChannels = mockChannels.filter(
-      (c) => c.channelType === "text",
-    );
+    const textChannels = mockChannels.filter((c) => c.channelType === "text");
     for (const channel of textChannels) {
       const channelMessages = mockMessages.filter(
         (m) => m.channelId === channel.id,
@@ -133,9 +129,7 @@ describe("mock data - roles", () => {
 describe("mock data - members", () => {
   it("each guild has members", () => {
     for (const guild of mockGuilds) {
-      const guildMembers = mockMembers.filter(
-        (m) => m.guildId === guild.id,
-      );
+      const guildMembers = mockMembers.filter((m) => m.guildId === guild.id);
       expect(guildMembers.length).toBeGreaterThan(0);
     }
   });

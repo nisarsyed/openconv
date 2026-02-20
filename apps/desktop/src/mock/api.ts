@@ -1,6 +1,19 @@
-import type { Message, Guild, Channel, Member, User, FileAttachment } from "../types";
+import type {
+  Message,
+  Guild,
+  Channel,
+  Member,
+  User,
+  FileAttachment,
+} from "../types";
 import { useAppStore } from "../store";
-import { mockUsers, mockGuilds, mockChannels, mockMessages, mockMembers } from "./data";
+import {
+  mockUsers,
+  mockGuilds,
+  mockChannels,
+  mockMessages,
+  mockMembers,
+} from "./data";
 
 function delay(minMs: number, maxMs: number): Promise<void> {
   const ms = minMs + Math.random() * (maxMs - minMs);
@@ -16,7 +29,10 @@ export async function mockFetchMessages(
 
   const channelMessages = mockMessages
     .filter((m) => m.channelId === channelId)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    .toSorted(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
 
   let filtered = channelMessages;
   if (before) {
@@ -29,7 +45,7 @@ export async function mockFetchMessages(
   // Take the last `limit` messages (newest) from the filtered set
   const page = filtered.slice(-limit);
   // Return newest first
-  return page.reverse();
+  return page.toReversed();
 }
 
 export async function mockSendMessage(
@@ -80,9 +96,9 @@ export async function mockLogin(email: string): Promise<{
 }> {
   await delay(500, 500);
 
-  const user = mockUsers.find(
-    (u) => u.email.toLowerCase() === email.toLowerCase(),
-  ) ?? mockUsers[0];
+  const user =
+    mockUsers.find((u) => u.email.toLowerCase() === email.toLowerCase()) ??
+    mockUsers[0];
 
   const id = crypto.randomUUID();
   return {

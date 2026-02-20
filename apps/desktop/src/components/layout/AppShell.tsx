@@ -66,7 +66,10 @@ export function AppShell() {
           collapsible
           collapsedSize={0}
         >
-          <aside data-testid="member-list" className="h-full bg-[var(--bg-secondary)]">
+          <aside
+            data-testid="member-list"
+            className="h-full bg-[var(--bg-secondary)]"
+          >
             <MemberList />
           </aside>
         </Panel>

@@ -13,11 +13,11 @@ export function ChannelView() {
     channelId: string;
     guildId: string;
   }>();
-  const channel = useAppStore(
-    (s) => (channelId ? s.channelsById[channelId] : undefined),
+  const channel = useAppStore((s) =>
+    channelId ? s.channelsById[channelId] : undefined,
   );
-  const typingUserIds = useAppStore(
-    (s) => (channelId ? (s.typingUsers[channelId] ?? EMPTY_TYPING) : EMPTY_TYPING),
+  const typingUserIds = useAppStore((s) =>
+    channelId ? (s.typingUsers[channelId] ?? EMPTY_TYPING) : EMPTY_TYPING,
   );
 
   const typingNames = useMemo(() => {
@@ -45,17 +45,25 @@ export function ChannelView() {
     let clearTimer: ReturnType<typeof setTimeout>;
 
     const scheduleTyping = () => {
-      mainTimer = setTimeout(() => {
-        const count = Math.floor(Math.random() * 3) + 1;
-        const shuffled = [...otherUserIds].sort(() => Math.random() - 0.5);
-        const selected = shuffled.slice(0, count);
-        useAppStore.getState().setTypingUsers(channelId, selected);
+      mainTimer = setTimeout(
+        () => {
+          const count = Math.floor(Math.random() * 3) + 1;
+          const shuffled = [...otherUserIds].toSorted(
+            () => Math.random() - 0.5,
+          );
+          const selected = shuffled.slice(0, count);
+          useAppStore.getState().setTypingUsers(channelId, selected);
 
-        clearTimer = setTimeout(() => {
-          useAppStore.getState().setTypingUsers(channelId, []);
-          scheduleTyping();
-        }, 2000 + Math.random() * 2000);
-      }, 5000 + Math.random() * 5000);
+          clearTimer = setTimeout(
+            () => {
+              useAppStore.getState().setTypingUsers(channelId, []);
+              scheduleTyping();
+            },
+            2000 + Math.random() * 2000,
+          );
+        },
+        5000 + Math.random() * 5000,
+      );
     };
 
     scheduleTyping();

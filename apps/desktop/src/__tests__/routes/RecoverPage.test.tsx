@@ -19,7 +19,9 @@ describe("RecoverPage", () => {
   it("renders email input and submit button", () => {
     renderRecoverPage();
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /send recovery/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /send recovery/i }),
+    ).toBeInTheDocument();
   });
 
   it("shows success message after submission", async () => {

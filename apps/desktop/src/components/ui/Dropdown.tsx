@@ -8,7 +8,7 @@ export interface DropdownItem {
 }
 
 export interface DropdownProps {
-  trigger: React.ReactElement;
+  trigger: React.ReactElement<{ onClick?: () => void }>;
   items: DropdownItem[];
   onSelect: (itemId: string) => void;
 }
@@ -20,7 +20,10 @@ export function Dropdown({ trigger, items, onSelect }: DropdownProps) {
   useEffect(() => {
     if (!open) return;
     function handleClick(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     }
@@ -32,13 +35,11 @@ export function Dropdown({ trigger, items, onSelect }: DropdownProps) {
     <div ref={containerRef} className="relative inline-block">
       {cloneElement(trigger, { onClick: () => setOpen((prev) => !prev) })}
       {open && (
-        <ul
-          className="absolute left-0 top-full z-50 mt-1.5 min-w-[160px] rounded-lg bg-[var(--surface-popover)] border border-[var(--border-subtle)] py-1 shadow-[var(--shadow-lg)] animate-scale-in"
-        >
+        <ul className="animate-scale-in absolute top-full left-0 z-50 mt-1.5 min-w-[160px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-popover)] py-1 shadow-[var(--shadow-lg)]">
           {items.map((item) => (
             <li
               key={item.id}
-              className={`flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors mx-1 rounded-md hover:bg-[var(--interactive-hover)] ${item.danger ? "text-red-400 hover:text-red-300" : "text-[var(--text-primary)]"}`}
+              className={`mx-1 flex cursor-pointer items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-[var(--interactive-hover)] ${item.danger ? "text-red-400 hover:text-red-300" : "text-[var(--text-primary)]"}`}
               onClick={() => {
                 onSelect(item.id);
                 setOpen(false);

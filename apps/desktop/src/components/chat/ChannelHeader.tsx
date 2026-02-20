@@ -3,7 +3,9 @@ import { useAppStore } from "../../store";
 
 export function ChannelHeader() {
   const { channelId } = useParams<{ channelId: string }>();
-  const channel = useAppStore((s) => (channelId ? s.channelsById[channelId] : undefined));
+  const channel = useAppStore((s) =>
+    channelId ? s.channelsById[channelId] : undefined,
+  );
   const memberListVisible = useAppStore((s) => s.memberListVisible);
   const toggleMemberList = useAppStore((s) => s.toggleMemberList);
 
@@ -17,8 +19,10 @@ export function ChannelHeader() {
       className="flex h-12 items-center justify-between border-b border-[var(--border-subtle)] px-4"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
-      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)] tracking-[-0.01em]">
-        <span className="text-[var(--text-muted)] text-base">{isVoice ? "\u{1F50A}" : "#"}</span>
+      <h2 className="flex items-center gap-1.5 text-sm font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
+        <span className="text-base text-[var(--text-muted)]">
+          {isVoice ? "\u{1F50A}" : "#"}
+        </span>
         {channel.name}
       </h2>
 
@@ -26,7 +30,7 @@ export function ChannelHeader() {
         {/* Search placeholder */}
         <button
           aria-label="Search"
-          className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)] transition-all duration-150"
+          className="rounded-lg p-1.5 text-[var(--text-muted)] transition-all duration-150 hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)]"
         >
           <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
             <path
@@ -40,7 +44,7 @@ export function ChannelHeader() {
         {/* Pinned messages placeholder */}
         <button
           aria-label="Pinned messages"
-          className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)] transition-all duration-150"
+          className="rounded-lg p-1.5 text-[var(--text-muted)] transition-all duration-150 hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)]"
         >
           <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
             <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />

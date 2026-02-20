@@ -5,8 +5,7 @@ export interface SelectOption {
   label: string;
 }
 
-export interface SelectProps
-  extends React.SelectHTMLAttributes<HTMLSelectElement> {
+export interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
   options: SelectOption[];
   error?: string;
@@ -28,14 +27,14 @@ export function Select({
       {label && (
         <label
           htmlFor={id}
-          className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]"
+          className="text-[11px] font-semibold tracking-wider text-[var(--text-secondary)] uppercase"
         >
           {label}
         </label>
       )}
       <select
         id={id}
-        className={`rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-primary)] px-3 py-2 text-sm outline-none transition-all duration-200 focus:border-[var(--bg-accent)] focus:shadow-[0_0_0_3px_var(--bg-accent-subtle)] ${error ? "border-red-500" : ""} ${className}`}
+        className={`rounded-lg border border-[var(--border-primary)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] transition-all duration-200 outline-none focus:border-[var(--bg-accent)] focus:shadow-[0_0_0_3px_var(--bg-accent-subtle)] ${error ? "border-red-500" : ""} ${className}`}
         {...rest}
       >
         {options.map((opt) => (

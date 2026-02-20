@@ -5,7 +5,7 @@ const BREAKPOINT = 800;
 const DEBOUNCE_MS = 150;
 
 export function useResponsiveCollapse() {
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     const handleResize = () => {

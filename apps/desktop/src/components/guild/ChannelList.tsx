@@ -5,7 +5,10 @@ import { ChannelCategory } from "./ChannelCategory";
 import type { Channel } from "../../types";
 
 export function ChannelList() {
-  const { guildId, channelId } = useParams<{ guildId: string; channelId: string }>();
+  const { guildId, channelId } = useParams<{
+    guildId: string;
+    channelId: string;
+  }>();
   const channelsById = useAppStore((s) => s.channelsById);
   const channelIdsByGuild = useAppStore((s) => s.channelIdsByGuild);
   const unreadCountByChannel = useAppStore((s) => s.unreadCountByChannel);

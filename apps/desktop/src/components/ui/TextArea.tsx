@@ -1,13 +1,15 @@
 import { forwardRef, useId } from "react";
 
-export interface TextAreaProps
-  extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+export interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   error?: string;
 }
 
 export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
-  function TextArea({ label, error, className = "", id: idProp, ...rest }, ref) {
+  function TextArea(
+    { label, error, className = "", id: idProp, ...rest },
+    ref,
+  ) {
     const autoId = useId();
     const id = idProp ?? autoId;
 
@@ -16,7 +18,7 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
         {label && (
           <label
             htmlFor={id}
-            className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]"
+            className="text-[11px] font-semibold tracking-wider text-[var(--text-secondary)] uppercase"
           >
             {label}
           </label>
@@ -24,7 +26,7 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
         <textarea
           ref={ref}
           id={id}
-          className={`rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-primary)] px-3 py-2 text-sm outline-none transition-all duration-200 focus:border-[var(--bg-accent)] focus:shadow-[0_0_0_3px_var(--bg-accent-subtle)] resize-y ${error ? "border-red-500" : ""} ${className}`}
+          className={`resize-y rounded-lg border border-[var(--border-primary)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] transition-all duration-200 outline-none focus:border-[var(--bg-accent)] focus:shadow-[0_0_0_3px_var(--bg-accent-subtle)] ${error ? "border-red-500" : ""} ${className}`}
           {...rest}
         />
         {error && (

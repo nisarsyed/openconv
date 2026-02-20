@@ -15,7 +15,9 @@ const mockKeyPair = {
 
 describe("AuthSlice", () => {
   let store: ReturnType<typeof createAppStore>;
-  beforeEach(() => { store = createAppStore(); });
+  beforeEach(() => {
+    store = createAppStore();
+  });
 
   it("has null user, null token, isAuthenticated false as initial state", () => {
     const s = store.getState();

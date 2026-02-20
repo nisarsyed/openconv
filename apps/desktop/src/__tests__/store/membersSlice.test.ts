@@ -4,7 +4,9 @@ import type { Member } from "../../types";
 
 describe("MembersSlice", () => {
   let store: ReturnType<typeof createAppStore>;
-  beforeEach(() => { store = createAppStore(); });
+  beforeEach(() => {
+    store = createAppStore();
+  });
 
   const makeMember = (userId: string): Member => ({
     userId,

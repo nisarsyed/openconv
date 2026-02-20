@@ -27,9 +27,7 @@ describe("TypingIndicator", () => {
 
   it("renders 'Several people are typing...' for 4+ users", () => {
     render(
-      <TypingIndicator
-        userNames={["Alice", "Bob", "Charlie", "Diana"]}
-      />,
+      <TypingIndicator userNames={["Alice", "Bob", "Charlie", "Diana"]} />,
     );
     expect(
       screen.getByText("Several people are typing..."),

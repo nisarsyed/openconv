@@ -22,7 +22,9 @@ function makeMessages(count: number, senderId: string): Message[] {
 
 function renderGroup(senderId: string, messages: Message[]) {
   const guildId = mockGuilds[0].id;
-  const channelId = mockChannels.find((c) => c.guildId === guildId && c.channelType === "text")!.id;
+  const channelId = mockChannels.find(
+    (c) => c.guildId === guildId && c.channelType === "text",
+  )!.id;
 
   return renderWithProviders(
     <Routes>
@@ -53,7 +55,9 @@ describe("MessageGroup", () => {
     renderGroup(sender.id, msgs);
 
     // Should show author name
-    expect(screen.getByTestId("message-author")).toHaveTextContent(sender.displayName);
+    expect(screen.getByTestId("message-author")).toHaveTextContent(
+      sender.displayName,
+    );
   });
 
   it("renders username and timestamp for the first message", () => {
@@ -61,7 +65,9 @@ describe("MessageGroup", () => {
     const msgs = makeMessages(1, sender.id);
     renderGroup(sender.id, msgs);
 
-    expect(screen.getByTestId("message-author")).toHaveTextContent(sender.displayName);
+    expect(screen.getByTestId("message-author")).toHaveTextContent(
+      sender.displayName,
+    );
     // Timestamp should be rendered (date format like "02/14/2026 10:00 AM" or "Today at 10:00 AM")
     expect(screen.getByText(/\d+:\d+/)).toBeInTheDocument();
   });

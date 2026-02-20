@@ -36,7 +36,9 @@ export function LoginForm() {
         placeholder="you@example.com"
       />
       {error && (
-        <p role="alert" className="text-xs text-red-400 -mt-2">{error}</p>
+        <p role="alert" className="-mt-2 text-xs text-red-400">
+          {error}
+        </p>
       )}
       <Button
         type="submit"
@@ -48,10 +50,16 @@ export function LoginForm() {
         {isSubmitting ? "Logging in..." : "Log In"}
       </Button>
       <div className="flex flex-col gap-2.5 text-center text-sm">
-        <Link to="/register" className="text-[var(--text-link)] hover:brightness-125 transition-all">
+        <Link
+          to="/register"
+          className="text-[var(--text-link)] transition-all hover:brightness-125"
+        >
           Create Account
         </Link>
-        <Link to="/recover" className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
+        <Link
+          to="/recover"
+          className="text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
+        >
           Forgot your account?
         </Link>
       </div>

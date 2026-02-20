@@ -55,7 +55,10 @@ describe("NotificationContainer", () => {
       { id: "2", type: "error", message: "Second", dismissAfterMs: null },
     ];
     render(
-      <NotificationContainer notifications={notifications} onDismiss={() => {}} />,
+      <NotificationContainer
+        notifications={notifications}
+        onDismiss={() => {}}
+      />,
     );
     expect(screen.getByText("First")).toBeInTheDocument();
     expect(screen.getByText("Second")).toBeInTheDocument();

@@ -33,7 +33,12 @@ describe("App", () => {
   it("authenticated users can reach /app routes", async () => {
     useAppStore.setState({
       isAuthenticated: true,
-      currentUser: { id: "u1", displayName: "Test", email: "test@example.com", avatarUrl: null },
+      currentUser: {
+        id: "u1",
+        displayName: "Test",
+        email: "test@example.com",
+        avatarUrl: null,
+      },
     });
     render(<App />);
     // AppLayout seeds mock data and redirects to a guild/channel route

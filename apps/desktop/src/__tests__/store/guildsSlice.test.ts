@@ -12,7 +12,9 @@ describe("GuildsSlice", () => {
   let store: ReturnType<typeof createAppStore>;
   beforeEach(() => {
     store = createAppStore();
-    store.getState().login(mockUser, { publicKey: "pk", privateKey: "sk" }, "token");
+    store
+      .getState()
+      .login(mockUser, { publicKey: "pk", privateKey: "sk" }, "token");
   });
 
   it("has empty guildsById and guildIds as initial state", () => {

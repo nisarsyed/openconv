@@ -3,7 +3,9 @@ import { createAppStore } from "./helpers";
 
 describe("ChannelsSlice", () => {
   let store: ReturnType<typeof createAppStore>;
-  beforeEach(() => { store = createAppStore(); });
+  beforeEach(() => {
+    store = createAppStore();
+  });
 
   it("has empty channelsById and channelIdsByGuild as initial state", () => {
     const s = store.getState();
@@ -14,7 +16,9 @@ describe("ChannelsSlice", () => {
 
   it("setLastVisitedChannel updates lastVisitedChannelByGuild for correct guild", () => {
     store.getState().setLastVisitedChannel("guild-1", "channel-1");
-    expect(store.getState().lastVisitedChannelByGuild["guild-1"]).toBe("channel-1");
+    expect(store.getState().lastVisitedChannelByGuild["guild-1"]).toBe(
+      "channel-1",
+    );
   });
 
   it("createChannel adds to channelsById and channelIdsByGuild", () => {
@@ -40,7 +44,9 @@ describe("ChannelsSlice", () => {
     const ids = store.getState().channelIdsByGuild["guild-1"];
     const channels = ids.map((id) => store.getState().channelsById[id]);
     for (let i = 1; i < channels.length; i++) {
-      expect(channels[i].position).toBeGreaterThanOrEqual(channels[i - 1].position);
+      expect(channels[i].position).toBeGreaterThanOrEqual(
+        channels[i - 1].position,
+      );
     }
   });
 });

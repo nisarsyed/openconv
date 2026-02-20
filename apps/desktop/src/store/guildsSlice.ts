@@ -7,7 +7,10 @@ export interface GuildsSlice {
   lastVisitedGuildId: string | null;
   setLastVisitedGuild: (id: string) => void;
   createGuild: (name: string, iconUrl: string | null) => void;
-  updateGuild: (id: string, updates: Partial<Pick<Guild, "name" | "iconUrl">>) => void;
+  updateGuild: (
+    id: string,
+    updates: Partial<Pick<Guild, "name" | "iconUrl">>,
+  ) => void;
   leaveGuild: (id: string) => void;
 }
 

@@ -70,9 +70,7 @@ export function CreateChannelModal({ guildId }: CreateChannelModalProps) {
           label="Channel Type"
           options={typeOptions}
           value={channelType}
-          onChange={(e) =>
-            setChannelType(e.target.value as "text" | "voice")
-          }
+          onChange={(e) => setChannelType(e.target.value as "text" | "voice")}
         />
         <Select
           label="Category"

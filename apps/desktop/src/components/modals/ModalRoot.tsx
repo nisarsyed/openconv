@@ -10,10 +10,9 @@ export function ModalRoot() {
 
   if (!activeModal) return null;
 
-  const props =
-    (activeModal as Record<string, unknown>).props as
-      | Record<string, unknown>
-      | undefined;
+  const props = (activeModal as Record<string, unknown>).props as
+    | Record<string, unknown>
+    | undefined;
 
   switch (activeModal.type) {
     case "createGuild":

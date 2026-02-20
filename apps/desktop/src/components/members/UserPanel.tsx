@@ -15,8 +15,12 @@ export function UserPanel() {
   return (
     <div className="flex items-center gap-2.5 border-t border-[var(--border-subtle)] bg-[var(--bg-tertiary)] px-3 py-2.5">
       <div className="relative">
-        <Avatar src={currentUser.avatarUrl} name={currentUser.displayName} size="md" />
-        <span className="absolute -bottom-0.5 -right-0.5">
+        <Avatar
+          src={currentUser.avatarUrl}
+          name={currentUser.displayName}
+          size="md"
+        />
+        <span className="absolute -right-0.5 -bottom-0.5">
           <StatusDot status={status} size="sm" />
         </span>
       </div>
@@ -28,7 +32,7 @@ export function UserPanel() {
       <button
         aria-label="User settings"
         onClick={() => navigate("/app/settings")}
-        className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)] transition-all duration-150"
+        className="rounded-lg p-1.5 text-[var(--text-muted)] transition-all duration-150 hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)]"
       >
         <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
           <path

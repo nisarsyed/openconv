@@ -26,7 +26,7 @@ export function ChannelCategory({
       <div className="group flex items-center px-3">
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="flex flex-1 items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+          className="flex flex-1 items-center gap-1 text-[11px] font-semibold tracking-wider text-[var(--text-muted)] uppercase transition-colors hover:text-[var(--text-secondary)]"
         >
           <svg
             className={`h-2.5 w-2.5 transition-transform duration-200 ${collapsed ? "-rotate-90" : ""}`}
@@ -40,9 +40,15 @@ export function ChannelCategory({
         <button
           aria-label={`Create channel in ${name}`}
           onClick={() => openModal("createChannel", { guildId })}
-          className="hidden rounded-md p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] group-hover:block transition-colors"
+          className="hidden rounded-md p-0.5 text-[var(--text-muted)] transition-colors group-hover:block hover:text-[var(--text-primary)]"
         >
-          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>

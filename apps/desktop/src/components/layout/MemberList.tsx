@@ -25,7 +25,10 @@ function groupMembersByRole(
   rolesById: Record<string, Role>,
   presenceByUserId: Record<string, PresenceStatus>,
 ): RoleGroup[] {
-  const groups = new Map<string, { role: Role; online: Member[]; offline: Member[] }>();
+  const groups = new Map<
+    string,
+    { role: Role; online: Member[]; offline: Member[] }
+  >();
 
   for (const key of memberKeys) {
     const member = membersById[key];
@@ -49,7 +52,11 @@ function groupMembersByRole(
     const isOnline = status !== "offline";
 
     if (!groups.has(highestRole.id)) {
-      groups.set(highestRole.id, { role: highestRole, online: [], offline: [] });
+      groups.set(highestRole.id, {
+        role: highestRole,
+        online: [],
+        offline: [],
+      });
     }
     const group = groups.get(highestRole.id)!;
     if (isOnline) {
@@ -60,7 +67,7 @@ function groupMembersByRole(
   }
 
   return [...groups.values()]
-    .sort((a, b) => b.role.position - a.role.position)
+    .toSorted((a, b) => b.role.position - a.role.position)
     .map((g) => ({
       role: g.role,
       members: [...g.online, ...g.offline],
@@ -81,10 +88,13 @@ export function MemberList() {
   const presenceByUserId = useAppStore((s) => s.presenceByUserId);
 
   const [popoverMemberId, setPopoverMemberId] = useState<string | null>(null);
-  const [popoverAnchorRect, setPopoverAnchorRect] = useState<DOMRect | null>(null);
+  const [popoverAnchorRect, setPopoverAnchorRect] = useState<DOMRect | null>(
+    null,
+  );
 
   const groups = useMemo(
-    () => groupMembersByRole(memberKeys, membersById, rolesById, presenceByUserId),
+    () =>
+      groupMembersByRole(memberKeys, membersById, rolesById, presenceByUserId),
     [memberKeys, membersById, rolesById, presenceByUserId],
   );
 
@@ -108,16 +118,24 @@ export function MemberList() {
     ? popoverMember.roles
         .map((rid) => rolesById[rid])
         .filter((r): r is Role => !!r)
-        .sort((a, b) => b.position - a.position)
+        .toSorted((a, b) => b.position - a.position)
     : [];
   const popoverPresence = popoverMember
-    ? presenceByUserId[popoverMember.userId] ?? "offline"
+    ? (presenceByUserId[popoverMember.userId] ?? "offline")
     : "offline";
 
   return (
-    <div data-testid="member-list-content" className="h-full overflow-y-auto pt-2" style={{ scrollbarWidth: "none" }}>
+    <div
+      data-testid="member-list-content"
+      className="h-full overflow-y-auto pt-2"
+      style={{ scrollbarWidth: "none" }}
+    >
       {groups.map((group) => (
-        <MemberGroup key={group.role.id} role={group.role} count={group.members.length}>
+        <MemberGroup
+          key={group.role.id}
+          role={group.role}
+          count={group.members.length}
+        >
           {group.members.map((member) => {
             const user = usersById[member.userId];
             if (!user) return null;
@@ -129,7 +147,9 @@ export function MemberList() {
                 member={member}
                 presence={presenceByUserId[member.userId] ?? "offline"}
                 roleColor={group.role.color}
-                onClick={(e: React.MouseEvent) => handleMemberClick(memberKey, e)}
+                onClick={(e: React.MouseEvent) =>
+                  handleMemberClick(memberKey, e)
+                }
               />
             );
           })}

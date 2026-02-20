@@ -12,10 +12,7 @@ const guildId = mockGuilds[0].id;
 function renderGuildSettings() {
   return renderWithProviders(
     <Routes>
-      <Route
-        path="/app/guild/:guildId/settings"
-        element={<GuildSettings />}
-      />
+      <Route path="/app/guild/:guildId/settings" element={<GuildSettings />} />
     </Routes>,
     {
       initialEntries: [`/app/guild/${guildId}/settings`],
@@ -50,7 +47,9 @@ describe("GuildSettings", () => {
 
     await user.click(screen.getByRole("button", { name: /save/i }));
 
-    expect(useAppStore.getState().guildsById[guildId].name).toBe("New Guild Name");
+    expect(useAppStore.getState().guildsById[guildId].name).toBe(
+      "New Guild Name",
+    );
   });
 
   it("roles section lists existing roles", async () => {

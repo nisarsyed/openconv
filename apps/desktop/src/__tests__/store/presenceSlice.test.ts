@@ -3,7 +3,9 @@ import { createAppStore } from "./helpers";
 
 describe("PresenceSlice", () => {
   let store: ReturnType<typeof createAppStore>;
-  beforeEach(() => { store = createAppStore(); });
+  beforeEach(() => {
+    store = createAppStore();
+  });
 
   it("updatePresence sets status for a user", () => {
     store.getState().updatePresence("user-1", "online");

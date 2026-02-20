@@ -18,12 +18,34 @@ const baseProps = {
     joinedAt: "2025-06-15T00:00:00Z",
   },
   roles: [
-    { id: "role-admin", guildId: "guild-1", name: "Admin", color: "#e74c3c", position: 2 },
-    { id: "role-mod", guildId: "guild-1", name: "Moderator", color: "#e67e22", position: 1 },
+    {
+      id: "role-admin",
+      guildId: "guild-1",
+      name: "Admin",
+      color: "#e74c3c",
+      position: 2,
+    },
+    {
+      id: "role-mod",
+      guildId: "guild-1",
+      name: "Moderator",
+      color: "#e67e22",
+      position: 1,
+    },
   ],
   presence: "online" as const,
   onClose: vi.fn(),
-  anchorRect: { top: 100, left: 200, bottom: 132, right: 400, width: 200, height: 32, x: 200, y: 100, toJSON: () => ({}) } as DOMRect,
+  anchorRect: {
+    top: 100,
+    left: 200,
+    bottom: 132,
+    right: 400,
+    width: 200,
+    height: 32,
+    x: 200,
+    y: 100,
+    toJSON: () => ({}),
+  } as DOMRect,
 };
 
 describe("UserPopover", () => {

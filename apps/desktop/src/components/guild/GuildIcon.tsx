@@ -20,7 +20,10 @@ export function GuildIcon({
   const initial = guild.name.charAt(0).toUpperCase();
 
   return (
-    <div data-testid={`guild-icon-${guild.id}`} className="relative flex w-full items-center justify-center mb-2">
+    <div
+      data-testid={`guild-icon-${guild.id}`}
+      className="relative mb-2 flex w-full items-center justify-center"
+    >
       {/* Pill indicator */}
       {(isSelected || isUnread) && (
         <div
@@ -52,7 +55,7 @@ export function GuildIcon({
           )}
 
           {mentionCount > 0 && (
-            <span className="absolute -bottom-1 -right-1">
+            <span className="absolute -right-1 -bottom-1">
               <Badge count={mentionCount} />
             </span>
           )}

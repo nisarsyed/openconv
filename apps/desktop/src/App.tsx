@@ -20,7 +20,7 @@ function App() {
   const theme = useAppStore((state) => state.theme);
   const os = usePlatform();
   const initialEntry = useRef(
-    useAppStore.getState().isAuthenticated ? "/app" : "/login"
+    useAppStore.getState().isAuthenticated ? "/app" : "/login",
   );
 
   useEffect(() => {
@@ -54,7 +54,10 @@ function App() {
             </ProtectedRoute>
           }
         >
-          <Route path="guild/:guildId/channel/:channelId" element={<ChannelView />} />
+          <Route
+            path="guild/:guildId/channel/:channelId"
+            element={<ChannelView />}
+          />
           <Route path="settings" element={<UserSettings />} />
           <Route path="guild/:guildId/settings" element={<GuildSettings />} />
           <Route index element={<div>Welcome</div>} />

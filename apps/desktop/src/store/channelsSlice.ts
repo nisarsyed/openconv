@@ -6,7 +6,12 @@ export interface ChannelsSlice {
   channelIdsByGuild: Record<string, string[]>;
   lastVisitedChannelByGuild: Record<string, string>;
   setLastVisitedChannel: (guildId: string, channelId: string) => void;
-  createChannel: (guildId: string, name: string, type: "text" | "voice", category: string | null) => void;
+  createChannel: (
+    guildId: string,
+    name: string,
+    type: "text" | "voice",
+    category: string | null,
+  ) => void;
   deleteChannel: (id: string) => void;
 }
 
@@ -47,9 +52,9 @@ export const createChannelsSlice: SliceCreator<ChannelsSlice> = (set, get) => ({
       const guildId = channel.guildId;
       delete draft.channelsById[id];
       if (draft.channelIdsByGuild[guildId]) {
-        draft.channelIdsByGuild[guildId] = draft.channelIdsByGuild[guildId].filter(
-          (cid) => cid !== id,
-        );
+        draft.channelIdsByGuild[guildId] = draft.channelIdsByGuild[
+          guildId
+        ].filter((cid) => cid !== id);
       }
       if (draft.lastVisitedChannelByGuild[guildId] === id) {
         delete draft.lastVisitedChannelByGuild[guildId];

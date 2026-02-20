@@ -25,8 +25,9 @@ describe("CreateChannelModal", () => {
     const user = userEvent.setup();
     renderModal();
 
-    const initialChannelCount =
-      (useAppStore.getState().channelIdsByGuild[guildId] ?? []).length;
+    const initialChannelCount = (
+      useAppStore.getState().channelIdsByGuild[guildId] ?? []
+    ).length;
 
     await user.type(screen.getByLabelText(/channel name/i), "new-channel");
     await user.click(screen.getByRole("button", { name: /create/i }));

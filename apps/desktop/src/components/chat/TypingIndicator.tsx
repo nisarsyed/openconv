@@ -19,9 +19,9 @@ export function TypingIndicator({ userNames }: TypingIndicatorProps) {
   return (
     <div className="flex items-center gap-1.5 px-4 py-1 text-xs text-[var(--text-muted)]">
       <span className="inline-flex gap-0.5">
-        <span className="animate-bounce [animation-delay:0ms] h-1 w-1 rounded-full bg-[var(--bg-accent)] opacity-70" />
-        <span className="animate-bounce [animation-delay:150ms] h-1 w-1 rounded-full bg-[var(--bg-accent)] opacity-70" />
-        <span className="animate-bounce [animation-delay:300ms] h-1 w-1 rounded-full bg-[var(--bg-accent)] opacity-70" />
+        <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--bg-accent)] opacity-70 [animation-delay:0ms]" />
+        <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--bg-accent)] opacity-70 [animation-delay:150ms]" />
+        <span className="h-1 w-1 animate-bounce rounded-full bg-[var(--bg-accent)] opacity-70 [animation-delay:300ms]" />
       </span>
       <span>{text}...</span>
     </div>
