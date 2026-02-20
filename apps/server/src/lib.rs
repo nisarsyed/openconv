@@ -8,3 +8,4 @@ pub mod redis;
 pub mod router;
 pub mod shutdown;
 pub mod state;
+pub mod tasks;

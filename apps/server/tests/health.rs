@@ -1,32 +1,51 @@
+use std::sync::Arc;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt; // for `oneshot`
 
-use openconv_server::config::ServerConfig;
+use openconv_server::config::{JwtConfig, ServerConfig};
+use openconv_server::email::MockEmailService;
+use openconv_server::jwt::JwtService;
+use openconv_server::redis::create_redis_pool;
 use openconv_server::router::build_router;
 use openconv_server::state::AppState;
+
+const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIONXw0UoRsRapn/WATSl25Hsej6hTuwsf+olF9npjjSs\n-----END PRIVATE KEY-----";
+const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA9eB0735gPgffPc6aheXCqzsXb4ylG7Yi6I0yUIb2vZ4=\n-----END PUBLIC KEY-----";
+
+fn test_jwt() -> Arc<JwtService> {
+    let jwt_config = JwtConfig {
+        private_key_pem: TEST_PRIVATE_KEY_PEM.to_string(),
+        public_key_pem: TEST_PUBLIC_KEY_PEM.to_string(),
+        ..Default::default()
+    };
+    Arc::new(JwtService::new(&jwt_config).unwrap())
+}
 
 /// Helper to build a test router without a real database.
 /// Uses a pool that points to an invalid URL — fine for liveness checks
 /// and middleware tests that don't hit the DB.
-fn test_app() -> axum::Router {
-    // Create a PgPool with a dummy URL — it won't actually connect
-    // since liveness doesn't query the DB.
+async fn test_app() -> axum::Router {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake@localhost/fake").unwrap();
     let config = ServerConfig {
         database_url: "postgresql://fake@localhost/fake".to_string(),
         ..Default::default()
     };
+    let redis = create_redis_pool(&config.redis).await.unwrap();
     let state = AppState {
         db: pool,
-        config: std::sync::Arc::new(config),
+        config: Arc::new(config),
+        redis,
+        jwt: test_jwt(),
+        email: Arc::new(MockEmailService::new()),
     };
     build_router(state)
 }
 
 #[tokio::test]
 async fn test_health_live_returns_200_with_status_ok() {
-    let app = test_app();
+    let app = test_app().await;
     let request = Request::builder()
         .uri("/health/live")
         .body(Body::empty())
@@ -44,13 +63,14 @@ async fn test_health_live_returns_200_with_status_ok() {
 
 #[sqlx::test]
 async fn test_health_ready_returns_200_when_db_connected(pool: sqlx::PgPool) {
-    let config = ServerConfig {
-        database_url: String::new(),
-        ..Default::default()
-    };
+    let config = ServerConfig::default();
+    let redis = create_redis_pool(&config.redis).await.unwrap();
     let state = AppState {
         db: pool,
-        config: std::sync::Arc::new(config),
+        config: Arc::new(config),
+        redis,
+        jwt: test_jwt(),
+        email: Arc::new(MockEmailService::new()),
     };
     let app = build_router(state);
     let request = Request::builder()
@@ -70,7 +90,7 @@ async fn test_health_ready_returns_200_when_db_connected(pool: sqlx::PgPool) {
 
 #[tokio::test]
 async fn test_health_ready_returns_503_when_db_unreachable() {
-    let app = test_app();
+    let app = test_app().await;
     let request = Request::builder()
         .uri("/health/ready")
         .body(Body::empty())
@@ -82,7 +102,7 @@ async fn test_health_ready_returns_503_when_db_unreachable() {
 
 #[tokio::test]
 async fn test_requests_include_x_request_id_header() {
-    let app = test_app();
+    let app = test_app().await;
     let request = Request::builder()
         .uri("/health/live")
         .body(Body::empty())
@@ -101,7 +121,7 @@ async fn test_requests_include_x_request_id_header() {
 
 #[tokio::test]
 async fn test_cors_headers_present() {
-    let app = test_app();
+    let app = test_app().await;
     let request = Request::builder()
         .method("OPTIONS")
         .uri("/health/live")
@@ -122,7 +142,7 @@ async fn test_cors_headers_present() {
 
 #[tokio::test]
 async fn test_unknown_routes_return_404() {
-    let app = test_app();
+    let app = test_app().await;
     let request = Request::builder()
         .uri("/nonexistent")
         .body(Body::empty())
