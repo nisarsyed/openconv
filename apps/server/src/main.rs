@@ -3,6 +3,9 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use openconv_server::config::ServerConfig;
+use openconv_server::email::{EmailService, MockEmailService, SmtpEmailService};
+use openconv_server::jwt::JwtService;
+use openconv_server::redis::create_redis_pool;
 use openconv_server::router::build_router;
 use openconv_server::shutdown::shutdown_signal;
 use openconv_server::state::AppState;
@@ -26,10 +29,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     sqlx::migrate!().run(&pool).await?;
 
+    let redis = create_redis_pool(&config.redis).await?;
+    tracing::info!("Redis connected");
+
+    let jwt = Arc::new(JwtService::new(&config.jwt)?);
+    tracing::info!("JWT service initialized");
+
+    let email: Arc<dyn EmailService> = if config.email.smtp_host.is_empty() {
+        tracing::warn!("SMTP not configured, using mock email service");
+        Arc::new(MockEmailService::new())
+    } else {
+        Arc::new(SmtpEmailService::new(&config.email)?)
+    };
+
     let addr = format!("{}:{}", config.host, config.port);
     let state = AppState {
         db: pool,
         config: Arc::new(config),
+        redis,
+        jwt,
+        email,
     };
     let app = build_router(state);
 

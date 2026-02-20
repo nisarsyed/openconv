@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use crate::config::ServerConfig;
+use crate::email::EmailService;
+use crate::jwt::JwtService;
 
 /// Shared application state passed to all handlers via Axum's State extractor.
 ///
@@ -10,6 +12,9 @@ use crate::config::ServerConfig;
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub config: Arc<ServerConfig>,
+    pub redis: fred::clients::Pool,
+    pub jwt: Arc<JwtService>,
+    pub email: Arc<dyn EmailService>,
 }
 
 #[cfg(test)]
