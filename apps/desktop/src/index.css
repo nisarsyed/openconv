@@ -1,1 +1,258 @@
 @import "tailwindcss";
+
+/* ===== Typography ===== */
+@theme {
+  --font-sans: "Figtree", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* ===== Titlebar inset for macOS traffic lights ===== */
+:root {
+  --titlebar-inset: 0px;
+}
+
+/* ===== Light Theme — "Warm Linen" ===== */
+:root {
+  --bg-primary: #faf7f2;
+  --bg-secondary: #f0ebe3;
+  --bg-tertiary: #e6e0d6;
+  --bg-accent: #b87a2b;
+  --bg-accent-hover: #cf8c3a;
+  --bg-accent-subtle: rgba(184, 122, 43, 0.08);
+
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --text-muted: #a8a29e;
+  --text-link: #b87a2b;
+  --text-on-accent: #ffffff;
+
+  --border-primary: #d6d3cd;
+  --border-subtle: #e8e4dc;
+  --border-accent: rgba(184, 122, 43, 0.3);
+
+  --interactive-normal: #57534e;
+  --interactive-hover: rgba(0, 0, 0, 0.04);
+  --interactive-active: rgba(0, 0, 0, 0.08);
+
+  --status-online: #22c55e;
+  --status-idle: #eab308;
+  --status-dnd: #ef4444;
+  --status-offline: #a8a29e;
+
+  --surface-overlay: rgba(0, 0, 0, 0.4);
+  --surface-popover: #faf7f2;
+  --surface-glass: rgba(250, 247, 242, 0.8);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --shadow-glow: 0 0 20px rgba(184, 122, 43, 0.1);
+}
+
+/* ===== Dark Theme — "Warm Obsidian" ===== */
+:root.dark {
+  --bg-primary: #161616;
+  --bg-secondary: #1c1c1c;
+  --bg-tertiary: #111111;
+  --bg-accent: #d4a054;
+  --bg-accent-hover: #e0b468;
+  --bg-accent-subtle: rgba(212, 160, 84, 0.06);
+
+  --text-primary: #ececea;
+  --text-secondary: #9a9590;
+  --text-muted: #5c5854;
+  --text-link: #d4a054;
+  --text-on-accent: #111111;
+
+  --border-primary: #2a2a2a;
+  --border-subtle: #222222;
+  --border-accent: rgba(212, 160, 84, 0.2);
+
+  --interactive-normal: #9a9590;
+  --interactive-hover: rgba(255, 255, 255, 0.04);
+  --interactive-active: rgba(255, 255, 255, 0.08);
+
+  --status-online: #22c55e;
+  --status-idle: #eab308;
+  --status-dnd: #ef4444;
+  --status-offline: #5c5854;
+
+  --surface-overlay: rgba(0, 0, 0, 0.7);
+  --surface-popover: #1e1e1e;
+  --surface-glass: rgba(28, 28, 28, 0.75);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --shadow-glow: 0 0 20px rgba(212, 160, 84, 0.08);
+}
+
+/* ===== Base Styles ===== */
+html {
+  font-family: "Figtree", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* ===== Custom Scrollbars ===== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-primary) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-primary);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-muted);
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ===== Selection ===== */
+::selection {
+  background-color: var(--bg-accent);
+  color: var(--text-on-accent);
+}
+
+/* ===== Glass Morphism Utility ===== */
+.glass {
+  background: var(--surface-glass);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+}
+
+.glass-subtle {
+  background: var(--surface-glass);
+  backdrop-filter: blur(8px) saturate(1.2);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+}
+
+/* ===== Noise Texture Overlay ===== */
+.noise::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  z-index: 1;
+}
+
+:root.dark .noise::after {
+  opacity: 0.04;
+}
+
+/* ===== Animations ===== */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 160, 84, 0); }
+  50% { box-shadow: 0 0 12px 2px rgba(212, 160, 84, 0.15); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-slide-up {
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ===== Focus Ring ===== */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--bg-accent);
+  outline-offset: 2px;
+}
+
+/* ===== Gradient Accents ===== */
+.accent-gradient {
+  background: linear-gradient(135deg, var(--bg-accent), var(--bg-accent-hover));
+}
+
+.accent-gradient-text {
+  background: linear-gradient(135deg, var(--bg-accent), var(--bg-accent-hover));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ===== Subtle Dividers ===== */
+.divider-fade {
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--border-subtle) 20%,
+    var(--border-subtle) 80%,
+    transparent
+  );
+  height: 1px;
+}
