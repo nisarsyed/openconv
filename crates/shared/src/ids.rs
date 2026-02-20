@@ -37,6 +37,7 @@ define_id!(MessageId);
 define_id!(RoleId);
 define_id!(FileId);
 define_id!(DmChannelId);
+define_id!(DeviceId);
 
 #[cfg(test)]
 mod tests {
@@ -158,5 +159,27 @@ mod tests {
         let json = serde_json::to_string(&id).unwrap();
         let back: DmChannelId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, back);
+    }
+
+    #[test]
+    fn device_id_new_generates_uuid_v7() {
+        let id = DeviceId::new();
+        assert_eq!(id.0.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
+    fn device_id_serde_roundtrip() {
+        let id = DeviceId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: DeviceId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn device_id_display_from_str_roundtrip() {
+        let id = DeviceId::new();
+        let s = id.to_string();
+        let parsed = DeviceId::from_str(&s).unwrap();
+        assert_eq!(id, parsed);
     }
 }
