@@ -46,10 +46,20 @@ describe("Theme system", () => {
   });
 
   it("light mode defines all color tokens under :root", () => {
-    // Match :root { ... } but NOT :root.dark { ... }
-    const rootMatch = cssContent.match(/:root\s*\{([^}]+)\}/s);
-    expect(rootMatch).toBeTruthy();
-    const lightBlock = rootMatch![1];
+    // Match all :root { ... } blocks that are NOT :root.dark { ... }
+    // and combine them (there may be multiple :root blocks)
+    const rootBlocks: string[] = [];
+    const regex = /:root\s*\{([^}]+)\}/gs;
+    let match;
+    while ((match = regex.exec(cssContent)) !== null) {
+      // Exclude :root.dark by checking what's before the brace
+      const before = cssContent.slice(Math.max(0, match.index - 5), match.index + 5);
+      if (!before.includes(".dark")) {
+        rootBlocks.push(match[1]);
+      }
+    }
+    const lightBlock = rootBlocks.join("\n");
+    expect(lightBlock).toBeTruthy();
     for (const token of DARK_TOKENS) {
       expect(lightBlock).toContain(token);
     }
@@ -57,8 +67,17 @@ describe("Theme system", () => {
 
   it("dark and light themes have different values for background tokens", () => {
     const darkBlock = extractBlock(cssContent, ":root.dark");
-    const rootMatch = cssContent.match(/:root\s*\{([^}]+)\}/s);
-    const lightBlock = rootMatch![1];
+    // Combine all non-dark :root blocks
+    const rootBlocks: string[] = [];
+    const regex = /:root\s*\{([^}]+)\}/gs;
+    let match;
+    while ((match = regex.exec(cssContent)) !== null) {
+      const before = cssContent.slice(Math.max(0, match.index - 5), match.index + 5);
+      if (!before.includes(".dark")) {
+        rootBlocks.push(match[1]);
+      }
+    }
+    const lightBlock = rootBlocks.join("\n");
 
     // Extract --bg-primary value from each
     const darkBg = darkBlock.match(/--bg-primary:\s*([^;]+)/)?.[1]?.trim();

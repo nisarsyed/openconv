@@ -37,7 +37,7 @@ export function ModalRoot() {
       return (
         <ConfirmDialog
           title={props.title as string}
-          message={props.message as string}
+          message={(props.message as string) ?? ""}
           onConfirm={props.onConfirm as () => void}
         />
       );

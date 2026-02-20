@@ -33,13 +33,11 @@ export function Dropdown({ trigger, items, onSelect }: DropdownProps) {
       {cloneElement(trigger, { onClick: () => setOpen((prev) => !prev) })}
       {open && (
         <ul
-          role="menu"
           className="absolute left-0 top-full z-50 mt-1.5 min-w-[160px] rounded-lg bg-[var(--surface-popover)] border border-[var(--border-subtle)] py-1 shadow-[var(--shadow-lg)] animate-scale-in"
         >
           {items.map((item) => (
             <li
               key={item.id}
-              role="menuitem"
               className={`flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors mx-1 rounded-md hover:bg-[var(--interactive-hover)] ${item.danger ? "text-red-400 hover:text-red-300" : "text-[var(--text-primary)]"}`}
               onClick={() => {
                 onSelect(item.id);

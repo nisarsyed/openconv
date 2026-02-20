@@ -1,4 +1,5 @@
 import { usePlatform } from "../../hooks/usePlatform";
+import { GUILD_SIDEBAR_WIDTH } from "./constants";
 
 export function DragRegion() {
   const os = usePlatform();
@@ -11,9 +12,9 @@ export function DragRegion() {
     <div
       data-tauri-drag-region
       aria-hidden="true"
-      className="absolute left-0 top-0 z-[60]"
+      className="absolute left-0 top-0 z-60"
       style={{
-        width: 72,
+        width: GUILD_SIDEBAR_WIDTH + 4,
         height: "var(--titlebar-inset)",
         WebkitAppRegion: "drag",
       } as React.CSSProperties}

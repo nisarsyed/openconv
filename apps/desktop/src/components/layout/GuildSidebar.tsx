@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from "react-router";
 import { useAppStore } from "../../store";
 import { GuildIcon } from "../guild/GuildIcon";
+import { GUILD_SIDEBAR_WIDTH } from "./constants";
 
 export function GuildSidebar() {
   const navigate = useNavigate();
@@ -39,7 +40,7 @@ export function GuildSidebar() {
     <nav
       data-testid="guild-sidebar"
       className="flex flex-col items-center bg-[var(--bg-tertiary)] pb-3 overflow-y-auto scrollbar-none"
-      style={{ width: 68, paddingTop: "calc(var(--titlebar-inset) + 0.5rem)" }}
+      style={{ width: GUILD_SIDEBAR_WIDTH, paddingTop: "calc(var(--titlebar-inset) + 0.5rem)" }}
       aria-label="Guilds"
     >
       {/* Home button */}

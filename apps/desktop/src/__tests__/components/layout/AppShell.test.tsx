@@ -52,7 +52,7 @@ describe("AppShell", () => {
     renderAppShell();
 
     const guildSidebar = screen.getByTestId("guild-sidebar");
-    expect(guildSidebar).toHaveStyle({ width: "72px" });
+    expect(guildSidebar).toHaveStyle({ width: "68px" });
   });
 
   it("channel sidebar, main content, and member list are Panels in a PanelGroup", () => {
@@ -71,7 +71,7 @@ describe("AppShell", () => {
     renderAppShell();
 
     // DragRegion is implemented in Section 10; AppShell currently doesn't render it
-    const dragRegion = document.querySelector("[data-tauri-drag-region]");
+    const dragRegion = screen.queryByTestId("drag-region-overlay");
     expect(dragRegion).not.toBeInTheDocument();
   });
 

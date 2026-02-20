@@ -72,7 +72,9 @@ describe("UserSettings", () => {
 
     await user.click(screen.getByText("Appearance"));
 
-    expect(screen.getByRole("button", { name: /dark|light|theme/i })).toBeInTheDocument();
+    // Theme UI uses separate Dark/Light buttons
+    const themeButtons = screen.getAllByRole("button", { name: /dark|light/i });
+    expect(themeButtons.length).toBeGreaterThanOrEqual(2);
   });
 
   it("theme toggle calls toggleTheme", async () => {
@@ -82,8 +84,10 @@ describe("UserSettings", () => {
     await user.click(screen.getByText("Appearance"));
 
     const initialTheme = useAppStore.getState().theme;
-    const themeToggle = screen.getByRole("button", { name: /dark|light|theme/i });
-    await user.click(themeToggle);
+    // Click the opposite theme button to trigger toggleTheme
+    const targetName = initialTheme === "dark" ? /light/i : /dark/i;
+    const themeButton = screen.getByRole("button", { name: targetName });
+    await user.click(themeButton);
 
     expect(useAppStore.getState().theme).toBe(initialTheme === "dark" ? "light" : "dark");
   });

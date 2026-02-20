@@ -77,6 +77,8 @@ describe("UserPopover", () => {
     render(<UserPopover {...baseProps} />);
 
     const adminBadge = screen.getByText("Admin");
-    expect(adminBadge).toHaveStyle({ backgroundColor: "#e74c3c" });
+    // Role badge text is styled with color (not backgroundColor);
+    // the colored dot inside the badge has backgroundColor.
+    expect(adminBadge).toHaveStyle({ color: "#e74c3c" });
   });
 });

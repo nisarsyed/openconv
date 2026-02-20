@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { createAppStore } from "./helpers";
 
+const mockUser = {
+  id: "owner-1",
+  displayName: "Owner",
+  email: "owner@example.com",
+  avatarUrl: null,
+};
+
 describe("GuildsSlice", () => {
   let store: ReturnType<typeof createAppStore>;
   beforeEach(() => {
     store = createAppStore();
-    store.getState().login("owner@example.com");
+    store.getState().login(mockUser, { publicKey: "pk", privateKey: "sk" }, "token");
   });
 
   it("has empty guildsById and guildIds as initial state", () => {

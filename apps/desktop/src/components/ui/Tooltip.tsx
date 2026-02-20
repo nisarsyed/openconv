@@ -35,7 +35,7 @@ export function Tooltip({ content, children, position = "top" }: TooltipProps) {
 
   return (
     <span className="relative inline-block" onMouseEnter={show} onMouseLeave={hide}>
-      {cloneElement(children, { "aria-describedby": visible ? tooltipId : undefined })}
+      {cloneElement(children, { "aria-describedby": visible ? tooltipId : undefined } as Record<string, unknown>)}
       {visible && (
         <span
           id={tooltipId}

@@ -13,9 +13,9 @@ describe("Dropdown", () => {
     render(
       <Dropdown trigger={<button>Actions</button>} items={items} onSelect={() => {}} />,
     );
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
     await userEvent.click(screen.getByText("Actions"));
-    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByRole("list")).toBeInTheDocument();
   });
 
   it("closes menu on outside click", async () => {
@@ -26,9 +26,9 @@ describe("Dropdown", () => {
       </div>,
     );
     await userEvent.click(screen.getByText("Actions"));
-    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByRole("list")).toBeInTheDocument();
     await userEvent.click(screen.getByText("Outside"));
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
 
   it("calls onSelect for selected item", async () => {
@@ -47,6 +47,6 @@ describe("Dropdown", () => {
     );
     await userEvent.click(screen.getByText("Actions"));
     await userEvent.click(screen.getByText("Edit"));
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
 });

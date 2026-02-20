@@ -55,7 +55,7 @@ describe("GuildSidebar", () => {
 
     const pill = selectedGuild!.querySelector("[data-testid='guild-pill']");
     expect(pill).toBeInTheDocument();
-    expect(pill).toHaveClass("h-10");
+    expect(pill).toHaveClass("h-9");
   });
 
   it("clicking guild navigates to guild's last visited channel route", async () => {

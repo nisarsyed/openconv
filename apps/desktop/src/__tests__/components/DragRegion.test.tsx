@@ -43,6 +43,6 @@ describe("DragRegion", () => {
     mockUsePlatform.mockReturnValue("macos");
     const { container } = render(<DragRegion />);
     const dragDiv = container.querySelector("[data-tauri-drag-region]");
-    expect(dragDiv).toHaveClass("h-7");
+    expect(dragDiv).toHaveStyle({ height: "var(--titlebar-inset)" });
   });
 });

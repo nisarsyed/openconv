@@ -81,7 +81,7 @@ describe("ChannelSidebar", () => {
     });
 
     const channelItem = screen.getByText("frontend");
-    expect(channelItem).toHaveClass("font-bold");
+    expect(channelItem).toHaveClass("font-semibold");
   });
 
   it("clicking channel navigates to the channel route", async () => {
