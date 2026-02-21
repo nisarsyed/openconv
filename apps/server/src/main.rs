@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(backend = %config.file_storage.backend, "Object store initialized");
 
     // Shutdown coordination: cleanup task stops when the server does
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let cleanup_pool = pool.clone();
     let mut cleanup_shutdown_rx = shutdown_rx.clone();
@@ -79,10 +79,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file_cleanup_shutdown_rx = shutdown_rx.clone();
 
     let guild_cleanup_pool = pool.clone();
+    let guild_cleanup_store = object_store.clone();
+    let mut guild_cleanup_shutdown_rx = shutdown_rx.clone();
     tokio::spawn(async move {
         loop {
             match openconv_server::tasks::guild_cleanup::cleanup_expired_guilds(
                 &guild_cleanup_pool,
+                &*guild_cleanup_store,
             )
             .await
             {
@@ -95,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
-                _ = shutdown_rx.changed() => {
+                _ = guild_cleanup_shutdown_rx.changed() => {
                     tracing::info!("Guild cleanup task shutting down");
                     break;
                 }
