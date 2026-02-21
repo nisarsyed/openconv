@@ -3,6 +3,7 @@ use axum::Json;
 use base64::Engine;
 use fred::interfaces::KeysInterface;
 use openconv_shared::api::auth::{
+    LoginChallengeRequest, LoginChallengeResponse, LoginVerifyRequest, LoginVerifyResponse,
     RegisterCompleteRequest, RegisterResponse, RegisterStartRequest, RegisterStartResponse,
     RegisterVerifyRequest, RegisterVerifyResponse,
 };
@@ -343,6 +344,200 @@ pub async fn register_complete(
     }))
 }
 
+/// Redis storage format for login challenges.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredChallenge {
+    challenge: String,
+    exists: bool,
+}
+
+pub async fn challenge(
+    State(state): State<AppState>,
+    Json(req): Json<LoginChallengeRequest>,
+) -> Result<Json<LoginChallengeResponse>, ServerError> {
+    // Validate public key format before using as Redis key
+    let pk_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&req.public_key)
+        .map_err(|_| OpenConvError::Validation("invalid public key encoding".into()))?;
+    if pk_bytes.len() != 33 {
+        return Err(
+            OpenConvError::Validation("public key must be 33 bytes when decoded".into()).into(),
+        );
+    }
+
+    // Per-public-key rate limiting
+    crate::middleware::rate_limit::check_key_rate_limit(
+        &state.redis,
+        &req.public_key,
+        "challenge",
+        state.config.rate_limit.challenge_per_key_per_minute,
+        60,
+    )
+    .await
+    .map_err(|_| OpenConvError::RateLimited)?;
+
+    // Generate 32 bytes of cryptographic randomness
+    let challenge_bytes: [u8; 32] = rand::rng().random();
+    let challenge_b64 =
+        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+
+    // Check if user exists — always return a challenge regardless (privacy-first)
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE public_key = $1)")
+            .bind(&req.public_key)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // Store challenge in Redis with 60s TTL
+    let stored = StoredChallenge {
+        challenge: challenge_b64.clone(),
+        exists,
+    };
+    let json_data = serde_json::to_string(&stored)
+        .map_err(|e| OpenConvError::Internal(format!("serialization error: {e}")))?;
+
+    let key = format!("challenge:{}", req.public_key);
+    state
+        .redis
+        .set::<(), _, _>(
+            &key,
+            json_data.as_str(),
+            Some(fred::types::Expiration::EX(60)),
+            None,
+            false,
+        )
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+
+    Ok(Json(LoginChallengeResponse {
+        challenge: challenge_b64,
+    }))
+}
+
+pub async fn login_verify(
+    State(state): State<AppState>,
+    Json(req): Json<LoginVerifyRequest>,
+) -> Result<Json<LoginVerifyResponse>, ServerError> {
+    // 1. Atomic fetch-and-delete challenge from Redis
+    let key = format!("challenge:{}", req.public_key);
+    let stored_json: Option<String> = state
+        .redis
+        .getdel(&key)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+
+    let stored_json = stored_json.ok_or(OpenConvError::Unauthorized)?;
+    let stored: StoredChallenge = serde_json::from_str(&stored_json)
+        .map_err(|_| OpenConvError::Internal("corrupt challenge data".into()))?;
+
+    // 2. Check exists flag — blind challenge means user doesn't exist
+    if !stored.exists {
+        return Err(OpenConvError::Unauthorized.into());
+    }
+
+    // 3. Parse public key using shared crypto_verify module
+    let public_key = crate::crypto_verify::parse_public_key(&req.public_key)
+        .map_err(|_| OpenConvError::Unauthorized)?;
+
+    // 4. Decode signature
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&req.signature)
+        .map_err(|_| OpenConvError::Unauthorized)?;
+
+    // 5. Decode challenge from stored data
+    let challenge_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&stored.challenge)
+        .map_err(|_| OpenConvError::Internal("corrupt challenge data".into()))?;
+
+    // 6. Verify signature using shared crypto_verify module
+    if !crate::crypto_verify::verify_challenge_signature(
+        &public_key,
+        &challenge_bytes,
+        &sig_bytes,
+    ) {
+        return Err(OpenConvError::Unauthorized.into());
+    }
+
+    // 7. Look up user by public_key
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE public_key = $1")
+            .bind(&req.public_key)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?
+            .ok_or(OpenConvError::Unauthorized)?;
+
+    let user_id = UserId(user_id);
+
+    // 8. Begin transaction for device upsert + refresh token storage
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("transaction start failed: {e}")))?;
+
+    // Upsert device record — scoped to current user via WHERE clause
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) \
+         VALUES ($1, $2, $3, NOW(), NOW()) \
+         ON CONFLICT (id) DO UPDATE SET last_active = NOW(), device_name = EXCLUDED.device_name \
+         WHERE devices.user_id = $2",
+    )
+    .bind(req.device_id.0)
+    .bind(user_id.0)
+    .bind(&req.device_name)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // 9. Issue tokens
+    let family = uuid::Uuid::now_v7().to_string();
+    let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
+    let refresh_token = state
+        .jwt
+        .issue_refresh_token(&user_id, &req.device_id, &family)?;
+
+    // 10. Store refresh token in database
+    let refresh_claims = state.jwt.validate_refresh_token(&refresh_token)?;
+    let expires_at = chrono::DateTime::from_timestamp(refresh_claims.exp as i64, 0)
+        .ok_or_else(|| OpenConvError::Internal("invalid token expiry".into()))?;
+
+    let jti: uuid::Uuid = refresh_claims
+        .jti
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid jti format".into()))?;
+
+    let family_uuid: uuid::Uuid = family
+        .parse()
+        .expect("family UUID was just generated from Uuid::now_v7()");
+
+    sqlx::query(
+        "INSERT INTO refresh_tokens (jti, user_id, device_id, family, expires_at, is_used) \
+         VALUES ($1, $2, $3, $4, $5, false)",
+    )
+    .bind(jti)
+    .bind(user_id.0)
+    .bind(req.device_id.0)
+    .bind(family_uuid)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // Commit transaction
+    tx.commit()
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("transaction commit failed: {e}")))?;
+
+    Ok(Json(LoginVerifyResponse {
+        access_token,
+        refresh_token,
+        user_id,
+        device_id: req.device_id,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +633,18 @@ mod tests {
     fn validate_verification_code_rejects_non_numeric() {
         assert!(validate_verification_code("12345a").is_err());
         assert!(validate_verification_code("abcdef").is_err());
+    }
+
+    #[test]
+    fn stored_challenge_roundtrip() {
+        let data = StoredChallenge {
+            challenge: "dGVzdA==".into(),
+            exists: true,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: StoredChallenge = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.challenge, "dGVzdA==");
+        assert!(back.exists);
     }
 
     #[test]

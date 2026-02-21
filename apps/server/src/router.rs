@@ -38,6 +38,8 @@ pub fn build_router(state: AppState) -> axum::Router {
             "/register/complete",
             post(handlers::auth::register_complete),
         )
+        .route("/challenge", post(handlers::auth::challenge))
+        .route("/verify", post(handlers::auth::login_verify))
         .layer(crate::middleware::rate_limit::RateLimitLayer::new(
             state.redis.clone(),
             state.config.rate_limit.auth_per_ip_per_minute,
