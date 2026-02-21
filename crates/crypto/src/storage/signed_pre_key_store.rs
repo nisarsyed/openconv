@@ -66,10 +66,7 @@ mod tests {
         let signed_key_pair = KeyPair::generate(&mut rand::rng());
         let signature = identity_pair
             .private_key
-            .calculate_signature(
-                &signed_key_pair.public_key.serialize(),
-                &mut rand::rng(),
-            )
+            .calculate_signature(&signed_key_pair.public_key.serialize(), &mut rand::rng())
             .unwrap();
         let timestamp = Timestamp::from_epoch_millis(
             std::time::SystemTime::now()
@@ -92,14 +89,10 @@ mod tests {
         let mut store = CryptoStore::new(&conn);
         let record = create_signed_pre_key_record(1);
 
-        futures::executor::block_on(
-            store.save_signed_pre_key(SignedPreKeyId::from(1), &record),
-        )
-        .unwrap();
-        let loaded = futures::executor::block_on(
-            store.get_signed_pre_key(SignedPreKeyId::from(1)),
-        )
-        .unwrap();
+        futures::executor::block_on(store.save_signed_pre_key(SignedPreKeyId::from(1), &record))
+            .unwrap();
+        let loaded =
+            futures::executor::block_on(store.get_signed_pre_key(SignedPreKeyId::from(1))).unwrap();
 
         assert_eq!(loaded.serialize().unwrap(), record.serialize().unwrap());
     }
@@ -108,9 +101,8 @@ mod tests {
     fn get_signed_pre_key_returns_error_for_nonexistent_id() {
         let conn = init_test_db();
         let store = CryptoStore::new(&conn);
-        let result = futures::executor::block_on(
-            store.get_signed_pre_key(SignedPreKeyId::from(99999)),
-        );
+        let result =
+            futures::executor::block_on(store.get_signed_pre_key(SignedPreKeyId::from(99999)));
         assert!(result.is_err());
     }
 }

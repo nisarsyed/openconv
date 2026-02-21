@@ -32,8 +32,9 @@ async fn cleanup_redis_keys(redis: &fred::clients::Pool, patterns: &[&str]) {
     }
 }
 
-async fn build_test_app(pool: sqlx::PgPool) -> (axum::Router, Arc<JwtService>, fred::clients::Pool)
-{
+async fn build_test_app(
+    pool: sqlx::PgPool,
+) -> (axum::Router, Arc<JwtService>, fred::clients::Pool) {
     let config = ServerConfig::default();
     let redis = create_redis_pool(&config.redis).await.unwrap();
     let jwt = test_jwt();
@@ -71,15 +72,19 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
 /// Generate a libsignal identity keypair and return (public_key_b64, IdentityKeyPair).
 fn generate_identity() -> (String, libsignal_protocol::IdentityKeyPair) {
     let identity = libsignal_protocol::IdentityKeyPair::generate(&mut rand::rng());
-    let public_key_b64 = base64::engine::general_purpose::STANDARD
-        .encode(identity.public_key().serialize());
+    let public_key_b64 =
+        base64::engine::general_purpose::STANDARD.encode(identity.public_key().serialize());
     (public_key_b64, identity)
 }
 
 /// Seed a user directly in the database with a known identity keypair.
 async fn seed_test_user(
     pool: &sqlx::PgPool,
-) -> (openconv_shared::ids::UserId, String, libsignal_protocol::IdentityKeyPair) {
+) -> (
+    openconv_shared::ids::UserId,
+    String,
+    libsignal_protocol::IdentityKeyPair,
+) {
     let (public_key_b64, identity) = generate_identity();
     let user_id = openconv_shared::ids::UserId::new();
 
@@ -96,7 +101,10 @@ async fn seed_test_user(
 }
 
 /// Sign a challenge using the identity keypair's private key.
-fn sign_challenge(identity: &libsignal_protocol::IdentityKeyPair, challenge_bytes: &[u8]) -> String {
+fn sign_challenge(
+    identity: &libsignal_protocol::IdentityKeyPair,
+    challenge_bytes: &[u8],
+) -> String {
     let signature = identity
         .private_key()
         .calculate_signature(challenge_bytes, &mut rand::rng())
@@ -283,7 +291,10 @@ async fn challenge_has_60s_ttl_in_redis(pool: sqlx::PgPool) {
         .ttl(&format!("challenge:{public_key_b64}"))
         .await
         .unwrap();
-    assert!(ttl > 0 && ttl <= 60, "TTL should be between 1 and 60, got {ttl}");
+    assert!(
+        ttl > 0 && ttl <= 60,
+        "TTL should be between 1 and 60, got {ttl}"
+    );
 
     cleanup_redis_keys(
         &redis,
@@ -306,8 +317,7 @@ async fn verify_valid_signature_returns_tokens(pool: sqlx::PgPool) {
 
     // Seed a challenge in Redis with exists=true
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": true,
@@ -369,8 +379,7 @@ async fn verify_invalid_signature_returns_401(pool: sqlx::PgPool) {
     let (_, public_key_b64, _) = seed_test_user(&pool).await;
 
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": true,
@@ -413,8 +422,7 @@ async fn verify_nonexistent_user_returns_401(pool: sqlx::PgPool) {
     let (fake_key_b64, identity) = generate_identity();
 
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": false,
@@ -457,8 +465,7 @@ async fn verify_atomically_deletes_challenge(pool: sqlx::PgPool) {
     let (_, public_key_b64, identity) = seed_test_user(&pool).await;
 
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": true,
@@ -543,8 +550,7 @@ async fn verify_creates_device_record(pool: sqlx::PgPool) {
     let (user_id, public_key_b64, identity) = seed_test_user(&pool).await;
 
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": true,
@@ -610,8 +616,7 @@ async fn verify_upserts_existing_device(pool: sqlx::PgPool) {
     .unwrap();
 
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": true,
@@ -663,8 +668,7 @@ async fn verify_stores_refresh_token_in_db(pool: sqlx::PgPool) {
     let (_, public_key_b64, identity) = seed_test_user(&pool).await;
 
     let challenge_bytes: [u8; 32] = rand::Rng::random(&mut rand::rng());
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
     let stored = serde_json::json!({
         "challenge": challenge_b64,
         "exists": true,
@@ -701,12 +705,11 @@ async fn verify_stores_refresh_token_in_db(pool: sqlx::PgPool) {
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), 200);
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE device_id = $1")
-            .bind(device_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE device_id = $1")
+        .bind(device_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 1);
 }
 

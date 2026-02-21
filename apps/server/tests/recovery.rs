@@ -31,8 +31,9 @@ async fn cleanup_redis_keys(redis: &fred::clients::Pool, patterns: &[&str]) {
     }
 }
 
-async fn build_test_app(pool: sqlx::PgPool) -> (axum::Router, Arc<JwtService>, fred::clients::Pool)
-{
+async fn build_test_app(
+    pool: sqlx::PgPool,
+) -> (axum::Router, Arc<JwtService>, fred::clients::Pool) {
     let mut config = ServerConfig::default();
     // Raise rate limit for parallel test execution
     config.rate_limit.auth_per_ip_per_minute = 300;
@@ -72,8 +73,8 @@ fn generate_test_keypair() -> (String, Vec<u8>) {
     use libsignal_protocol::IdentityKeyPair;
 
     let identity = IdentityKeyPair::generate(&mut rand::rng());
-    let public_key_b64 = base64::engine::general_purpose::STANDARD
-        .encode(identity.public_key().serialize());
+    let public_key_b64 =
+        base64::engine::general_purpose::STANDARD.encode(identity.public_key().serialize());
     let pre_key_bundle = vec![1u8, 2, 3, 4, 5];
     (public_key_b64, pre_key_bundle)
 }
@@ -152,12 +153,7 @@ async fn seed_user_with_devices(
     (user_id, email)
 }
 
-async fn seed_recovery_code(
-    redis: &fred::clients::Pool,
-    email: &str,
-    code: &str,
-    attempts: u32,
-) {
+async fn seed_recovery_code(redis: &fred::clients::Pool, email: &str, code: &str, attempts: u32) {
     use fred::interfaces::KeysInterface;
     let data = serde_json::json!({
         "code": code,
@@ -209,7 +205,10 @@ async fn recover_start_existing_email_returns_200_and_stores_code(pool: sqlx::Pg
     assert_eq!(data["code"].as_str().unwrap().len(), 6);
 
     let ttl: i64 = redis.ttl(&format!("recover:{email}")).await.unwrap();
-    assert!(ttl > 0 && ttl <= 600, "TTL should be between 1 and 600, got {ttl}");
+    assert!(
+        ttl > 0 && ttl <= 600,
+        "TTL should be between 1 and 600, got {ttl}"
+    );
 
     cleanup_redis_keys(
         &redis,
@@ -249,10 +248,7 @@ async fn recover_start_nonexistent_email_returns_same_200(pool: sqlx::PgPool) {
 
     cleanup_redis_keys(
         &redis,
-        &[
-            &format!("recover:{email}"),
-            &format!("rl:email:{email}"),
-        ],
+        &[&format!("recover:{email}"), &format!("rl:email:{email}")],
     )
     .await;
 }
@@ -286,7 +282,10 @@ async fn recover_verify_correct_code_returns_recovery_token(pool: sqlx::PgPool) 
     // Redis key should be deleted after successful verification
     use fred::interfaces::KeysInterface;
     let stored: Option<String> = redis.get(&format!("recover:{email}")).await.unwrap();
-    assert!(stored.is_none(), "Redis key should be deleted after verification");
+    assert!(
+        stored.is_none(),
+        "Redis key should be deleted after verification"
+    );
 }
 
 #[sqlx::test]
@@ -307,10 +306,17 @@ async fn recover_verify_enforces_5_attempt_cap(pool: sqlx::PgPool) {
         serde_json::json!({ "email": &email, "code": "999999" }),
     );
     let response = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), 400, "1st wrong attempt should return 400");
+    assert_eq!(
+        response.status(),
+        400,
+        "1st wrong attempt should return 400"
+    );
 
     let stored: Option<String> = redis.get(&format!("recover:{email}")).await.unwrap();
-    assert!(stored.is_some(), "key should still exist after 1st wrong attempt");
+    assert!(
+        stored.is_some(),
+        "key should still exist after 1st wrong attempt"
+    );
     let data: serde_json::Value = serde_json::from_str(stored.as_ref().unwrap()).unwrap();
     assert_eq!(data["attempts_remaining"], 1);
 
@@ -321,10 +327,17 @@ async fn recover_verify_enforces_5_attempt_cap(pool: sqlx::PgPool) {
         serde_json::json!({ "email": &email, "code": "999999" }),
     );
     let response = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), 400, "2nd wrong attempt should return 400");
+    assert_eq!(
+        response.status(),
+        400,
+        "2nd wrong attempt should return 400"
+    );
 
     let stored: Option<String> = redis.get(&format!("recover:{email}")).await.unwrap();
-    assert!(stored.is_none(), "key should be deleted after attempts exhausted");
+    assert!(
+        stored.is_none(),
+        "key should be deleted after attempts exhausted"
+    );
 
     // 3rd attempt — no key found, still returns 400
     cleanup_redis_keys(&redis, &["rl:ip:10.99.0.4:auth"]).await;
@@ -333,7 +346,11 @@ async fn recover_verify_enforces_5_attempt_cap(pool: sqlx::PgPool) {
         serde_json::json!({ "email": &email, "code": "123456" }),
     );
     let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), 400, "attempt after exhaustion should return 400");
+    assert_eq!(
+        response.status(),
+        400,
+        "attempt after exhaustion should return 400"
+    );
 }
 
 #[sqlx::test]
@@ -461,12 +478,11 @@ async fn recover_complete_deletes_all_existing_devices(pool: sqlx::PgPool) {
         .unwrap();
     assert_eq!(count, 1, "should have exactly 1 device (the new one)");
 
-    let (dev_id,): (uuid::Uuid,) =
-        sqlx::query_as("SELECT id FROM devices WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (dev_id,): (uuid::Uuid,) = sqlx::query_as("SELECT id FROM devices WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(dev_id, new_device_id);
 }
 
@@ -493,13 +509,15 @@ async fn recover_complete_deletes_all_existing_refresh_tokens(pool: sqlx::PgPool
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), 200);
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 1, "should have exactly 1 refresh token (the new one)");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "should have exactly 1 refresh token (the new one)"
+    );
 }
 
 #[sqlx::test]
@@ -525,13 +543,15 @@ async fn recover_complete_deletes_all_existing_pre_key_bundles(pool: sqlx::PgPoo
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), 200);
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM pre_key_bundles WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 1, "should have exactly 1 pre-key bundle (the new one)");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pre_key_bundles WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "should have exactly 1 pre-key bundle (the new one)"
+    );
 }
 
 #[sqlx::test]

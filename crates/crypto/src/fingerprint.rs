@@ -4,9 +4,7 @@
 //! are communicating with the intended party and not a man-in-the-middle.
 
 use crate::error::CryptoError;
-use libsignal_protocol::{
-    Fingerprint as LibsignalFingerprint, IdentityKey, ScannableFingerprint,
-};
+use libsignal_protocol::{Fingerprint as LibsignalFingerprint, IdentityKey, ScannableFingerprint};
 
 /// Fingerprint version used by Signal protocol.
 const FINGERPRINT_VERSION: u32 = 2;
@@ -60,7 +58,9 @@ pub fn generate_fingerprint(
     let formatted = raw
         .as_bytes()
         .chunks(5)
-        .map(|chunk| std::str::from_utf8(chunk).expect("display_string output is always ASCII digits"))
+        .map(|chunk| {
+            std::str::from_utf8(chunk).expect("display_string output is always ASCII digits")
+        })
         .collect::<Vec<_>>()
         .join(" ");
 
@@ -204,10 +204,8 @@ mod tests {
         let alice_bytes = alice.identity_key().serialize();
         let bob_bytes = bob.identity_key().serialize();
 
-        let fp_alice =
-            generate_fingerprint(&alice_bytes, "alice", &bob_bytes, "bob").unwrap();
-        let fp_bob =
-            generate_fingerprint(&bob_bytes, "bob", &alice_bytes, "alice").unwrap();
+        let fp_alice = generate_fingerprint(&alice_bytes, "alice", &bob_bytes, "bob").unwrap();
+        let fp_bob = generate_fingerprint(&bob_bytes, "bob", &alice_bytes, "alice").unwrap();
 
         assert_eq!(fp_alice.display, fp_bob.display);
     }
@@ -220,10 +218,8 @@ mod tests {
         let alice_bytes = alice.identity_key().serialize();
         let bob_bytes = bob.identity_key().serialize();
 
-        let fp_alice =
-            generate_fingerprint(&alice_bytes, "alice", &bob_bytes, "bob").unwrap();
-        let fp_bob =
-            generate_fingerprint(&bob_bytes, "bob", &alice_bytes, "alice").unwrap();
+        let fp_alice = generate_fingerprint(&alice_bytes, "alice", &bob_bytes, "bob").unwrap();
+        let fp_bob = generate_fingerprint(&bob_bytes, "bob", &alice_bytes, "alice").unwrap();
 
         let result = compare_fingerprints(&fp_alice, &fp_bob.scannable).unwrap();
         assert!(result);
@@ -239,8 +235,7 @@ mod tests {
         let bob_bytes = bob.identity_key().serialize();
         let charlie_bytes = charlie.identity_key().serialize();
 
-        let fp_alice_bob =
-            generate_fingerprint(&alice_bytes, "alice", &bob_bytes, "bob").unwrap();
+        let fp_alice_bob = generate_fingerprint(&alice_bytes, "alice", &bob_bytes, "bob").unwrap();
         let fp_alice_charlie =
             generate_fingerprint(&alice_bytes, "alice", &charlie_bytes, "charlie").unwrap();
 

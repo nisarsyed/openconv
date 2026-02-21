@@ -95,8 +95,7 @@ mod tests {
         let db = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://localhost/openconv_test")
             .unwrap();
-        let redis_config =
-            fred::types::config::Config::from_url("redis://localhost:6379").unwrap();
+        let redis_config = fred::types::config::Config::from_url("redis://localhost:6379").unwrap();
         let redis = fred::clients::Pool::new(redis_config, None, None, None, 1).unwrap();
         let config = Arc::new(ServerConfig {
             database_url: "postgres://localhost/openconv_test".to_string(),
@@ -161,8 +160,8 @@ mod tests {
             jti: uuid::Uuid::new_v4().to_string(),
         };
         let encoding_key = EncodingKey::from_ed_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).unwrap();
-        let token = jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &encoding_key)
-            .unwrap();
+        let token =
+            jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &encoding_key).unwrap();
 
         let request = axum::http::Request::builder()
             .header("Authorization", format!("Bearer {token}"))

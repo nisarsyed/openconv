@@ -99,8 +99,8 @@ pub fn run() {
             app.manage(DbState::new(conn));
 
             let crypto_db_path = app_data_dir.join("crypto.db");
-            let api_base_url =
-                std::env::var("OPENCONV_API_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+            let api_base_url = std::env::var("OPENCONV_API_URL")
+                .unwrap_or_else(|_| "http://localhost:3000".into());
             let auth_svc = auth_service::AuthService::new(crypto_db_path, api_base_url)
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(auth_service::AuthState {

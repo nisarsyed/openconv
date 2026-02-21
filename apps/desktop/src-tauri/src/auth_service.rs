@@ -97,10 +97,8 @@ pub struct AuthState {
 const KEYRING_SERVICE: &str = "com.openconv.auth";
 
 fn store_tokens(access_token: &str, refresh_token: &str) -> Result<(), AppError> {
-    keyring::Entry::new(KEYRING_SERVICE, "access_token")?
-        .set_password(access_token)?;
-    keyring::Entry::new(KEYRING_SERVICE, "refresh_token")?
-        .set_password(refresh_token)?;
+    keyring::Entry::new(KEYRING_SERVICE, "access_token")?.set_password(access_token)?;
+    keyring::Entry::new(KEYRING_SERVICE, "refresh_token")?.set_password(refresh_token)?;
     Ok(())
 }
 
@@ -113,10 +111,10 @@ fn get_refresh_token() -> Result<String, AppError> {
 }
 
 fn clear_tokens() -> Result<(), AppError> {
-    let _ = keyring::Entry::new(KEYRING_SERVICE, "access_token")
-        .and_then(|e| e.delete_credential());
-    let _ = keyring::Entry::new(KEYRING_SERVICE, "refresh_token")
-        .and_then(|e| e.delete_credential());
+    let _ =
+        keyring::Entry::new(KEYRING_SERVICE, "access_token").and_then(|e| e.delete_credential());
+    let _ =
+        keyring::Entry::new(KEYRING_SERVICE, "refresh_token").and_then(|e| e.delete_credential());
     Ok(())
 }
 
@@ -125,14 +123,10 @@ fn clear_tokens() -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 
 fn default_device_name() -> String {
-    gethostname::gethostname()
-        .to_string_lossy()
-        .into_owned()
+    gethostname::gethostname().to_string_lossy().into_owned()
 }
 
-pub fn get_or_create_device_id(
-    conn: &Connection,
-) -> Result<(DeviceId, String), AppError> {
+pub fn get_or_create_device_id(conn: &Connection) -> Result<(DeviceId, String), AppError> {
     let existing: Option<(String, String)> = conn
         .query_row(
             "SELECT id, device_name FROM local_device LIMIT 1",
@@ -256,11 +250,7 @@ impl AuthService {
         Ok(())
     }
 
-    pub async fn register_verify(
-        &self,
-        email: String,
-        code: String,
-    ) -> Result<String, AppError> {
+    pub async fn register_verify(&self, email: String, code: String) -> Result<String, AppError> {
         let resp = self
             .http_client
             .post(self.api_url("/api/auth/register/verify"))
@@ -449,11 +439,7 @@ impl AuthService {
         Ok(())
     }
 
-    pub async fn recover_verify(
-        &self,
-        email: String,
-        code: String,
-    ) -> Result<String, AppError> {
+    pub async fn recover_verify(&self, email: String, code: String) -> Result<String, AppError> {
         let resp = self
             .http_client
             .post(self.api_url("/api/auth/recover/verify"))

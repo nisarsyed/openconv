@@ -23,8 +23,9 @@ fn test_jwt() -> Arc<JwtService> {
     Arc::new(JwtService::new(&jwt_config).unwrap())
 }
 
-async fn build_test_app(pool: sqlx::PgPool) -> (axum::Router, Arc<JwtService>, fred::clients::Pool)
-{
+async fn build_test_app(
+    pool: sqlx::PgPool,
+) -> (axum::Router, Arc<JwtService>, fred::clients::Pool) {
     let config = ServerConfig::default();
     let redis = create_redis_pool(&config.redis).await.unwrap();
 
@@ -126,8 +127,7 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
 #[sqlx::test]
 async fn get_me_returns_current_user_full_profile(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (user_id, _, token) =
-        seed_user(&pool, &jwt, "TestUser", "test_getme@example.com").await;
+    let (user_id, _, token) = seed_user(&pool, &jwt, "TestUser", "test_getme@example.com").await;
 
     let req = authed_get("/api/users/me", &token);
     let response = app.oneshot(req).await.unwrap();
@@ -191,8 +191,7 @@ async fn patch_me_updates_avatar_url(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn patch_me_ignores_unset_fields(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (user_id, _, token) =
-        seed_user(&pool, &jwt, "Original", "patch_partial@example.com").await;
+    let (user_id, _, token) = seed_user(&pool, &jwt, "Original", "patch_partial@example.com").await;
 
     // First set avatar
     sqlx::query("UPDATE users SET avatar_url = $1 WHERE id = $2")
@@ -233,8 +232,7 @@ async fn patch_me_rejects_long_display_name(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn get_user_returns_public_profile_no_email(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (_, _, viewer_token) =
-        seed_user(&pool, &jwt, "Viewer", "viewer@example.com").await;
+    let (_, _, viewer_token) = seed_user(&pool, &jwt, "Viewer", "viewer@example.com").await;
     let (target_id, _, _) = seed_user(&pool, &jwt, "Target", "target@example.com").await;
 
     let req = authed_get(&format!("/api/users/{}", target_id.0), &viewer_token);
@@ -243,7 +241,10 @@ async fn get_user_returns_public_profile_no_email(pool: sqlx::PgPool) {
 
     let json = response_json(response).await;
     assert_eq!(json["display_name"], "Target");
-    assert!(json.get("email").is_none(), "email should not be in public profile");
+    assert!(
+        json.get("email").is_none(),
+        "email should not be in public profile"
+    );
 }
 
 #[sqlx::test]
@@ -271,7 +272,10 @@ async fn search_users_returns_matching_by_display_name(pool: sqlx::PgPool) {
     let json = response_json(response).await;
     let users = json["users"].as_array().unwrap();
     assert_eq!(users.len(), 2);
-    let names: Vec<&str> = users.iter().map(|u| u["display_name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = users
+        .iter()
+        .map(|u| u["display_name"].as_str().unwrap())
+        .collect();
     assert!(names.contains(&"Alice"));
     assert!(names.contains(&"Alicia"));
 }
@@ -332,13 +336,15 @@ async fn get_prekeys_marks_bundle_as_used(pool: sqlx::PgPool) {
         seed_user(&pool, &jwt, "Requester", "prekey_req_used@example.com").await;
 
     let bundle_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO pre_key_bundles (id, user_id, key_data, is_used) VALUES ($1, $2, $3, false)")
-        .bind(bundle_id)
-        .bind(target_id.0)
-        .bind(vec![42u8; 32])
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO pre_key_bundles (id, user_id, key_data, is_used) VALUES ($1, $2, $3, false)",
+    )
+    .bind(bundle_id)
+    .bind(target_id.0)
+    .bind(vec![42u8; 32])
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let req = authed_get(
         &format!("/api/users/{}/prekeys", target_id.0),
@@ -348,20 +354,18 @@ async fn get_prekeys_marks_bundle_as_used(pool: sqlx::PgPool) {
     assert_eq!(response.status(), 200);
 
     // Verify bundle is marked used
-    let is_used: bool =
-        sqlx::query_scalar("SELECT is_used FROM pre_key_bundles WHERE id = $1")
-            .bind(bundle_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let is_used: bool = sqlx::query_scalar("SELECT is_used FROM pre_key_bundles WHERE id = $1")
+        .bind(bundle_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(is_used);
 }
 
 #[sqlx::test]
 async fn get_prekeys_returns_404_when_none_available(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (target_id, _, _) =
-        seed_user(&pool, &jwt, "Target", "prekey_empty@example.com").await;
+    let (target_id, _, _) = seed_user(&pool, &jwt, "Target", "prekey_empty@example.com").await;
     let (_, _, requester_token) =
         seed_user(&pool, &jwt, "Requester", "prekey_req_empty@example.com").await;
 
@@ -376,8 +380,7 @@ async fn get_prekeys_returns_404_when_none_available(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn post_prekeys_stores_new_bundles(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (user_id, _, token) =
-        seed_user(&pool, &jwt, "Uploader", "prekey_upload@example.com").await;
+    let (user_id, _, token) = seed_user(&pool, &jwt, "Uploader", "prekey_upload@example.com").await;
 
     let bundles = vec![vec![1u8; 32], vec![2u8; 32], vec![3u8; 32]];
     let req = authed_post(

@@ -27,27 +27,27 @@
 //! - [`fingerprint`] -- Safety number generation and verification
 
 pub mod error;
-pub mod master_key;
-pub mod storage;
-pub mod identity;
-pub mod prekeys;
-pub mod session;
-pub mod message;
 pub mod file_encryption;
 pub mod fingerprint;
+pub mod identity;
+pub mod master_key;
+pub mod message;
+pub mod prekeys;
+pub mod session;
+pub mod storage;
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn all_public_modules_accessible() {
         use crate::error::CryptoError;
-        use crate::master_key::{MasterKey, DbEncryptionKey};
+        use crate::file_encryption::{EncryptedBlob, FileKey};
+        use crate::fingerprint::Fingerprint;
         use crate::identity;
+        use crate::master_key::{DbEncryptionKey, MasterKey};
+        use crate::message::{EncryptedMessage, MessageType};
         use crate::prekeys;
         use crate::session;
-        use crate::message::{EncryptedMessage, MessageType};
-        use crate::file_encryption::{FileKey, EncryptedBlob};
-        use crate::fingerprint::Fingerprint;
 
         // Verify types are accessible via size_of (compile-time check)
         let _ = (

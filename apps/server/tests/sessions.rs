@@ -31,8 +31,9 @@ async fn cleanup_redis_keys(redis: &fred::clients::Pool, patterns: &[&str]) {
     }
 }
 
-async fn build_test_app(pool: sqlx::PgPool) -> (axum::Router, Arc<JwtService>, fred::clients::Pool)
-{
+async fn build_test_app(
+    pool: sqlx::PgPool,
+) -> (axum::Router, Arc<JwtService>, fred::clients::Pool) {
     let config = ServerConfig::default();
     let redis = create_redis_pool(&config.redis).await.unwrap();
     let jwt = test_jwt();
@@ -224,20 +225,18 @@ async fn refresh_issues_new_token_in_same_family(pool: sqlx::PgPool) {
 
     // New token should exist in DB in same family
     let family_uuid: uuid::Uuid = family.parse().unwrap();
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE family = $1")
-            .bind(family_uuid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE family = $1")
+        .bind(family_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 2); // old + new
 }
 
 #[sqlx::test]
 async fn refresh_reused_token_invalidates_entire_family(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (user_id, device_id, _, refresh_token, family) =
-        seed_user_with_session(&pool, &jwt).await;
+    let (user_id, device_id, _, refresh_token, family) = seed_user_with_session(&pool, &jwt).await;
 
     // Mark the token as already used (simulating prior refresh)
     let claims = jwt.validate_refresh_token(&refresh_token).unwrap();
@@ -363,8 +362,7 @@ async fn refresh_wrong_purpose_returns_401(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn logout_invalidates_current_device_tokens_only(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (user_id, device_id1, access_token1, _, _) =
-        seed_user_with_session(&pool, &jwt).await;
+    let (user_id, device_id1, access_token1, _, _) = seed_user_with_session(&pool, &jwt).await;
 
     // Create second device with its own refresh token
     let device_id2 = openconv_shared::ids::DeviceId::new();
@@ -471,11 +469,7 @@ async fn logout_all_invalidates_all_user_tokens(pool: sqlx::PgPool) {
         .unwrap();
     }
 
-    let req = authed_post(
-        "/api/auth/logout-all",
-        &access_token,
-        serde_json::json!({}),
-    );
+    let req = authed_post("/api/auth/logout-all", &access_token, serde_json::json!({}));
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), 200);
 
@@ -557,8 +551,7 @@ async fn get_devices_excludes_other_users_devices(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn delete_device_removes_device_and_tokens(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;
-    let (user_id, device_id1, access_token, _, _) =
-        seed_user_with_session(&pool, &jwt).await;
+    let (user_id, device_id1, access_token, _, _) = seed_user_with_session(&pool, &jwt).await;
 
     // Add second device with its own token (access_token is from device_id1)
     let device_id2 = openconv_shared::ids::DeviceId::new();
@@ -632,10 +625,7 @@ async fn delete_nonexistent_device_returns_404(pool: sqlx::PgPool) {
     let (_, _, access_token, _, _) = seed_user_with_session(&pool, &jwt).await;
 
     let fake_id = uuid::Uuid::now_v7();
-    let req = authed_delete(
-        &format!("/api/auth/devices/{fake_id}"),
-        &access_token,
-    );
+    let req = authed_delete(&format!("/api/auth/devices/{fake_id}"), &access_token);
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), 404);
 }

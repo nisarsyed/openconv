@@ -80,10 +80,7 @@ impl IntoResponse for RateLimitError {
 }
 
 fn extract_client_ip<B>(req: &Request<B>) -> String {
-    if let Some(ConnectInfo(addr)) = req
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-    {
+    if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<std::net::SocketAddr>>() {
         return addr.ip().to_string();
     }
     if let Some(forwarded) = req.headers().get("x-forwarded-for") {
@@ -398,8 +395,7 @@ mod tests {
     #[tokio::test]
     async fn rate_limit_fails_open_when_redis_unavailable() {
         // Create a pool pointing to a non-existent Redis
-        let config =
-            fred::types::config::Config::from_url("redis://localhost:59999").unwrap();
+        let config = fred::types::config::Config::from_url("redis://localhost:59999").unwrap();
         let pool = fred::clients::Pool::new(config, None, None, None, 1).unwrap();
         // Don't init -- pool is not connected
 

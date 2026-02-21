@@ -31,8 +31,9 @@ async fn cleanup_redis_keys(redis: &fred::clients::Pool, patterns: &[&str]) {
     }
 }
 
-async fn build_test_app(pool: sqlx::PgPool) -> (axum::Router, Arc<JwtService>, fred::clients::Pool)
-{
+async fn build_test_app(
+    pool: sqlx::PgPool,
+) -> (axum::Router, Arc<JwtService>, fred::clients::Pool) {
     let config = ServerConfig::default();
     let redis = create_redis_pool(&config.redis).await.unwrap();
     let jwt = test_jwt();
@@ -68,8 +69,8 @@ fn generate_test_keypair() -> (String, Vec<u8>) {
     use libsignal_protocol::IdentityKeyPair;
 
     let identity = IdentityKeyPair::generate(&mut rand::rng());
-    let public_key_b64 = base64::engine::general_purpose::STANDARD
-        .encode(identity.public_key().serialize());
+    let public_key_b64 =
+        base64::engine::general_purpose::STANDARD.encode(identity.public_key().serialize());
     let pre_key_bundle = vec![1u8, 2, 3, 4, 5]; // Dummy pre-key data
     (public_key_b64, pre_key_bundle)
 }
@@ -81,8 +82,11 @@ fn generate_test_keypair() -> (String, Vec<u8>) {
 #[sqlx::test]
 async fn register_start_new_email_returns_200_generic_message(pool: sqlx::PgPool) {
     let (app, _, redis) = build_test_app(pool).await;
-    cleanup_redis_keys(&redis, &["verify:newuser@example.com", "rl:email:newuser@example.com"])
-        .await;
+    cleanup_redis_keys(
+        &redis,
+        &["verify:newuser@example.com", "rl:email:newuser@example.com"],
+    )
+    .await;
 
     let req = json_request(
         "/api/auth/register/start",
@@ -97,8 +101,11 @@ async fn register_start_new_email_returns_200_generic_message(pool: sqlx::PgPool
     let json = response_json(response).await;
     assert_eq!(json["message"], "Verification code sent");
 
-    cleanup_redis_keys(&redis, &["verify:newuser@example.com", "rl:email:newuser@example.com"])
-        .await;
+    cleanup_redis_keys(
+        &redis,
+        &["verify:newuser@example.com", "rl:email:newuser@example.com"],
+    )
+    .await;
 }
 
 #[sqlx::test]
@@ -135,7 +142,11 @@ async fn register_start_existing_email_returns_same_200(pool: sqlx::PgPool) {
 async fn register_start_stores_code_in_redis_with_ttl(pool: sqlx::PgPool) {
     let (app, _, redis) = build_test_app(pool).await;
     let email = "redischeck@example.com";
-    cleanup_redis_keys(&redis, &[&format!("verify:{email}"), &format!("rl:email:{email}")]).await;
+    cleanup_redis_keys(
+        &redis,
+        &[&format!("verify:{email}"), &format!("rl:email:{email}")],
+    )
+    .await;
 
     let req = json_request(
         "/api/auth/register/start",
@@ -163,7 +174,11 @@ async fn register_start_stores_code_in_redis_with_ttl(pool: sqlx::PgPool) {
         "TTL should be between 1 and 600 seconds, got {ttl}"
     );
 
-    cleanup_redis_keys(&redis, &[&format!("verify:{email}"), &format!("rl:email:{email}")]).await;
+    cleanup_redis_keys(
+        &redis,
+        &[&format!("verify:{email}"), &format!("rl:email:{email}")],
+    )
+    .await;
 }
 
 #[sqlx::test]
@@ -390,9 +405,7 @@ async fn register_complete_returns_tokens_and_ids(pool: sqlx::PgPool) {
     let email = "complete_tokens@example.com";
     cleanup_redis_keys(&redis, &[&format!("rl:email:{email}")]).await;
 
-    let token = jwt
-        .issue_registration_token(email, "Token User")
-        .unwrap();
+    let token = jwt.issue_registration_token(email, "Token User").unwrap();
     let (public_key, pre_key_bundle) = generate_test_keypair();
     let device_id = uuid::Uuid::now_v7();
 
@@ -428,9 +441,7 @@ async fn register_complete_stores_prekey_bundle_with_device(pool: sqlx::PgPool) 
     let email = "complete_prekey@example.com";
     cleanup_redis_keys(&redis, &[&format!("rl:email:{email}")]).await;
 
-    let token = jwt
-        .issue_registration_token(email, "Prekey User")
-        .unwrap();
+    let token = jwt.issue_registration_token(email, "Prekey User").unwrap();
     let (public_key, pre_key_bundle) = generate_test_keypair();
     let device_id = uuid::Uuid::now_v7();
 
@@ -580,12 +591,11 @@ async fn register_complete_stores_refresh_token_in_db(pool: sqlx::PgPool) {
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), 200);
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE device_id = $1")
-            .bind(device_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE device_id = $1")
+        .bind(device_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 1);
 }
 

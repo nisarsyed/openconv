@@ -5,9 +5,9 @@
 //! thresholds, and signed pre-key rotation.
 
 use libsignal_protocol::{
-    GenericSignedPreKey, KeyPair, KyberPreKeyId, KyberPreKeyRecord, KyberPreKeyStore,
+    kem, GenericSignedPreKey, KeyPair, KyberPreKeyId, KyberPreKeyRecord, KyberPreKeyStore,
     PreKeyId, PreKeyRecord, PreKeyStore, SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore,
-    Timestamp, kem,
+    Timestamp,
 };
 use rusqlite::Connection;
 
@@ -58,25 +58,27 @@ pub struct SerializedPreKey {
 ///
 /// The returned bundle should be uploaded to the server so that other clients
 /// can establish PQXDH sessions with this device.
-pub fn generate_pre_key_bundle(conn: &Connection, user_id: &str) -> Result<SerializedPreKeyBundle, CryptoError> {
+pub fn generate_pre_key_bundle(
+    conn: &Connection,
+    user_id: &str,
+) -> Result<SerializedPreKeyBundle, CryptoError> {
     let identity = get_identity(conn)?;
 
     let mut store = CryptoStore::new(conn);
     let reg_bytes = store
         .get_config("registration_id")?
-        .ok_or_else(|| CryptoError::IdentityNotInitialized)?;
+        .ok_or(CryptoError::IdentityNotInitialized)?;
     let arr: [u8; 4] = reg_bytes
         .try_into()
         .map_err(|_| CryptoError::StorageError("invalid registration_id length".into()))?;
     let registration_id = u32::from_be_bytes(arr);
 
     // Determine next signed pre-key ID
-    let next_spk_id: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_signed_pre_keys",
-            [],
-            |row| row.get(0),
-        )?;
+    let next_spk_id: u32 = conn.query_row(
+        "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_signed_pre_keys",
+        [],
+        |row| row.get(0),
+    )?;
 
     // Generate signed pre-key
     let spk_pair = KeyPair::generate(&mut rand::rng());
@@ -104,12 +106,11 @@ pub fn generate_pre_key_bundle(conn: &Connection, user_id: &str) -> Result<Seria
     .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
 
     // Generate Kyber (PQXDH) last-resort pre-key
-    let next_kyber_id: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_kyber_pre_keys",
-            [],
-            |row| row.get(0),
-        )?;
+    let next_kyber_id: u32 = conn.query_row(
+        "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_kyber_pre_keys",
+        [],
+        |row| row.get(0),
+    )?;
 
     let kyber_record = KyberPreKeyRecord::generate(
         kem::KeyType::Kyber1024,
@@ -118,9 +119,11 @@ pub fn generate_pre_key_bundle(conn: &Connection, user_id: &str) -> Result<Seria
     )
     .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
 
-    let kyber_pub = kyber_record.public_key()
+    let kyber_pub = kyber_record
+        .public_key()
         .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
-    let kyber_sig = kyber_record.signature()
+    let kyber_sig = kyber_record
+        .signature()
         .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
 
     futures::executor::block_on(
@@ -151,12 +154,11 @@ pub fn generate_one_time_pre_keys(
 ) -> Result<Vec<SerializedPreKey>, CryptoError> {
     let tx = conn.unchecked_transaction()?;
 
-    let start_id: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_pre_keys",
-            [],
-            |row| row.get(0),
-        )?;
+    let start_id: u32 = conn.query_row(
+        "SELECT COALESCE(MAX(key_id), 0) + 1 FROM crypto_pre_keys",
+        [],
+        |row| row.get(0),
+    )?;
 
     let mut keys = Vec::with_capacity(count as usize);
     let mut store = CryptoStore::new(conn);
@@ -211,7 +213,10 @@ pub fn needs_pre_key_replenishment(conn: &Connection, threshold: u32) -> Result<
 ///
 /// The old signed pre-key is retained in storage because existing sessions
 /// may still reference it. Returns an updated bundle for server upload.
-pub fn rotate_signed_pre_key(conn: &Connection, user_id: &str) -> Result<SerializedPreKeyBundle, CryptoError> {
+pub fn rotate_signed_pre_key(
+    conn: &Connection,
+    user_id: &str,
+) -> Result<SerializedPreKeyBundle, CryptoError> {
     generate_pre_key_bundle(conn, user_id)
 }
 
@@ -273,20 +278,16 @@ mod tests {
         let bundle = generate_pre_key_bundle(&conn, "test-user-id").unwrap();
 
         let row_count: u32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_signed_pre_keys",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_signed_pre_keys", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(row_count, 1);
 
         let stored_id: u32 = conn
-            .query_row(
-                "SELECT key_id FROM crypto_signed_pre_keys",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT key_id FROM crypto_signed_pre_keys", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(stored_id, bundle.signed_pre_key_id);
     }
@@ -397,11 +398,9 @@ mod tests {
         assert_ne!(first.signed_pre_key_id, second.signed_pre_key_id);
 
         let row_count: u32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_signed_pre_keys",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_signed_pre_keys", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(row_count, 2);
     }
@@ -430,8 +429,11 @@ mod tests {
         let last_id_batch1 = batch1.last().unwrap().key_id;
 
         // Delete some keys from the first batch (simulates consumption)
-        conn.execute("DELETE FROM crypto_pre_keys WHERE key_id = ?1", [batch1[2].key_id])
-            .unwrap();
+        conn.execute(
+            "DELETE FROM crypto_pre_keys WHERE key_id = ?1",
+            [batch1[2].key_id],
+        )
+        .unwrap();
 
         let batch2 = generate_one_time_pre_keys(&conn, 3).unwrap();
         let first_id_batch2 = batch2[0].key_id;

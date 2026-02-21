@@ -195,16 +195,12 @@ impl JwtService {
         Ok(data.claims)
     }
 
-    pub fn validate_recovery_token(
-        &self,
-        token: &str,
-    ) -> Result<RecoveryClaims, OpenConvError> {
+    pub fn validate_recovery_token(&self, token: &str) -> Result<RecoveryClaims, OpenConvError> {
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.required_spec_claims.clear();
         validation.set_required_spec_claims(&["exp"]);
-        let data =
-            jsonwebtoken::decode::<RecoveryClaims>(token, &self.decoding_key, &validation)
-                .map_err(|_| OpenConvError::Unauthorized)?;
+        let data = jsonwebtoken::decode::<RecoveryClaims>(token, &self.decoding_key, &validation)
+            .map_err(|_| OpenConvError::Unauthorized)?;
         if data.claims.purpose != "recovery" {
             return Err(OpenConvError::Unauthorized);
         }
@@ -303,9 +299,7 @@ mod tests {
         let svc = test_jwt_service();
         let uid = UserId::new();
         let did = DeviceId::new();
-        let (token, _) = svc
-            .issue_refresh_token(&uid, &did, "fam")
-            .unwrap();
+        let (token, _) = svc.issue_refresh_token(&uid, &did, "fam").unwrap();
         assert!(svc.validate_access_token(&token).is_err());
     }
 
@@ -356,12 +350,9 @@ mod tests {
             iat: 900,
             jti: uuid::Uuid::new_v4().to_string(),
         };
-        let token = jsonwebtoken::encode(
-            &Header::new(Algorithm::EdDSA),
-            &claims,
-            &svc.encoding_key,
-        )
-        .unwrap();
+        let token =
+            jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &svc.encoding_key)
+                .unwrap();
         assert!(svc.validate_access_token(&token).is_err());
     }
 

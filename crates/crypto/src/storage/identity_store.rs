@@ -170,7 +170,10 @@ mod tests {
         let store = CryptoStore::new(&conn);
         let loaded = futures::executor::block_on(store.get_identity_key_pair()).unwrap();
         assert_eq!(loaded.public_key(), pair.public_key());
-        assert_eq!(loaded.private_key().serialize(), pair.private_key().serialize());
+        assert_eq!(
+            loaded.private_key().serialize(),
+            pair.private_key().serialize()
+        );
     }
 
     #[test]
@@ -178,7 +181,9 @@ mod tests {
         let conn = init_test_db();
         let store = CryptoStore::new(&conn);
         let reg_id: u32 = 12345;
-        store.store_config("registration_id", &reg_id.to_be_bytes()).unwrap();
+        store
+            .store_config("registration_id", &reg_id.to_be_bytes())
+            .unwrap();
 
         let loaded = futures::executor::block_on(store.get_local_registration_id()).unwrap();
         assert_eq!(loaded, reg_id);
@@ -191,10 +196,8 @@ mod tests {
         let pair = IdentityKeyPair::generate(&mut rand::rng());
         let addr = ProtocolAddress::new("user1".to_string(), DeviceId::new(1).unwrap());
 
-        let result = futures::executor::block_on(
-            store.save_identity(&addr, pair.identity_key()),
-        )
-        .unwrap();
+        let result =
+            futures::executor::block_on(store.save_identity(&addr, pair.identity_key())).unwrap();
         assert_eq!(result, IdentityChange::NewOrUnchanged);
 
         let count: i32 = conn
@@ -216,10 +219,8 @@ mod tests {
         let addr = ProtocolAddress::new("user1".to_string(), DeviceId::new(1).unwrap());
 
         futures::executor::block_on(store.save_identity(&addr, pair_a.identity_key())).unwrap();
-        let result = futures::executor::block_on(
-            store.save_identity(&addr, pair_b.identity_key()),
-        )
-        .unwrap();
+        let result =
+            futures::executor::block_on(store.save_identity(&addr, pair_b.identity_key())).unwrap();
         assert_eq!(result, IdentityChange::ReplacedExisting);
 
         let stored_key: Vec<u8> = conn
@@ -229,7 +230,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(stored_key.as_slice(), pair_b.identity_key().serialize().as_ref());
+        assert_eq!(
+            stored_key.as_slice(),
+            pair_b.identity_key().serialize().as_ref()
+        );
     }
 
     #[test]
@@ -240,9 +244,11 @@ mod tests {
         let addr = ProtocolAddress::new("user1".to_string(), DeviceId::new(1).unwrap());
 
         futures::executor::block_on(store.save_identity(&addr, pair.identity_key())).unwrap();
-        let trusted = futures::executor::block_on(
-            store.is_trusted_identity(&addr, pair.identity_key(), Direction::Sending),
-        )
+        let trusted = futures::executor::block_on(store.is_trusted_identity(
+            &addr,
+            pair.identity_key(),
+            Direction::Sending,
+        ))
         .unwrap();
         assert!(trusted);
     }
@@ -254,9 +260,11 @@ mod tests {
         let pair = IdentityKeyPair::generate(&mut rand::rng());
         let addr = ProtocolAddress::new("never-seen".to_string(), DeviceId::new(1).unwrap());
 
-        let trusted = futures::executor::block_on(
-            store.is_trusted_identity(&addr, pair.identity_key(), Direction::Receiving),
-        )
+        let trusted = futures::executor::block_on(store.is_trusted_identity(
+            &addr,
+            pair.identity_key(),
+            Direction::Receiving,
+        ))
         .unwrap();
         assert!(trusted);
     }
@@ -270,9 +278,11 @@ mod tests {
         let addr = ProtocolAddress::new("user1".to_string(), DeviceId::new(1).unwrap());
 
         futures::executor::block_on(store.save_identity(&addr, pair_a.identity_key())).unwrap();
-        let trusted = futures::executor::block_on(
-            store.is_trusted_identity(&addr, pair_b.identity_key(), Direction::Sending),
-        )
+        let trusted = futures::executor::block_on(store.is_trusted_identity(
+            &addr,
+            pair_b.identity_key(),
+            Direction::Sending,
+        ))
         .unwrap();
         assert!(!trusted);
     }

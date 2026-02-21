@@ -260,8 +260,7 @@ mod tests {
         assert_eq!(back.code, "123456");
 
         // RegisterCompleteRequest
-        let bundle_b64 =
-            base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]);
+        let bundle_b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]);
         let req = RegisterCompleteRequest {
             registration_token: "tok".into(),
             public_key: "pk".into(),
@@ -300,8 +299,7 @@ mod tests {
         assert_eq!(back.code, "654321");
 
         // RecoverCompleteRequest
-        let new_bundle_b64 =
-            base64::engine::general_purpose::STANDARD.encode([4u8, 5, 6]);
+        let new_bundle_b64 = base64::engine::general_purpose::STANDARD.encode([4u8, 5, 6]);
         let req = RecoverCompleteRequest {
             recovery_token: "rtok".into(),
             new_public_key: "npk".into(),

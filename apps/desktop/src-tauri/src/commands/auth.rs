@@ -10,10 +10,7 @@ pub async fn auth_register_start(
     display_name: String,
     state: State<'_, AuthState>,
 ) -> Result<(), AppError> {
-    state
-        .auth_service
-        .register_start(email, display_name)
-        .await
+    state.auth_service.register_start(email, display_name).await
 }
 
 #[tauri::command]

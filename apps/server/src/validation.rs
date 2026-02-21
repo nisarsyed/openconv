@@ -12,22 +12,26 @@ pub fn validate_display_name(name: &str) -> Result<String, ServerError> {
         return Err(OpenConvError::Validation("display name is required".into()).into());
     }
     if trimmed.chars().count() > 64 {
-        return Err(
-            OpenConvError::Validation("display name must be 64 characters or fewer".into()).into(),
-        );
+        return Err(OpenConvError::Validation(
+            "display name must be 64 characters or fewer".into(),
+        )
+        .into());
     }
     if trimmed.chars().any(|c| c.is_control()) {
-        return Err(
-            OpenConvError::Validation("display name must not contain control characters".into())
-                .into(),
-        );
+        return Err(OpenConvError::Validation(
+            "display name must not contain control characters".into(),
+        )
+        .into());
     }
     Ok(trimmed)
 }
 
 /// Escape ILIKE metacharacters (`%` and `_`) in a search pattern.
 pub fn escape_ilike(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]

@@ -100,10 +100,10 @@ pub async fn update_me(
             return Err(OpenConvError::Validation("avatar_url must not be empty".into()).into());
         }
         if url.len() > 2048 {
-            return Err(
-                OpenConvError::Validation("avatar_url must be 2048 characters or fewer".into())
-                    .into(),
-            );
+            return Err(OpenConvError::Validation(
+                "avatar_url must be 2048 characters or fewer".into(),
+            )
+            .into());
         }
     }
 
@@ -130,9 +130,8 @@ pub async fn update_me(
 
     builder.push(" WHERE id = ");
     builder.push_bind(auth_user.user_id.0);
-    builder.push(
-        " RETURNING id, email, display_name, avatar_url, public_key, created_at, updated_at",
-    );
+    builder
+        .push(" RETURNING id, email, display_name, avatar_url, public_key, created_at, updated_at");
 
     let row = builder
         .build()
@@ -149,14 +148,13 @@ pub async fn get_user(
     _auth_user: AuthUser,
     Path(user_id): Path<uuid::Uuid>,
 ) -> Result<Json<PublicProfileResponse>, ServerError> {
-    let row = sqlx::query(
-        "SELECT id, display_name, avatar_url, public_key FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?
-    .ok_or(ServerError(OpenConvError::NotFound))?;
+    let row =
+        sqlx::query("SELECT id, display_name, avatar_url, public_key FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?
+            .ok_or(ServerError(OpenConvError::NotFound))?;
 
     Ok(Json(public_profile_from_row(&row)))
 }
@@ -257,17 +255,17 @@ pub async fn upload_prekeys(
         return Err(OpenConvError::Validation("pre_key_bundles must not be empty".into()).into());
     }
     if req.pre_key_bundles.len() > 100 {
-        return Err(
-            OpenConvError::Validation("pre_key_bundles must not exceed 100".into()).into(),
-        );
+        return Err(OpenConvError::Validation("pre_key_bundles must not exceed 100".into()).into());
     }
-    if req.pre_key_bundles.iter().any(|b| b.len() > MAX_BUNDLE_SIZE) {
-        return Err(
-            OpenConvError::Validation(format!(
-                "each pre-key bundle must be {MAX_BUNDLE_SIZE} bytes or fewer"
-            ))
-            .into(),
-        );
+    if req
+        .pre_key_bundles
+        .iter()
+        .any(|b| b.len() > MAX_BUNDLE_SIZE)
+    {
+        return Err(OpenConvError::Validation(format!(
+            "each pre-key bundle must be {MAX_BUNDLE_SIZE} bytes or fewer"
+        ))
+        .into());
     }
 
     let mut tx = state

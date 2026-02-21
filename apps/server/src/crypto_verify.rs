@@ -3,9 +3,7 @@ use openconv_shared::error::OpenConvError;
 
 /// Parse a base64-encoded public key string into a libsignal PublicKey.
 /// Expects 33 bytes after base64 decoding (Curve25519 compressed point).
-pub fn parse_public_key(
-    base64_key: &str,
-) -> Result<libsignal_protocol::PublicKey, OpenConvError> {
+pub fn parse_public_key(base64_key: &str) -> Result<libsignal_protocol::PublicKey, OpenConvError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_key)
         .map_err(|e| OpenConvError::Validation(format!("invalid base64 public key: {e}")))?;
@@ -66,7 +64,9 @@ mod tests {
             .private_key()
             .calculate_signature(challenge, &mut rand::rng())
             .unwrap();
-        let valid = keypair2.public_key().verify_signature(challenge, &signature);
+        let valid = keypair2
+            .public_key()
+            .verify_signature(challenge, &signature);
         assert!(!valid);
     }
 

@@ -4,8 +4,8 @@
 //! on corruption, and skipped message key pruning.
 
 use libsignal_protocol::{
-    DeviceId, IdentityKey, PreKeyBundle, ProtocolAddress, PublicKey,
-    SignedPreKeyId, KyberPreKeyId, kem,
+    kem, DeviceId, IdentityKey, KyberPreKeyId, PreKeyBundle, ProtocolAddress, PublicKey,
+    SignedPreKeyId,
 };
 use rusqlite::Connection;
 
@@ -113,10 +113,7 @@ pub fn recover_session(
 ///
 /// Returns the number of entries deleted. Recommended to call on app startup
 /// with `max_age_seconds = 604800` (7 days).
-pub fn prune_old_skipped_keys(
-    conn: &Connection,
-    max_age_seconds: u64,
-) -> Result<u32, CryptoError> {
+pub fn prune_old_skipped_keys(conn: &Connection, max_age_seconds: u64) -> Result<u32, CryptoError> {
     let store = CryptoStore::new(conn);
     store.prune_skipped_message_keys(max_age_seconds)
 }
@@ -144,11 +141,7 @@ mod tests {
 
         // Session should exist in Alice's DB
         let session_count: u32 = alice_conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_sessions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(session_count, 1);
     }
@@ -190,11 +183,7 @@ mod tests {
 
         // No session should be stored
         let session_count: u32 = alice_conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_sessions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(session_count, 0);
     }
@@ -214,11 +203,7 @@ mod tests {
         recover_session(&alice_conn, &address).unwrap();
 
         let session_count: u32 = alice_conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_sessions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(session_count, 0);
     }
@@ -378,11 +363,7 @@ mod tests {
         generate_identity(&alice_conn).unwrap();
 
         let session_before: u32 = alice_conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_sessions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_sessions", [], |row| row.get(0))
             .unwrap();
         let identity_before: u32 = alice_conn
             .query_row(
@@ -395,11 +376,7 @@ mod tests {
         let _ = create_outgoing_session(&alice_conn, b"bad data");
 
         let session_after: u32 = alice_conn
-            .query_row(
-                "SELECT COUNT(*) FROM crypto_sessions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM crypto_sessions", [], |row| row.get(0))
             .unwrap();
         let identity_after: u32 = alice_conn
             .query_row(

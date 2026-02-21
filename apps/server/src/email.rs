@@ -42,22 +42,18 @@ impl SmtpEmailService {
         use lettre::transport::smtp::authentication::Credentials;
         use lettre::AsyncSmtpTransport;
 
-        let creds = Credentials::new(
-            config.smtp_username.clone(),
-            config.smtp_password.clone(),
-        );
+        let creds = Credentials::new(config.smtp_username.clone(), config.smtp_password.clone());
 
-        let transport = AsyncSmtpTransport::<lettre::Tokio1Executor>::starttls_relay(&config.smtp_host)
-            .map_err(|e| OpenConvError::Internal(format!("SMTP relay error: {e}")))?
-            .port(config.smtp_port)
-            .credentials(creds)
-            .build();
+        let transport =
+            AsyncSmtpTransport::<lettre::Tokio1Executor>::starttls_relay(&config.smtp_host)
+                .map_err(|e| OpenConvError::Internal(format!("SMTP relay error: {e}")))?
+                .port(config.smtp_port)
+                .credentials(creds)
+                .build();
 
         let from = format!("{} <{}>", config.from_name, config.from_address)
             .parse()
-            .map_err(|e| {
-                OpenConvError::Internal(format!("invalid from address: {e}"))
-            })?;
+            .map_err(|e| OpenConvError::Internal(format!("invalid from address: {e}")))?;
 
         Ok(Self { transport, from })
     }
@@ -79,9 +75,7 @@ impl SmtpEmailService {
         self.transport
             .send(message)
             .await
-            .map_err(|e| {
-                OpenConvError::ServiceUnavailable(format!("email send failed: {e}"))
-            })?;
+            .map_err(|e| OpenConvError::ServiceUnavailable(format!("email send failed: {e}")))?;
 
         Ok(())
     }
@@ -93,7 +87,9 @@ impl EmailService for SmtpEmailService {
         self.send_email(
             to,
             "OpenConv - Verification Code",
-            format!("Your OpenConv verification code is: {code}\n\nThis code expires in 10 minutes."),
+            format!(
+                "Your OpenConv verification code is: {code}\n\nThis code expires in 10 minutes."
+            ),
         )
         .await
     }
@@ -115,14 +111,19 @@ mod tests {
     #[tokio::test]
     async fn mock_email_service_implements_trait() {
         let svc = MockEmailService::new();
-        assert!(svc.send_verification_code("a@b.com", "123456").await.is_ok());
+        assert!(svc
+            .send_verification_code("a@b.com", "123456")
+            .await
+            .is_ok());
         assert!(svc.send_recovery_code("a@b.com", "654321").await.is_ok());
     }
 
     #[tokio::test]
     async fn mock_email_send_verification_code_succeeds() {
         let svc = MockEmailService::new();
-        let result = svc.send_verification_code("test@example.com", "999999").await;
+        let result = svc
+            .send_verification_code("test@example.com", "999999")
+            .await;
         assert!(result.is_ok());
     }
 

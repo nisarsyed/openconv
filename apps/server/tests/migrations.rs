@@ -539,15 +539,13 @@ async fn devices_table_accepts_uuid_v7_pk(pool: PgPool) {
 
     // UUID v7 (time-sortable) -- simulate with now_v7
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)",
-    )
-    .bind(device_id)
-    .bind(user_id)
-    .bind("MacBook Pro")
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
+        .bind(device_id)
+        .bind(user_id)
+        .bind("MacBook Pro")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let row: (uuid::Uuid, String) =
         sqlx::query_as("SELECT id, device_name FROM devices WHERE id = $1")
@@ -566,15 +564,13 @@ async fn devices_fk_rejects_nonexistent_user(pool: PgPool) {
     let fake_user = uuid::Uuid::new_v4();
     let device_id = uuid::Uuid::now_v7();
 
-    let err = sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)",
-    )
-    .bind(device_id)
-    .bind(fake_user)
-    .bind("Ghost Device")
-    .execute(&pool)
-    .await
-    .unwrap_err();
+    let err = sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
+        .bind(device_id)
+        .bind(fake_user)
+        .bind("Ghost Device")
+        .execute(&pool)
+        .await
+        .unwrap_err();
 
     assert_eq!(pg_error_code(&err).as_deref(), Some(PG_FK_VIOLATION));
 }
@@ -740,7 +736,10 @@ async fn refresh_tokens_cascade_delete_on_user_removal(pool: PgPool) {
         .await
         .unwrap();
 
-    assert_eq!(count.0, 0, "refresh token should be cascade deleted with user");
+    assert_eq!(
+        count.0, 0,
+        "refresh token should be cascade deleted with user"
+    );
 }
 
 /// Refresh tokens family index exists.
@@ -778,7 +777,10 @@ async fn users_public_key_changed_at_defaults_to_null(pool: PgPool) {
             .await
             .unwrap();
 
-    assert!(row.0.is_none(), "public_key_changed_at should default to NULL");
+    assert!(
+        row.0.is_none(),
+        "public_key_changed_at should default to NULL"
+    );
 }
 
 // ─── Section 03: Pre-key bundles device_id ───────────────────────────────────
@@ -855,15 +857,13 @@ async fn prekey_bundles_query_matches_device_or_null(pool: PgPool) {
         .unwrap();
 
     // Bundle with device_id
-    sqlx::query(
-        "INSERT INTO pre_key_bundles (user_id, key_data, device_id) VALUES ($1, $2, $3)",
-    )
-    .bind(user_id)
-    .bind(b"device_key" as &[u8])
-    .bind(device_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO pre_key_bundles (user_id, key_data, device_id) VALUES ($1, $2, $3)")
+        .bind(user_id)
+        .bind(b"device_key" as &[u8])
+        .bind(device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Bundle without device_id (legacy)
     sqlx::query("INSERT INTO pre_key_bundles (user_id, key_data) VALUES ($1, $2)")
@@ -883,7 +883,11 @@ async fn prekey_bundles_query_matches_device_or_null(pool: PgPool) {
     .await
     .unwrap();
 
-    assert_eq!(rows.len(), 2, "should return device-specific and legacy NULL bundles");
+    assert_eq!(
+        rows.len(),
+        2,
+        "should return device-specific and legacy NULL bundles"
+    );
 }
 
 // ─── Section 03: Refresh token cleanup ───────────────────────────────────────

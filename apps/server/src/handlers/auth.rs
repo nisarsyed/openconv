@@ -108,12 +108,11 @@ pub async fn register_start(
     .map_err(|_| OpenConvError::RateLimited)?;
 
     // Check if email already exists — always return the same response (privacy-first)
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
-            .bind(&email)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+        .bind(&email)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
 
     if !exists {
         let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
@@ -163,11 +162,7 @@ pub async fn register_verify(
     use fred::interfaces::LuaInterface;
     let result: Vec<fred::types::Value> = state
         .redis
-        .eval(
-            VERIFY_CODE_SCRIPT,
-            vec![key],
-            vec![req.code.clone()],
-        )
+        .eval(VERIFY_CODE_SCRIPT, vec![key], vec![req.code.clone()])
         .await
         .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
 
@@ -189,9 +184,7 @@ pub async fn register_verify(
                 _ => String::new(),
             };
 
-            let token = state
-                .jwt
-                .issue_registration_token(&email, &display_name)?;
+            let token = state.jwt.issue_registration_token(&email, &display_name)?;
 
             Ok(Json(RegisterVerifyResponse {
                 registration_token: token,
@@ -288,9 +281,10 @@ pub async fn register_complete(
     // 4. Generate token family and issue tokens
     let family = uuid::Uuid::now_v7().to_string();
     let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
-    let (refresh_token, jti_str) = state
-        .jwt
-        .issue_refresh_token(&user_id, &req.device_id, &family)?;
+    let (refresh_token, jti_str) =
+        state
+            .jwt
+            .issue_refresh_token(&user_id, &req.device_id, &family)?;
 
     let jti: uuid::Uuid = jti_str
         .parse()
@@ -360,8 +354,7 @@ pub async fn challenge(
 
     // Generate 32 bytes of cryptographic randomness
     let challenge_bytes: [u8; 32] = rand::rng().random();
-    let challenge_b64 =
-        base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
+    let challenge_b64 = base64::engine::general_purpose::STANDARD.encode(challenge_bytes);
 
     // Check if user exists — always return a challenge regardless (privacy-first)
     let exists: bool =
@@ -433,22 +426,18 @@ pub async fn login_verify(
         .map_err(|_| OpenConvError::Internal("corrupt challenge data".into()))?;
 
     // 6. Verify signature using shared crypto_verify module
-    if !crate::crypto_verify::verify_challenge_signature(
-        &public_key,
-        &challenge_bytes,
-        &sig_bytes,
-    ) {
+    if !crate::crypto_verify::verify_challenge_signature(&public_key, &challenge_bytes, &sig_bytes)
+    {
         return Err(OpenConvError::Unauthorized.into());
     }
 
     // 7. Look up user by public_key
-    let user_id: uuid::Uuid =
-        sqlx::query_scalar("SELECT id FROM users WHERE public_key = $1")
-            .bind(&req.public_key)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?
-            .ok_or(OpenConvError::Unauthorized)?;
+    let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE public_key = $1")
+        .bind(&req.public_key)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?
+        .ok_or(OpenConvError::Unauthorized)?;
 
     let user_id = UserId(user_id);
 
@@ -476,9 +465,10 @@ pub async fn login_verify(
     // 9. Issue tokens
     let family = uuid::Uuid::now_v7().to_string();
     let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
-    let (refresh_token, jti_str) = state
-        .jwt
-        .issue_refresh_token(&user_id, &req.device_id, &family)?;
+    let (refresh_token, jti_str) =
+        state
+            .jwt
+            .issue_refresh_token(&user_id, &req.device_id, &family)?;
 
     // 10. Store refresh token in database
     let jti: uuid::Uuid = jti_str
@@ -560,13 +550,11 @@ pub async fn refresh(
     // 5. Check for token reuse (breach detection)
     if is_used {
         // Invalidate entire token family
-        sqlx::query(
-            "UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE family = $1",
-        )
-        .bind(family_uuid)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+        sqlx::query("UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE family = $1")
+            .bind(family_uuid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
 
         tx.commit()
             .await
@@ -584,9 +572,10 @@ pub async fn refresh(
 
     // 7. Issue new token pair in the same family
     let access_token = state.jwt.issue_access_token(&user_id, &device_id)?;
-    let (refresh_token, new_jti_str) = state
-        .jwt
-        .issue_refresh_token(&user_id, &device_id, &claims.family)?;
+    let (refresh_token, new_jti_str) =
+        state
+            .jwt
+            .issue_refresh_token(&user_id, &device_id, &claims.family)?;
 
     let new_jti: uuid::Uuid = new_jti_str
         .parse()
@@ -686,12 +675,11 @@ pub async fn revoke_device(
     Path(device_id): Path<DeviceId>,
 ) -> Result<StatusCode, ServerError> {
     // Look up the device
-    let owner: Option<(uuid::Uuid,)> =
-        sqlx::query_as("SELECT user_id FROM devices WHERE id = $1")
-            .bind(device_id.0)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+    let owner: Option<(uuid::Uuid,)> = sqlx::query_as("SELECT user_id FROM devices WHERE id = $1")
+        .bind(device_id.0)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
 
     let (owner_id,) = owner.ok_or(OpenConvError::NotFound)?;
 
@@ -806,12 +794,11 @@ pub async fn recover_start(
         .await
         .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
 
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
-            .bind(&email)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+        .bind(&email)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
 
     if exists {
         if let Err(e) = state.email.send_recovery_code(&email, &code).await {
@@ -843,11 +830,7 @@ pub async fn recover_verify(
 
     let stored = match stored {
         Some(s) => s,
-        None => {
-            return Err(
-                OpenConvError::Validation("invalid or expired code".into()).into(),
-            )
-        }
+        None => return Err(OpenConvError::Validation("invalid or expired code".into()).into()),
     };
 
     let data: RecoveryData = serde_json::from_str(&stored)
@@ -859,17 +842,11 @@ pub async fn recover_verify(
             .del::<(), _>(&key)
             .await
             .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
-        return Err(
-            OpenConvError::Validation("code expired, request a new one".into()).into(),
-        );
+        return Err(OpenConvError::Validation("code expired, request a new one".into()).into());
     }
 
     // Constant-time comparison to prevent timing attacks
-    let codes_match: bool = data
-        .code
-        .as_bytes()
-        .ct_eq(req.code.as_bytes())
-        .into();
+    let codes_match: bool = data.code.as_bytes().ct_eq(req.code.as_bytes()).into();
 
     if codes_match {
         // Delete the consumed key
@@ -880,15 +857,12 @@ pub async fn recover_verify(
             .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
 
         // Look up user_id by email
-        let user_id: uuid::Uuid =
-            sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-                .bind(&email)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?
-                .ok_or_else(|| {
-                    OpenConvError::Validation("invalid or expired code".into())
-                })?;
+        let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?
+            .ok_or_else(|| OpenConvError::Validation("invalid or expired code".into()))?;
 
         let uid = UserId(user_id);
         let token = state.jwt.issue_recovery_token(&email, &uid)?;
@@ -927,9 +901,7 @@ pub async fn recover_complete(
     Json(req): Json<RecoverCompleteRequest>,
 ) -> Result<Json<RecoverCompleteResponse>, ServerError> {
     // 1. Validate the recovery token
-    let claims = state
-        .jwt
-        .validate_recovery_token(&req.recovery_token)?;
+    let claims = state.jwt.validate_recovery_token(&req.recovery_token)?;
 
     let user_id: UserId = claims
         .user_id
@@ -1024,9 +996,10 @@ pub async fn recover_complete(
     // 5. Issue new tokens
     let family = uuid::Uuid::now_v7().to_string();
     let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
-    let (refresh_token, jti_str) = state
-        .jwt
-        .issue_refresh_token(&user_id, &req.device_id, &family)?;
+    let (refresh_token, jti_str) =
+        state
+            .jwt
+            .issue_refresh_token(&user_id, &req.device_id, &family)?;
 
     let jti: uuid::Uuid = jti_str
         .parse()

@@ -45,9 +45,7 @@ mod tests {
         // SenderKeyRecord::new_empty() is pub(crate), so deserialize from empty protobuf
         let record = SenderKeyRecord::deserialize(&[]).unwrap();
 
-        let result = futures::executor::block_on(
-            store.store_sender_key(&addr, dist_id, &record),
-        );
+        let result = futures::executor::block_on(store.store_sender_key(&addr, dist_id, &record));
         assert!(result.is_ok());
     }
 
