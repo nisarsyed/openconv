@@ -647,7 +647,8 @@ pub async fn list_devices(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<DevicesListResponse>, ServerError> {
-    let rows: Vec<(uuid::Uuid, String, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>)> =
+    type DeviceRow = (uuid::Uuid, String, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>);
+    let rows: Vec<DeviceRow> =
         sqlx::query_as(
             "SELECT id, device_name, last_active, created_at FROM devices WHERE user_id = $1 ORDER BY last_active DESC",
         )

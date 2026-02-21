@@ -48,9 +48,7 @@ describe("RecoverPage", () => {
     });
     renderRecoverPage();
     await user.type(screen.getByLabelText(/email/i), "test@example.com");
-    await user.click(
-      screen.getByRole("button", { name: /send recovery/i }),
-    );
+    await user.click(screen.getByRole("button", { name: /send recovery/i }));
     await waitFor(() => {
       expect(screen.getByText(/sent a recovery code/i)).toBeInTheDocument();
     });

@@ -38,7 +38,7 @@ describe("AuthSlice", () => {
     expect(s.keyPair).not.toHaveProperty("privateKey");
   });
 
-  it("logout clears all auth state and resets steps", () => {
+  it("logout clears all auth state and resets steps", async () => {
     store.setState({
       currentUser: mockUser,
       keyPair: { publicKey: "pk" },
@@ -48,8 +48,7 @@ describe("AuthSlice", () => {
       registrationToken: "tok",
       recoveryToken: "rtok",
     });
-    // logout is async but resets state synchronously in the set() call
-    store.getState().logout();
+    await store.getState().logout();
     const s = store.getState();
     expect(s.currentUser).toBeNull();
     expect(s.isAuthenticated).toBe(false);

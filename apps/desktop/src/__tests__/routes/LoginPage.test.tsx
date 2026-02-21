@@ -34,9 +34,7 @@ describe("LoginPage", () => {
 
   it("renders a Log In button (no email field)", () => {
     renderLoginPage();
-    expect(
-      screen.getByRole("button", { name: /log in/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /log in/i })).toBeInTheDocument();
     expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
   });
