@@ -5,16 +5,22 @@ import { MemoryRouter, Routes, Route } from "react-router";
 import { RegisterPage } from "../../routes/RegisterPage";
 import { useAppStore } from "../../store";
 
-vi.mock("../../mock/api", () => ({
-  mockRegister: vi.fn(),
+vi.mock("../../bindings", () => ({
+  commands: {
+    authRegisterStart: vi.fn(),
+    authVerifyEmail: vi.fn(),
+    authRegisterComplete: vi.fn(),
+  },
 }));
 
-import { mockRegister } from "../../mock/api";
+import { commands } from "../../bindings";
 
 describe("RegisterPage", () => {
   beforeEach(() => {
     useAppStore.setState(useAppStore.getInitialState());
-    vi.mocked(mockRegister).mockReset();
+    vi.mocked(commands.authRegisterStart).mockReset();
+    vi.mocked(commands.authVerifyEmail).mockReset();
+    vi.mocked(commands.authRegisterComplete).mockReset();
   });
 
   function renderRegisterPage() {
@@ -29,7 +35,7 @@ describe("RegisterPage", () => {
     );
   }
 
-  it("renders email and display name inputs", () => {
+  it("renders email and display name inputs on first step", () => {
     renderRegisterPage();
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/display name/i)).toBeInTheDocument();
@@ -38,7 +44,7 @@ describe("RegisterPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("validates email format -- shows error for invalid email", async () => {
+  it("validates email format", async () => {
     const user = userEvent.setup();
     renderRegisterPage();
     await user.type(screen.getByLabelText(/email/i), "notanemail");
@@ -60,44 +66,20 @@ describe("RegisterPage", () => {
     });
   });
 
-  it("calls mockRegister on valid form submit", async () => {
+  it("calls registerStart on valid form submit", async () => {
     const user = userEvent.setup();
-    vi.mocked(mockRegister).mockResolvedValue({
-      user: {
-        id: "u1",
-        displayName: "New User",
-        email: "new@example.com",
-        avatarUrl: null,
-      },
-      keyPair: { publicKey: "pk", privateKey: "sk" },
-      token: "token-123",
+    vi.mocked(commands.authRegisterStart).mockResolvedValue({
+      status: "ok",
+      data: undefined,
     });
     renderRegisterPage();
     await user.type(screen.getByLabelText(/email/i), "new@example.com");
     await user.type(screen.getByLabelText(/display name/i), "New User");
     await user.click(screen.getByRole("button", { name: /create account/i }));
-    expect(mockRegister).toHaveBeenCalledWith("new@example.com", "New User");
-  });
-
-  it("navigates to /app on successful registration", async () => {
-    const user = userEvent.setup();
-    vi.mocked(mockRegister).mockResolvedValue({
-      user: {
-        id: "u1",
-        displayName: "New User",
-        email: "new@example.com",
-        avatarUrl: null,
-      },
-      keyPair: { publicKey: "pk", privateKey: "sk" },
-      token: "token-123",
-    });
-    renderRegisterPage();
-    await user.type(screen.getByLabelText(/email/i), "new@example.com");
-    await user.type(screen.getByLabelText(/display name/i), "New User");
-    await user.click(screen.getByRole("button", { name: /create account/i }));
-    await waitFor(() => {
-      expect(screen.getByText("App Content")).toBeInTheDocument();
-    });
+    expect(commands.authRegisterStart).toHaveBeenCalledWith(
+      "new@example.com",
+      "New User",
+    );
   });
 
   it("has a link back to login page", () => {

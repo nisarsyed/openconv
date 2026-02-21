@@ -1,50 +1,82 @@
 import { useState } from "react";
-import { Link } from "react-router";
+import { useNavigate, Link } from "react-router";
 import { Input } from "../ui/Input";
 import { Button } from "../ui/Button";
+import { useAppStore } from "../../store";
 
 export function RecoverForm() {
   const [email, setEmail] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [code, setCode] = useState("");
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const recoveryStep = useAppStore((s) => s.recoveryStep);
+  const isLoading = useAppStore((s) => s.isLoading);
+  const error = useAppStore((s) => s.error);
+  const recoverStart = useAppStore((s) => s.recoverStart);
+  const recoverVerify = useAppStore((s) => s.recoverVerify);
+  const recoverComplete = useAppStore((s) => s.recoverComplete);
+  const clearError = useAppStore((s) => s.clearError);
+  const navigate = useNavigate();
+
+  const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 500));
-    setSubmitted(true);
-    setIsSubmitting(false);
+    clearError();
+    await recoverStart(email);
   };
 
-  if (submitted) {
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearError();
+    await recoverVerify(email, code);
+    // Auto-advance to complete step
+    if (useAppStore.getState().recoveryStep === "verified") {
+      await recoverComplete();
+      if (useAppStore.getState().isAuthenticated) {
+        navigate("/app", { replace: true });
+      }
+    }
+  };
+
+  if (recoveryStep === "email_sent") {
     return (
-      <div className="animate-fade-in flex flex-col gap-5 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--bg-accent-subtle)]">
-          <svg
-            className="h-6 w-6 text-[var(--bg-accent)]"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-          </svg>
+      <form onSubmit={handleVerify} noValidate className="flex flex-col gap-5">
+        <div className="text-center text-sm text-[var(--text-secondary)]">
+          We sent a recovery code to <strong>{email}</strong>
         </div>
-        <p className="text-sm text-[var(--text-primary)]">
-          Check your email for recovery instructions.
-        </p>
-        <Link
-          to="/login"
-          className="text-sm text-[var(--text-link)] transition-all hover:brightness-125"
+        <Input
+          label="Recovery Code"
+          type="text"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="123456"
+        />
+        {error && (
+          <p role="alert" className="-mt-2 text-xs text-red-400">
+            {error}
+          </p>
+        )}
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          disabled={!code.trim() || isLoading}
+          className="w-full"
         >
-          Back to Login
-        </Link>
-      </div>
+          {isLoading ? "Recovering..." : "Verify & Recover Account"}
+        </Button>
+        <div className="text-center text-sm">
+          <Link
+            to="/login"
+            className="text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
+          >
+            Back to Login
+          </Link>
+        </div>
+      </form>
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+    <form onSubmit={handleStart} noValidate className="flex flex-col gap-5">
       <Input
         label="Email"
         type="email"
@@ -52,14 +84,19 @@ export function RecoverForm() {
         onChange={(e) => setEmail(e.target.value)}
         placeholder="you@example.com"
       />
+      {error && (
+        <p role="alert" className="-mt-2 text-xs text-red-400">
+          {error}
+        </p>
+      )}
       <Button
         type="submit"
         variant="primary"
         size="lg"
-        disabled={!email.trim() || isSubmitting}
+        disabled={!email.trim() || isLoading}
         className="w-full"
       >
-        {isSubmitting ? "Sending..." : "Send Recovery Email"}
+        {isLoading ? "Sending..." : "Send Recovery Email"}
       </Button>
       <div className="text-center text-sm">
         <Link

@@ -1,3 +1,4 @@
+pub(crate) mod auth_service;
 pub(crate) mod commands;
 pub(crate) mod db;
 
@@ -57,6 +58,17 @@ pub fn run() {
     let builder =
         tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
             commands::health::health_check,
+            commands::auth::auth_register_start,
+            commands::auth::auth_verify_email,
+            commands::auth::auth_register_complete,
+            commands::auth::auth_login,
+            commands::auth::auth_refresh,
+            commands::auth::auth_logout,
+            commands::auth::auth_recover_start,
+            commands::auth::auth_recover_verify,
+            commands::auth::auth_recover_complete,
+            commands::auth::auth_check_identity,
+            commands::auth::auth_get_public_key,
         ]);
 
     #[cfg(debug_assertions)]
@@ -82,6 +94,15 @@ pub fn run() {
             let conn =
                 db::init_db(&db_path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(DbState::new(conn));
+
+            let crypto_db_path = app_data_dir.join("crypto.db");
+            let api_base_url =
+                std::env::var("OPENCONV_API_URL").unwrap_or_else(|_| "http://localhost:3000".into());
+            let auth_svc = auth_service::AuthService::new(crypto_db_path, api_base_url)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            app.manage(auth_service::AuthState {
+                auth_service: auth_svc,
+            });
 
             setup_tray(app)?;
 

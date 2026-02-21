@@ -31,9 +31,11 @@ describe("Combined Store", () => {
       email: "test@example.com",
       avatarUrl: null,
     };
-    store
-      .getState()
-      .login(user, { publicKey: "pk", privateKey: "sk" }, "token");
+    store.setState({
+      currentUser: user,
+      keyPair: { publicKey: "pk" },
+      isAuthenticated: true,
+    });
     store.getState().createGuild("Test Guild", null);
     const guildId = store.getState().guildIds[0];
     const guild = store.getState().guildsById[guildId];
@@ -48,9 +50,11 @@ describe("Combined Store", () => {
       email: "test@example.com",
       avatarUrl: null,
     };
-    store
-      .getState()
-      .login(user, { publicKey: "pk", privateKey: "sk" }, "token");
+    store.setState({
+      currentUser: user,
+      keyPair: { publicKey: "pk" },
+      isAuthenticated: true,
+    });
     store.getState().createGuild("Guild A", null);
     store.getState().createGuild("Guild B", null);
     expect(store.getState().guildIds).toHaveLength(2);

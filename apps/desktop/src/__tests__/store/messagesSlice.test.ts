@@ -6,16 +6,16 @@ describe("MessagesSlice", () => {
   let store: ReturnType<typeof createAppStore>;
   beforeEach(() => {
     store = createAppStore();
-    store.getState().login(
-      {
+    store.setState({
+      currentUser: {
         id: "u1",
         displayName: "test",
         email: "user@test.com",
         avatarUrl: null,
       },
-      { publicKey: "pk", privateKey: "sk" },
-      "mock-token",
-    );
+      keyPair: { publicKey: "pk" },
+      isAuthenticated: true,
+    });
   });
 
   const makeMsg = (overrides: Partial<Message> = {}): Message => ({
