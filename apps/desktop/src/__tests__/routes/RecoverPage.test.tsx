@@ -44,7 +44,7 @@ describe("RecoverPage", () => {
     const user = userEvent.setup();
     vi.mocked(commands.authRecoverStart).mockResolvedValue({
       status: "ok",
-      data: undefined,
+      data: null,
     });
     renderRecoverPage();
     await user.type(screen.getByLabelText(/email/i), "test@example.com");

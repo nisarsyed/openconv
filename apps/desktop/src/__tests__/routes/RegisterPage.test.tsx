@@ -70,7 +70,7 @@ describe("RegisterPage", () => {
     const user = userEvent.setup();
     vi.mocked(commands.authRegisterStart).mockResolvedValue({
       status: "ok",
-      data: undefined,
+      data: null,
     });
     renderRegisterPage();
     await user.type(screen.getByLabelText(/email/i), "new@example.com");
