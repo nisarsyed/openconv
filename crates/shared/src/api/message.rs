@@ -1,4 +1,4 @@
-use crate::ids::{ChannelId, MessageId, UserId};
+use crate::ids::{ChannelId, DmChannelId, MessageId, UserId};
 use serde::{Deserialize, Serialize};
 
 /// Serde module for serializing `Vec<u8>` as base64 strings in JSON.
@@ -33,6 +33,8 @@ pub struct SendMessageRequest {
 pub struct MessageResponse {
     pub id: MessageId,
     pub channel_id: ChannelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dm_channel_id: Option<DmChannelId>,
     pub sender_id: UserId,
     #[serde(with = "base64_serde")]
     pub encrypted_content: Vec<u8>,
@@ -66,6 +68,7 @@ mod tests {
         let resp = MessageResponse {
             id: MessageId::new(),
             channel_id: ChannelId::new(),
+            dm_channel_id: None,
             sender_id: UserId::new(),
             encrypted_content: b"encrypted_data".to_vec(),
             nonce: b"nonce_bytes".to_vec(),
@@ -87,6 +90,7 @@ mod tests {
         let resp = MessageResponse {
             id: MessageId::new(),
             channel_id: ChannelId::new(),
+            dm_channel_id: None,
             sender_id: UserId::new(),
             encrypted_content: b"data".to_vec(),
             nonce: b"nonce".to_vec(),
@@ -103,6 +107,7 @@ mod tests {
         let resp = MessageResponse {
             id: MessageId::new(),
             channel_id: ChannelId::new(),
+            dm_channel_id: None,
             sender_id: UserId::new(),
             encrypted_content: b"data".to_vec(),
             nonce: b"nonce".to_vec(),
@@ -120,6 +125,7 @@ mod tests {
         let resp = MessageResponse {
             id: MessageId::new(),
             channel_id: ChannelId::new(),
+            dm_channel_id: None,
             sender_id: UserId::new(),
             encrypted_content: content.clone(),
             nonce: nonce.clone(),
@@ -146,6 +152,7 @@ mod tests {
         let resp = MessageResponse {
             id: MessageId::new(),
             channel_id: ChannelId::new(),
+            dm_channel_id: None,
             sender_id: UserId::new(),
             encrypted_content: content.clone(),
             nonce: nonce.clone(),
@@ -201,5 +208,42 @@ mod tests {
         let query: MessageHistoryQuery = serde_json::from_str(json).unwrap();
         assert_eq!(query.cursor.as_deref(), Some("abc"));
         assert_eq!(query.limit, Some(25));
+    }
+
+    #[test]
+    fn dm_channel_id_omitted_when_none() {
+        let resp = MessageResponse {
+            id: MessageId::new(),
+            channel_id: ChannelId::new(),
+            dm_channel_id: None,
+            sender_id: UserId::new(),
+            encrypted_content: b"data".to_vec(),
+            nonce: b"nonce".to_vec(),
+            edited_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("dm_channel_id").is_none());
+    }
+
+    #[test]
+    fn dm_channel_id_present_when_some() {
+        let dm_id = DmChannelId::new();
+        let resp = MessageResponse {
+            id: MessageId::new(),
+            channel_id: ChannelId::new(),
+            dm_channel_id: Some(dm_id),
+            sender_id: UserId::new(),
+            encrypted_content: b"data".to_vec(),
+            nonce: b"nonce".to_vec(),
+            edited_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("dm_channel_id").is_some());
+        // Round-trip
+        let json_str = serde_json::to_string(&resp).unwrap();
+        let back: MessageResponse = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(back.dm_channel_id, Some(dm_id));
     }
 }

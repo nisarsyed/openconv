@@ -228,6 +228,7 @@ impl MessageRow {
         MessageResponse {
             id: self.id,
             channel_id: self.channel_id,
+            dm_channel_id: None,
             sender_id: self.sender_id,
             encrypted_content: self.encrypted_content,
             nonce: self.nonce,

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use openconv_shared::ids::{ChannelId, DeviceId, GuildId, MessageId, UserId};
 use openconv_shared::permissions::Permissions;
 use tokio::sync::broadcast;
@@ -219,8 +220,8 @@ pub async fn handle_send_message(
     user_id: UserId,
     device_id: DeviceId,
     channel_id: ChannelId,
-    encrypted_content: String,
-    nonce: String,
+    encrypted_content: Vec<u8>,
+    nonce: Vec<u8>,
 ) {
     // Rate limit check
     if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
@@ -243,9 +244,11 @@ pub async fn handle_send_message(
         return;
     }
 
-    // Persist to database
+    // Persist to database (encode Vec<u8> to base64 string for TEXT column)
+    let b64_content = base64::engine::general_purpose::STANDARD.encode(&encrypted_content);
+    let b64_nonce = base64::engine::general_purpose::STANDARD.encode(&nonce);
     let message_id =
-        match persist_message(&state.db, channel_id, user_id, &encrypted_content, &nonce).await {
+        match persist_message(&state.db, channel_id, user_id, &b64_content, &b64_nonce).await {
             Ok(id) => id,
             Err(e) => {
                 tracing::error!(error = %e, "failed to persist message");
@@ -292,8 +295,8 @@ pub async fn handle_edit_message(
     device_id: DeviceId,
     channel_id: ChannelId,
     message_id: MessageId,
-    encrypted_content: String,
-    nonce: String,
+    encrypted_content: Vec<u8>,
+    nonce: Vec<u8>,
 ) {
     // Rate limit check
     if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
@@ -315,14 +318,16 @@ pub async fn handle_edit_message(
         return;
     }
 
-    // Atomic update with ownership check
+    // Atomic update with ownership check (encode Vec<u8> to base64 for TEXT column)
+    let b64_content = base64::engine::general_purpose::STANDARD.encode(&encrypted_content);
+    let b64_nonce = base64::engine::general_purpose::STANDARD.encode(&nonce);
     match persist_edit(
         &state.db,
         user_id,
         channel_id,
         message_id,
-        &encrypted_content,
-        &nonce,
+        &b64_content,
+        &b64_nonce,
     )
     .await
     {

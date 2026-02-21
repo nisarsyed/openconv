@@ -7,3 +7,4 @@ pub mod invite;
 pub mod message;
 pub mod role;
 pub mod user;
+pub mod ws;
