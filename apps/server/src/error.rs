@@ -7,6 +7,7 @@ use openconv_shared::error::OpenConvError;
 ///
 /// Needed because of the orphan rule — neither the trait (`IntoResponse`)
 /// nor the type (`OpenConvError`) is defined in this crate.
+#[derive(Debug)]
 pub struct ServerError(pub OpenConvError);
 
 impl IntoResponse for ServerError {
@@ -18,6 +19,7 @@ impl IntoResponse for ServerError {
             OpenConvError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             OpenConvError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             OpenConvError::Crypto(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            OpenConvError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             OpenConvError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.0.to_string()),
             OpenConvError::SessionCompromised => (StatusCode::UNAUTHORIZED, self.0.to_string()),
             OpenConvError::ServiceUnavailable(_) => {
@@ -81,6 +83,13 @@ mod tests {
     }
 
     #[test]
+    fn test_conflict_maps_to_409() {
+        let response =
+            ServerError(OpenConvError::Conflict("already exists".into())).into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
     fn test_rate_limited_maps_to_429() {
         let response = ServerError(OpenConvError::RateLimited).into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -102,6 +111,7 @@ mod tests {
     #[tokio::test]
     async fn test_new_error_variants_produce_json_body() {
         let variants: Vec<OpenConvError> = vec![
+            OpenConvError::Conflict("test".into()),
             OpenConvError::RateLimited,
             OpenConvError::SessionCompromised,
             OpenConvError::ServiceUnavailable("test".into()),

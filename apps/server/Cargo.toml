@@ -29,7 +29,8 @@ async-trait = { workspace = true }
 libsignal-protocol = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
+chrono = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
-chrono = { workspace = true }

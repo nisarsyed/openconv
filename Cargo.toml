@@ -41,3 +41,4 @@ serial_test = "3"
 jsonwebtoken = "9"
 fred = { version = "10", features = ["i-scripts"] }
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+subtle = "2"

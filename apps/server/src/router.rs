@@ -1,7 +1,7 @@
 use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::middleware;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -31,9 +31,24 @@ pub fn build_router(state: AppState) -> axum::Router {
             axum::http::header::AUTHORIZATION,
         ]);
 
+    let auth_routes = axum::Router::new()
+        .route("/register/start", post(handlers::auth::register_start))
+        .route("/register/verify", post(handlers::auth::register_verify))
+        .route(
+            "/register/complete",
+            post(handlers::auth::register_complete),
+        )
+        .layer(crate::middleware::rate_limit::RateLimitLayer::new(
+            state.redis.clone(),
+            state.config.rate_limit.auth_per_ip_per_minute,
+            60,
+            "auth".to_string(),
+        ));
+
     axum::Router::new()
         .route("/health/live", get(handlers::health::liveness))
         .route("/health/ready", get(handlers::health::readiness))
+        .nest("/api/auth", auth_routes)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(cors)

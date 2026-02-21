@@ -25,6 +25,9 @@ pub enum OpenConvError {
     #[error("session compromised")]
     SessionCompromised,
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
 }
@@ -60,6 +63,7 @@ mod tests {
             Box::new(OpenConvError::Validation("x".into())),
             Box::new(OpenConvError::Internal("y".into())),
             Box::new(OpenConvError::Crypto("z".into())),
+            Box::new(OpenConvError::Conflict("duplicate".into())),
             Box::new(OpenConvError::RateLimited),
             Box::new(OpenConvError::SessionCompromised),
             Box::new(OpenConvError::ServiceUnavailable("redis down".into())),
