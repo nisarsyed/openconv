@@ -54,7 +54,11 @@ pub async fn handle_connection(
     }
 
     // Now register the connection in WsState
-    state.ws.register_with_sender(user_id, device_id, guild_ids, tx);
+    state.ws.register_with_sender(user_id, device_id, guild_ids.clone(), tx);
+
+    // Set up guild broadcast subscriptions and announce presence
+    super::presence::setup_guild_subscriptions(&state, user_id, device_id, &guild_ids);
+    super::presence::broadcast_connect(&state, user_id, &guild_ids);
 
     let pong_received = Arc::new(AtomicBool::new(true));
 
@@ -191,20 +195,63 @@ async fn handle_client_message(
             send_to_connection(state, user_id, device_id, pong);
         }
         ClientMessage::SetPresence { status } => {
-            if let Some(mut conn) = state.ws.connections.get_mut(&(user_id, device_id)) {
-                conn.presence = status;
-            }
-            // TODO(section-10): Broadcast presence update to guild members
+            super::presence::handle_set_presence(state, user_id, device_id, status);
         }
-        // TODO(section-10): Subscribe, Unsubscribe, SendMessage, EditMessage, DeleteMessage,
-        // StartTyping, StopTyping handlers
-        _ => {
-            send_error(state, user_id, device_id, 4004, "not yet implemented");
+        ClientMessage::Subscribe { channel_id } => {
+            super::fanout::handle_subscribe(state, user_id, device_id, channel_id).await;
+        }
+        ClientMessage::Unsubscribe { channel_id } => {
+            super::fanout::handle_unsubscribe(state, user_id, device_id, channel_id);
+        }
+        ClientMessage::SendMessage {
+            channel_id,
+            encrypted_content,
+            nonce,
+        } => {
+            super::fanout::handle_send_message(
+                state,
+                user_id,
+                device_id,
+                channel_id,
+                encrypted_content,
+                nonce,
+            )
+            .await;
+        }
+        ClientMessage::EditMessage {
+            channel_id,
+            message_id,
+            encrypted_content,
+            nonce,
+        } => {
+            super::fanout::handle_edit_message(
+                state,
+                user_id,
+                device_id,
+                channel_id,
+                message_id,
+                encrypted_content,
+                nonce,
+            )
+            .await;
+        }
+        ClientMessage::DeleteMessage {
+            channel_id,
+            message_id,
+        } => {
+            super::fanout::handle_delete_message(state, user_id, device_id, channel_id, message_id)
+                .await;
+        }
+        ClientMessage::StartTyping { channel_id } => {
+            super::presence::handle_start_typing(state, user_id, channel_id);
+        }
+        ClientMessage::StopTyping { channel_id } => {
+            super::presence::handle_stop_typing(state, user_id, channel_id);
         }
     }
 }
 
-fn send_to_connection(state: &AppState, user_id: UserId, device_id: DeviceId, msg: ServerMessage) {
+pub(super) fn send_to_connection(state: &AppState, user_id: UserId, device_id: DeviceId, msg: ServerMessage) {
     if let Some(conn) = state.ws.connections.get(&(user_id, device_id)) {
         if let Err(e) = conn.sender.try_send(msg) {
             tracing::warn!(
@@ -217,7 +264,7 @@ fn send_to_connection(state: &AppState, user_id: UserId, device_id: DeviceId, ms
     }
 }
 
-fn send_error(state: &AppState, user_id: UserId, device_id: DeviceId, code: u32, message: &str) {
+pub(super) fn send_error(state: &AppState, user_id: UserId, device_id: DeviceId, code: u32, message: &str) {
     let err = ServerMessage::Error {
         code,
         message: message.to_string(),
@@ -227,12 +274,17 @@ fn send_error(state: &AppState, user_id: UserId, device_id: DeviceId, code: u32,
 
 async fn cleanup_connection(state: &AppState, user_id: UserId, device_id: DeviceId) {
     if let Some(conn) = state.ws.disconnect(user_id, device_id) {
+        // Store last_seen timestamps for message replay on reconnect
+        super::replay::store_last_seen(&state.redis, user_id, &conn.subscribed_channels).await;
+
         // Clean up channel broadcast senders with zero receivers
         for channel_id in &conn.subscribed_channels {
             state.ws.try_cleanup_channel(channel_id);
         }
-        // TODO(section-10): Broadcast PresenceUpdate { user_id, status: Offline } to guild members
-        // TODO(section-10): Store last_seen timestamps in Redis for message replay
+
+        // Broadcast offline presence to guild members
+        super::presence::broadcast_disconnect(state, user_id, &conn.guild_ids);
+
         tracing::info!(
             user_id = %user_id,
             device_id = %device_id,
