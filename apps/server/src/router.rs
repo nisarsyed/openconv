@@ -78,6 +78,8 @@ pub fn build_router(state: AppState) -> axum::Router {
     let guild_routes = handlers::guilds::routes();
     let channel_routes = handlers::channels::routes();
     let channel_detail_routes = handlers::channels::detail_routes();
+    let role_routes = handlers::roles::routes();
+    let role_assignment_routes = handlers::roles::assignment_routes();
 
     axum::Router::new()
         .route("/health/live", get(handlers::health::liveness))
@@ -87,6 +89,8 @@ pub fn build_router(state: AppState) -> axum::Router {
         .nest("/api/guilds", guild_routes)
         .nest("/api/guilds/{guild_id}/channels", channel_routes)
         .nest("/api/channels", channel_detail_routes)
+        .nest("/api/guilds/{guild_id}/roles", role_routes)
+        .nest("/api/guilds/{guild_id}/members", role_assignment_routes)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(cors)
