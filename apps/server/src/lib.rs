@@ -14,3 +14,4 @@ pub mod state;
 pub mod storage;
 pub mod tasks;
 pub mod validation;
+pub mod ws;

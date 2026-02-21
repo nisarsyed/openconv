@@ -8,3 +8,4 @@ pub mod invites;
 pub mod messages;
 pub mod roles;
 pub mod users;
+pub mod ws;

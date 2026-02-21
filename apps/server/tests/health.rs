@@ -40,6 +40,7 @@ async fn test_app() -> axum::Router {
         jwt: test_jwt(),
         email: Arc::new(MockEmailService::new()),
         object_store: Arc::new(object_store::memory::InMemory::new()),
+        ws: Arc::new(openconv_server::ws::state::WsState::new()),
     };
     build_router(state)
 }
@@ -73,6 +74,7 @@ async fn test_health_ready_returns_200_when_db_connected(pool: sqlx::PgPool) {
         jwt: test_jwt(),
         email: Arc::new(MockEmailService::new()),
         object_store: Arc::new(object_store::memory::InMemory::new()),
+        ws: Arc::new(openconv_server::ws::state::WsState::new()),
     };
     let app = build_router(state);
     let request = Request::builder()

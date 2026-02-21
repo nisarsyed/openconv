@@ -10,6 +10,7 @@ use openconv_server::router::build_router;
 use openconv_server::shutdown::shutdown_signal;
 use openconv_server::state::AppState;
 use openconv_server::storage::create_object_store;
+use openconv_server::ws::state::WsState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -126,6 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let ws = Arc::new(WsState::new());
+
     let addr = format!("{}:{}", config.host, config.port);
     let state = AppState {
         db: pool,
@@ -134,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jwt,
         email,
         object_store,
+        ws: ws.clone(),
     };
     let app = build_router(state);
 
@@ -145,6 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let _ = shutdown_tx.send(true);
+
+    // Close all WebSocket connections gracefully
+    ws.shutdown_all().await;
 
     Ok(())
 }

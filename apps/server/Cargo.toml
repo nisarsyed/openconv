@@ -34,6 +34,8 @@ subtle = { workspace = true }
 regex = { workspace = true }
 object_store = { workspace = true }
 axum-extra = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

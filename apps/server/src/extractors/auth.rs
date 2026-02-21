@@ -109,6 +109,7 @@ mod tests {
             jwt,
             email,
             object_store: std::sync::Arc::new(object_store::memory::InMemory::new()),
+            ws: std::sync::Arc::new(crate::ws::state::WsState::new()),
         }
     }
 
