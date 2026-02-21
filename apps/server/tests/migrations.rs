@@ -301,8 +301,8 @@ async fn messages_check_rejects_both_null(pool: PgPool) {
         "INSERT INTO messages (sender_id, encrypted_content, nonce) VALUES ($1, $2, $3)",
     )
     .bind(user_id)
-    .bind("encrypted")
-    .bind("nonce123")
+    .bind(b"encrypted" as &[u8])
+    .bind(b"nonce123" as &[u8])
     .execute(&pool)
     .await
     .unwrap_err();
@@ -354,8 +354,8 @@ async fn messages_check_rejects_both_set(pool: PgPool) {
     .bind(user_id)
     .bind(channel_id)
     .bind(dm_id)
-    .bind("encrypted")
-    .bind("nonce123")
+    .bind(b"encrypted" as &[u8])
+    .bind(b"nonce123" as &[u8])
     .execute(&pool)
     .await
     .unwrap_err();
@@ -399,8 +399,8 @@ async fn messages_accepts_channel_id_only(pool: PgPool) {
     )
     .bind(user_id)
     .bind(channel_id)
-    .bind("encrypted")
-    .bind("nonce123")
+    .bind(b"encrypted" as &[u8])
+    .bind(b"nonce123" as &[u8])
     .execute(&pool)
     .await
     .unwrap();
@@ -438,8 +438,8 @@ async fn messages_accepts_dm_channel_id_only(pool: PgPool) {
     )
     .bind(user_id)
     .bind(dm_id)
-    .bind("encrypted")
-    .bind("nonce123")
+    .bind(b"encrypted" as &[u8])
+    .bind(b"nonce123" as &[u8])
     .execute(&pool)
     .await
     .unwrap();

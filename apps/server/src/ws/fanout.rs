@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
 use openconv_shared::ids::{ChannelId, DeviceId, GuildId, MessageId, UserId};
 use openconv_shared::permissions::Permissions;
 use tokio::sync::broadcast;
@@ -244,11 +243,9 @@ pub async fn handle_send_message(
         return;
     }
 
-    // Persist to database (encode Vec<u8> to base64 string for TEXT column)
-    let b64_content = base64::engine::general_purpose::STANDARD.encode(&encrypted_content);
-    let b64_nonce = base64::engine::general_purpose::STANDARD.encode(&nonce);
+    // Persist to database (Vec<u8> maps directly to BYTEA column)
     let message_id =
-        match persist_message(&state.db, channel_id, user_id, &b64_content, &b64_nonce).await {
+        match persist_message(&state.db, channel_id, user_id, &encrypted_content, &nonce).await {
             Ok(id) => id,
             Err(e) => {
                 tracing::error!(error = %e, "failed to persist message");
@@ -272,8 +269,8 @@ async fn persist_message(
     db: &sqlx::PgPool,
     channel_id: ChannelId,
     sender_id: UserId,
-    encrypted_content: &str,
-    nonce: &str,
+    encrypted_content: &[u8],
+    nonce: &[u8],
 ) -> Result<MessageId, sqlx::Error> {
     sqlx::query_scalar(
         "INSERT INTO messages (channel_id, sender_id, encrypted_content, nonce) \
@@ -318,16 +315,14 @@ pub async fn handle_edit_message(
         return;
     }
 
-    // Atomic update with ownership check (encode Vec<u8> to base64 for TEXT column)
-    let b64_content = base64::engine::general_purpose::STANDARD.encode(&encrypted_content);
-    let b64_nonce = base64::engine::general_purpose::STANDARD.encode(&nonce);
+    // Atomic update with ownership check (Vec<u8> maps directly to BYTEA column)
     match persist_edit(
         &state.db,
         user_id,
         channel_id,
         message_id,
-        &b64_content,
-        &b64_nonce,
+        &encrypted_content,
+        &nonce,
     )
     .await
     {
@@ -356,8 +351,8 @@ async fn persist_edit(
     user_id: UserId,
     channel_id: ChannelId,
     message_id: MessageId,
-    encrypted_content: &str,
-    nonce: &str,
+    encrypted_content: &[u8],
+    nonce: &[u8],
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE messages SET encrypted_content = $1, nonce = $2, edited_at = NOW() \
@@ -438,11 +433,15 @@ async fn persist_delete(
     channel_id: ChannelId,
     message_id: MessageId,
 ) -> Result<bool, sqlx::Error> {
+    let empty: &[u8] = &[];
+
     // Try sender ownership delete first (most common case)
     let result = sqlx::query(
-        "UPDATE messages SET deleted = true, encrypted_content = '', nonce = '' \
-         WHERE id = $1 AND channel_id = $2 AND sender_id = $3 AND deleted = false",
+        "UPDATE messages SET deleted = true, encrypted_content = $1, nonce = $2 \
+         WHERE id = $3 AND channel_id = $4 AND sender_id = $5 AND deleted = false",
     )
+    .bind(empty)
+    .bind(empty)
     .bind(message_id)
     .bind(channel_id)
     .bind(user_id)
@@ -456,9 +455,11 @@ async fn persist_delete(
     // If sender doesn't match, try MANAGE_MESSAGES path
     if can_manage_messages {
         let result = sqlx::query(
-            "UPDATE messages SET deleted = true, encrypted_content = '', nonce = '' \
-             WHERE id = $1 AND channel_id = $2 AND deleted = false",
+            "UPDATE messages SET deleted = true, encrypted_content = $1, nonce = $2 \
+             WHERE id = $3 AND channel_id = $4 AND deleted = false",
         )
+        .bind(empty)
+        .bind(empty)
         .bind(message_id)
         .bind(channel_id)
         .execute(db)
