@@ -5,13 +5,15 @@ use base64::Engine;
 use fred::interfaces::KeysInterface;
 use openconv_shared::api::auth::{
     DeviceInfo, DevicesListResponse, LoginChallengeRequest, LoginChallengeResponse,
-    LoginVerifyRequest, LoginVerifyResponse, RefreshRequest, RefreshResponse,
-    RegisterCompleteRequest, RegisterResponse, RegisterStartRequest, RegisterStartResponse,
-    RegisterVerifyRequest, RegisterVerifyResponse,
+    LoginVerifyRequest, LoginVerifyResponse, RecoverCompleteRequest, RecoverCompleteResponse,
+    RecoverStartRequest, RecoverStartResponse, RecoverVerifyRequest, RecoverVerifyResponse,
+    RefreshRequest, RefreshResponse, RegisterCompleteRequest, RegisterResponse,
+    RegisterStartRequest, RegisterStartResponse, RegisterVerifyRequest, RegisterVerifyResponse,
 };
 use openconv_shared::error::OpenConvError;
 use openconv_shared::ids::{DeviceId, UserId};
 use rand::Rng;
+use subtle::ConstantTimeEq;
 
 use crate::error::ServerError;
 use crate::extractors::auth::AuthUser;
@@ -732,6 +734,350 @@ pub async fn revoke_device(
         .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
 
     Ok(StatusCode::OK)
+}
+
+// ---------------------------------------------------------------------------
+// Account Recovery
+// ---------------------------------------------------------------------------
+
+/// Redis storage format for recovery codes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecoveryData {
+    code: String,
+    attempts_remaining: u32,
+}
+
+/// Lua script for atomic recovery code attempt decrement (mismatch path).
+/// Returns: [result_code, ""]
+///   result_code:
+///     0  = decremented successfully
+///     -1 = key not found / expired
+///     -2 = attempts exhausted, key deleted
+const RECOVER_DECREMENT_SCRIPT: &str = r#"
+local key = KEYS[1]
+
+local data = redis.call('GET', key)
+if not data then
+    return {-1, ""}
+end
+
+local decoded = cjson.decode(data)
+local attempts = tonumber(decoded.attempts_remaining)
+
+if attempts <= 0 then
+    redis.call('DEL', key)
+    return {-2, ""}
+end
+
+decoded.attempts_remaining = attempts - 1
+if decoded.attempts_remaining <= 0 then
+    redis.call('DEL', key)
+    return {-2, ""}
+end
+local ttl = redis.call('TTL', key)
+if ttl > 0 then
+    redis.call('SET', key, cjson.encode(decoded), 'EX', ttl)
+end
+
+return {0, ""}
+"#;
+
+pub async fn recover_start(
+    State(state): State<AppState>,
+    Json(req): Json<RecoverStartRequest>,
+) -> Result<Json<RecoverStartResponse>, ServerError> {
+    validate_email(&req.email)?;
+
+    let email = req.email.trim().to_lowercase();
+
+    // Per-email rate limiting
+    crate::middleware::rate_limit::check_email_rate_limit(
+        &state.redis,
+        &email,
+        state.config.rate_limit.email_per_address_per_hour,
+        3600,
+    )
+    .await
+    .map_err(|_| OpenConvError::RateLimited)?;
+
+    // Always generate code and write to Redis to prevent timing-based email enumeration.
+    // Only send the actual email if the user exists.
+    let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
+
+    let data = RecoveryData {
+        code: code.clone(),
+        attempts_remaining: 5,
+    };
+    let json_data = serde_json::to_string(&data)
+        .map_err(|e| OpenConvError::Internal(format!("serialization error: {e}")))?;
+
+    let key = format!("recover:{email}");
+    state
+        .redis
+        .set::<(), _, _>(
+            &key,
+            json_data.as_str(),
+            Some(fred::types::Expiration::EX(600)),
+            None,
+            false,
+        )
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+            .bind(&email)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    if exists {
+        if let Err(e) = state.email.send_recovery_code(&email, &code).await {
+            tracing::error!(error = %e, "failed to send recovery email");
+        }
+    }
+
+    Ok(Json(RecoverStartResponse {
+        message: "Recovery code sent".into(),
+    }))
+}
+
+pub async fn recover_verify(
+    State(state): State<AppState>,
+    Json(req): Json<RecoverVerifyRequest>,
+) -> Result<Json<RecoverVerifyResponse>, ServerError> {
+    validate_email(&req.email)?;
+    validate_verification_code(&req.code)?;
+
+    let email = req.email.trim().to_lowercase();
+    let key = format!("recover:{email}");
+
+    // Fetch stored data from Redis for constant-time comparison in Rust
+    let stored: Option<String> = state
+        .redis
+        .get(&key)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+
+    let stored = match stored {
+        Some(s) => s,
+        None => {
+            return Err(
+                OpenConvError::Validation("invalid or expired code".into()).into(),
+            )
+        }
+    };
+
+    let data: RecoveryData = serde_json::from_str(&stored)
+        .map_err(|e| OpenConvError::Internal(format!("deserialization error: {e}")))?;
+
+    if data.attempts_remaining == 0 {
+        state
+            .redis
+            .del::<(), _>(&key)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+        return Err(
+            OpenConvError::Validation("code expired, request a new one".into()).into(),
+        );
+    }
+
+    // Constant-time comparison to prevent timing attacks
+    let codes_match: bool = data
+        .code
+        .as_bytes()
+        .ct_eq(req.code.as_bytes())
+        .into();
+
+    if codes_match {
+        // Delete the consumed key
+        state
+            .redis
+            .del::<(), _>(&key)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+
+        // Look up user_id by email
+        let user_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+                .bind(&email)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?
+                .ok_or_else(|| {
+                    OpenConvError::Validation("invalid or expired code".into())
+                })?;
+
+        let uid = UserId(user_id);
+        let token = state.jwt.issue_recovery_token(&email, &uid)?;
+
+        Ok(Json(RecoverVerifyResponse {
+            recovery_token: token,
+        }))
+    } else {
+        // Atomically decrement attempts via Lua script
+        use fred::interfaces::LuaInterface;
+        let result: Vec<fred::types::Value> = state
+            .redis
+            .eval(RECOVER_DECREMENT_SCRIPT, vec![key], Vec::<String>::new())
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("redis error: {e}")))?;
+
+        let result_code: i64 = if result.is_empty() {
+            0
+        } else {
+            match &result[0] {
+                fred::types::Value::Integer(n) => *n,
+                _ => 0,
+            }
+        };
+
+        if result_code == -2 {
+            Err(OpenConvError::Validation("code expired, request a new one".into()).into())
+        } else {
+            Err(OpenConvError::Validation("invalid or expired code".into()).into())
+        }
+    }
+}
+
+pub async fn recover_complete(
+    State(state): State<AppState>,
+    Json(req): Json<RecoverCompleteRequest>,
+) -> Result<Json<RecoverCompleteResponse>, ServerError> {
+    // 1. Validate the recovery token
+    let claims = state
+        .jwt
+        .validate_recovery_token(&req.recovery_token)?;
+
+    let user_id: UserId = claims
+        .user_id
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid user_id in recovery token".into()))?;
+
+    // 2. Validate new public key
+    let pk_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&req.new_public_key)
+        .map_err(|_| OpenConvError::Validation("invalid public key encoding".into()))?;
+
+    if pk_bytes.len() != 33 {
+        return Err(
+            OpenConvError::Validation("public key must be 33 bytes when decoded".into()).into(),
+        );
+    }
+
+    libsignal_protocol::PublicKey::deserialize(&pk_bytes)
+        .map_err(|_| OpenConvError::Validation("invalid public key format".into()))?;
+
+    // 3. Decode pre-key bundle
+    let pre_key_data = base64::engine::general_purpose::STANDARD
+        .decode(&req.new_pre_key_bundle)
+        .map_err(|_| OpenConvError::Validation("invalid pre-key bundle encoding".into()))?;
+
+    // 4. Begin transaction for atomic identity replacement
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("transaction start failed: {e}")))?;
+
+    // a. Update public key and set public_key_changed_at
+    let rows = sqlx::query(
+        "UPDATE users SET public_key = $1, public_key_changed_at = NOW() WHERE id = $2",
+    )
+    .bind(&req.new_public_key)
+    .bind(user_id.0)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    if rows.rows_affected() == 0 {
+        return Err(OpenConvError::NotFound.into());
+    }
+
+    // b. Delete all existing refresh tokens for this user
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+        .bind(user_id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // c. Delete all existing pre-key bundles for this user
+    sqlx::query("DELETE FROM pre_key_bundles WHERE user_id = $1")
+        .bind(user_id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // d. Delete all existing devices for this user
+    sqlx::query("DELETE FROM devices WHERE user_id = $1")
+        .bind(user_id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // e. Create new device
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+    )
+    .bind(req.device_id.0)
+    .bind(user_id.0)
+    .bind(&req.device_name)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // f. Store new pre-key bundle
+    let pre_key_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO pre_key_bundles (id, user_id, device_id, key_data, is_used) VALUES ($1, $2, $3, $4, false)",
+    )
+    .bind(pre_key_id)
+    .bind(user_id.0)
+    .bind(req.device_id.0)
+    .bind(&pre_key_data)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // 5. Issue new tokens
+    let family = uuid::Uuid::now_v7().to_string();
+    let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
+    let (refresh_token, jti_str) = state
+        .jwt
+        .issue_refresh_token(&user_id, &req.device_id, &family)?;
+
+    let jti: uuid::Uuid = jti_str
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid jti format".into()))?;
+    let family_uuid: uuid::Uuid = family
+        .parse()
+        .expect("family UUID was just generated from Uuid::now_v7()");
+    let expires_at = chrono::Utc::now() + state.jwt.refresh_ttl();
+
+    // Store refresh token record
+    sqlx::query(
+        "INSERT INTO refresh_tokens (jti, user_id, device_id, family, expires_at, is_used) VALUES ($1, $2, $3, $4, $5, false)",
+    )
+    .bind(jti)
+    .bind(user_id.0)
+    .bind(req.device_id.0)
+    .bind(family_uuid)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // 6. Commit transaction
+    tx.commit()
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("transaction commit failed: {e}")))?;
+
+    Ok(Json(RecoverCompleteResponse {
+        user_id,
+        access_token,
+        refresh_token,
+        device_id: req.device_id,
+    }))
 }
 
 #[cfg(test)]

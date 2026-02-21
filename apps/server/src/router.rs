@@ -48,6 +48,12 @@ pub fn build_router(state: AppState) -> axum::Router {
             "/devices/{device_id}",
             delete(handlers::auth::revoke_device),
         )
+        .route("/recover/start", post(handlers::auth::recover_start))
+        .route("/recover/verify", post(handlers::auth::recover_verify))
+        .route(
+            "/recover/complete",
+            post(handlers::auth::recover_complete),
+        )
         .layer(crate::middleware::rate_limit::RateLimitLayer::new(
             state.redis.clone(),
             state.config.rate_limit.auth_per_ip_per_minute,
