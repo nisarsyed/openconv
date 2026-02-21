@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let cleanup_pool = pool.clone();
+    let mut cleanup_shutdown_rx = shutdown_rx.clone();
     tokio::spawn(async move {
         loop {
             match openconv_server::tasks::cleanup::cleanup_expired_refresh_tokens(&cleanup_pool)
@@ -60,8 +61,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
+                _ = cleanup_shutdown_rx.changed() => {
+                    tracing::info!("Refresh token cleanup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+
+    let guild_cleanup_pool = pool.clone();
+    tokio::spawn(async move {
+        loop {
+            match openconv_server::tasks::guild_cleanup::cleanup_expired_guilds(
+                &guild_cleanup_pool,
+            )
+            .await
+            {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!("Cleaned up {count} expired guilds");
+                    }
+                }
+                Err(e) => tracing::error!("Guild cleanup failed: {e}"),
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
                 _ = shutdown_rx.changed() => {
-                    tracing::info!("Cleanup task shutting down");
+                    tracing::info!("Guild cleanup task shutting down");
                     break;
                 }
             }

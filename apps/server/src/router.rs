@@ -75,11 +75,14 @@ pub fn build_router(state: AppState) -> axum::Router {
             "users".to_string(),
         ));
 
+    let guild_routes = handlers::guilds::routes();
+
     axum::Router::new()
         .route("/health/live", get(handlers::health::liveness))
         .route("/health/ready", get(handlers::health::readiness))
         .nest("/api/auth", auth_routes)
         .nest("/api/users", user_routes)
+        .nest("/api/guilds", guild_routes)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(cors)
