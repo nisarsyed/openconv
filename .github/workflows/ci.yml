@@ -256,7 +256,10 @@ jobs:
 
       - name: Install system dependencies (Windows)
         if: runner.os == 'Windows'
-        run: choco install protoc -y
+        run: |
+          choco install protoc -y
+          vcpkg install openssl:x64-windows-static-md
+          echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows-static-md" >> $env:GITHUB_ENV
 
       # --- Toolchains ---
       - uses: dtolnay/rust-toolchain@stable
