@@ -9,8 +9,7 @@
 //! so the caller can request a fresh pre-key bundle and re-establish.
 
 use libsignal_protocol::{
-    CiphertextMessageType, PreKeySignalMessage, ProtocolAddress, SignalMessage,
-    SignalProtocolError,
+    CiphertextMessageType, PreKeySignalMessage, ProtocolAddress, SignalMessage, SignalProtocolError,
 };
 use rusqlite::Connection;
 
@@ -76,9 +75,10 @@ pub fn encrypt_message(
     let mut identity_store = CryptoStore::new(conn);
 
     // Check session exists
-    let session = futures::executor::block_on(
-        libsignal_protocol::SessionStore::load_session(&session_store, recipient),
-    )
+    let session = futures::executor::block_on(libsignal_protocol::SessionStore::load_session(
+        &session_store,
+        recipient,
+    ))
     .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
 
     if session.is_none() {
@@ -292,15 +292,10 @@ mod tests {
         let alice_conn = init_test_db();
         generate_identity(&alice_conn).unwrap();
 
-        let unknown_address = ProtocolAddress::new(
-            "unknown-user".to_string(),
-            DeviceId::new(1).expect("valid"),
-        );
+        let unknown_address =
+            ProtocolAddress::new("unknown-user".to_string(), DeviceId::new(1).expect("valid"));
         let result = encrypt_message(&alice_conn, &unknown_address, b"hello");
-        assert!(matches!(
-            result,
-            Err(CryptoError::SessionNotFound { .. })
-        ));
+        assert!(matches!(result, Err(CryptoError::SessionNotFound { .. })));
     }
 
     #[test]
@@ -380,13 +375,8 @@ mod tests {
             let enc = encrypt_message(&alice_conn, &bob_address, msg).unwrap();
             assert_eq!(enc.message_type, MessageType::Signal);
 
-            let dec = decrypt_message(
-                &bob_conn,
-                &alice_address,
-                &enc.ciphertext,
-                enc.message_type,
-            )
-            .unwrap();
+            let dec = decrypt_message(&bob_conn, &alice_address, &enc.ciphertext, enc.message_type)
+                .unwrap();
             assert_eq!(dec, *msg);
         }
     }
@@ -400,18 +390,18 @@ mod tests {
         let m3 = encrypt_message(&alice_conn, &bob_address, b"m3").unwrap();
 
         // Decrypt m1 first (PreKey message establishes session)
-        let d1 = decrypt_message(&bob_conn, &alice_address, &m1.ciphertext, m1.message_type)
-            .unwrap();
+        let d1 =
+            decrypt_message(&bob_conn, &alice_address, &m1.ciphertext, m1.message_type).unwrap();
         assert_eq!(d1, b"m1");
 
         // Decrypt m3 (skipping m2)
-        let d3 = decrypt_message(&bob_conn, &alice_address, &m3.ciphertext, m3.message_type)
-            .unwrap();
+        let d3 =
+            decrypt_message(&bob_conn, &alice_address, &m3.ciphertext, m3.message_type).unwrap();
         assert_eq!(d3, b"m3");
 
         // Now decrypt m2
-        let d2 = decrypt_message(&bob_conn, &alice_address, &m2.ciphertext, m2.message_type)
-            .unwrap();
+        let d2 =
+            decrypt_message(&bob_conn, &alice_address, &m2.ciphertext, m2.message_type).unwrap();
         assert_eq!(d2, b"m2");
     }
 

@@ -1,12 +1,12 @@
 //! Crypto storage layer — SQLite-backed store for all crypto state.
 
-pub mod migrations;
 pub mod identity_store;
-pub mod pre_key_store;
-pub mod signed_pre_key_store;
 pub mod kyber_pre_key_store;
-pub mod session_store;
+pub mod migrations;
+pub mod pre_key_store;
 pub mod sender_key_store;
+pub mod session_store;
+pub mod signed_pre_key_store;
 
 use crate::error::CryptoError;
 use rusqlite::Connection;
@@ -56,11 +56,9 @@ impl<'a> CryptoStore<'a> {
     }
 
     pub fn count_available_pre_keys(&self) -> Result<u32, CryptoError> {
-        let count: u32 = self.conn.query_row(
-            "SELECT COUNT(*) FROM crypto_pre_keys",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: u32 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM crypto_pre_keys", [], |row| row.get(0))?;
         Ok(count)
     }
 
@@ -127,8 +125,10 @@ where
 pub fn init_test_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     // SQLCipher requires PRAGMA key even for in-memory DBs
-    conn.execute_batch("PRAGMA key = \"x'0000000000000000000000000000000000000000000000000000000000000000'\";")
-        .unwrap();
+    conn.execute_batch(
+        "PRAGMA key = \"x'0000000000000000000000000000000000000000000000000000000000000000'\";",
+    )
+    .unwrap();
     conn.pragma_update(None, "journal_mode", "WAL").unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     conn.pragma_update(None, "busy_timeout", 5000).unwrap();

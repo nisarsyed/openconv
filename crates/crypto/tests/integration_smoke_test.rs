@@ -53,10 +53,8 @@ fn full_roundtrip_alice_bob() {
     // -- Step 3: Alice creates outgoing session to Bob --
     let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
     let bob_address = session::create_outgoing_session(&alice_conn, &bundle_json).unwrap();
-    let alice_address = ProtocolAddress::new(
-        "alice-uuid".to_string(),
-        DeviceId::new(1).expect("valid"),
-    );
+    let alice_address =
+        ProtocolAddress::new("alice-uuid".to_string(), DeviceId::new(1).expect("valid"));
 
     // -- Step 4: Alice encrypts "hello" --
     let encrypted = message::encrypt_message(&alice_conn, &bob_address, b"hello").unwrap();
@@ -127,13 +125,9 @@ fn full_roundtrip_alice_bob() {
         let enc = message::encrypt_message(&alice_conn, &bob_address, payload.as_bytes()).unwrap();
         assert_eq!(enc.message_type, MessageType::Signal);
 
-        let dec = message::decrypt_message(
-            &bob_conn,
-            &alice_address,
-            &enc.ciphertext,
-            enc.message_type,
-        )
-        .unwrap();
+        let dec =
+            message::decrypt_message(&bob_conn, &alice_address, &enc.ciphertext, enc.message_type)
+                .unwrap();
         assert_eq!(dec, payload.as_bytes());
     }
 }
@@ -157,21 +151,11 @@ fn fingerprint_generation_and_comparison() {
     let alice_key = alice_pair.identity_key().serialize();
     let bob_key = bob_pair.identity_key().serialize();
 
-    let fp_alice = fingerprint::generate_fingerprint(
-        &alice_key,
-        "alice-uuid",
-        &bob_key,
-        "bob-uuid",
-    )
-    .unwrap();
+    let fp_alice =
+        fingerprint::generate_fingerprint(&alice_key, "alice-uuid", &bob_key, "bob-uuid").unwrap();
 
-    let fp_bob = fingerprint::generate_fingerprint(
-        &bob_key,
-        "bob-uuid",
-        &alice_key,
-        "alice-uuid",
-    )
-    .unwrap();
+    let fp_bob =
+        fingerprint::generate_fingerprint(&bob_key, "bob-uuid", &alice_key, "alice-uuid").unwrap();
 
     // Symmetric display
     assert_eq!(fp_alice.display, fp_bob.display);

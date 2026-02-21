@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../helpers/renderWithProviders";
 import { CreateChannelModal } from "../../../components/modals/CreateChannelModal";
@@ -53,7 +53,9 @@ describe("CreateChannelModal", () => {
     await user.type(screen.getByLabelText(/channel name/i), "test-channel");
     await user.click(screen.getByRole("button", { name: /create/i }));
 
-    expect(useAppStore.getState().activeModal).toBeNull();
+    await waitFor(() => {
+      expect(useAppStore.getState().activeModal).toBeNull();
+    });
   });
 
   it("create button is disabled when name is empty", () => {

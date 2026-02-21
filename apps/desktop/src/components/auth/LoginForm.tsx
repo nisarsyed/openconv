@@ -1,53 +1,35 @@
-import { useState } from "react";
 import { useNavigate, Link } from "react-router";
-import { Input } from "../ui/Input";
 import { Button } from "../ui/Button";
 import { useAppStore } from "../../store";
-import { mockLogin } from "../../mock/api";
 
 export function LoginForm() {
-  const [email, setEmail] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const login = useAppStore((state) => state.login);
+  const login = useAppStore((s) => s.login);
+  const isLoading = useAppStore((s) => s.isLoading);
+  const error = useAppStore((s) => s.error);
   const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setIsSubmitting(true);
-    try {
-      const result = await mockLogin(email);
-      login(result.user, result.keyPair, result.token);
+  const handleLogin = async () => {
+    await login();
+    if (useAppStore.getState().isAuthenticated) {
       navigate("/app", { replace: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
-      setIsSubmitting(false);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
-      <Input
-        label="Email"
-        type="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@example.com"
-      />
+    <div className="flex flex-col gap-5">
       {error && (
-        <p role="alert" className="-mt-2 text-xs text-red-400">
+        <p role="alert" className="text-xs text-red-400">
           {error}
         </p>
       )}
       <Button
-        type="submit"
         variant="primary"
         size="lg"
-        disabled={!email.trim() || isSubmitting}
+        disabled={isLoading}
+        onClick={handleLogin}
         className="w-full"
       >
-        {isSubmitting ? "Logging in..." : "Log In"}
+        {isLoading ? "Logging in..." : "Log In"}
       </Button>
       <div className="flex flex-col gap-2.5 text-center text-sm">
         <Link
@@ -63,6 +45,6 @@ export function LoginForm() {
           Forgot your account?
         </Link>
       </div>
-    </form>
+    </div>
   );
 }

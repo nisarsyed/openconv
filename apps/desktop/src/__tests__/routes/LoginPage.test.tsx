@@ -5,16 +5,18 @@ import { MemoryRouter, Routes, Route } from "react-router";
 import { LoginPage } from "../../routes/LoginPage";
 import { useAppStore } from "../../store";
 
-vi.mock("../../mock/api", () => ({
-  mockLogin: vi.fn(),
+vi.mock("../../bindings", () => ({
+  commands: {
+    authLogin: vi.fn(),
+  },
 }));
 
-import { mockLogin } from "../../mock/api";
+import { commands } from "../../bindings";
 
 describe("LoginPage", () => {
   beforeEach(() => {
     useAppStore.setState(useAppStore.getInitialState());
-    vi.mocked(mockLogin).mockReset();
+    vi.mocked(commands.authLogin).mockReset();
   });
 
   function renderLoginPage() {
@@ -30,57 +32,20 @@ describe("LoginPage", () => {
     );
   }
 
-  it("renders email input and login button (no password field)", () => {
+  it("renders a Log In button (no email field)", () => {
     renderLoginPage();
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /log in/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
-  });
-
-  it("disables login button when email is empty", () => {
-    renderLoginPage();
-    expect(screen.getByRole("button", { name: /log in/i })).toBeDisabled();
-  });
-
-  it("enables login button when email has content", async () => {
-    const user = userEvent.setup();
-    renderLoginPage();
-    await user.type(screen.getByLabelText(/email/i), "test@example.com");
-    expect(screen.getByRole("button", { name: /log in/i })).toBeEnabled();
-  });
-
-  it("calls mockLogin on form submit with the entered email", async () => {
-    const user = userEvent.setup();
-    vi.mocked(mockLogin).mockResolvedValue({
-      user: {
-        id: "u1",
-        displayName: "Test",
-        email: "test@example.com",
-        avatarUrl: null,
-      },
-      keyPair: { publicKey: "pk", privateKey: "sk" },
-      token: "token-123",
-    });
-    renderLoginPage();
-    await user.type(screen.getByLabelText(/email/i), "test@example.com");
-    await user.click(screen.getByRole("button", { name: /log in/i }));
-    expect(mockLogin).toHaveBeenCalledWith("test@example.com");
   });
 
   it("navigates to /app on successful login", async () => {
     const user = userEvent.setup();
-    vi.mocked(mockLogin).mockResolvedValue({
-      user: {
-        id: "u1",
-        displayName: "Test",
-        email: "test@example.com",
-        avatarUrl: null,
-      },
-      keyPair: { publicKey: "pk", privateKey: "sk" },
-      token: "token-123",
+    vi.mocked(commands.authLogin).mockResolvedValue({
+      status: "ok",
+      data: { user_id: "u1", public_key: "pk", device_id: "d1" },
     });
     renderLoginPage();
-    await user.type(screen.getByLabelText(/email/i), "test@example.com");
     await user.click(screen.getByRole("button", { name: /log in/i }));
     await waitFor(() => {
       expect(screen.getByText("App Content")).toBeInTheDocument();
@@ -89,45 +54,22 @@ describe("LoginPage", () => {
 
   it("shows error message on login failure", async () => {
     const user = userEvent.setup();
-    vi.mocked(mockLogin).mockRejectedValue(new Error("Login failed"));
+    vi.mocked(commands.authLogin).mockResolvedValue({
+      status: "error",
+      error: { message: "No identity found" },
+    });
     renderLoginPage();
-    await user.type(screen.getByLabelText(/email/i), "test@example.com");
     await user.click(screen.getByRole("button", { name: /log in/i }));
     await waitFor(() => {
-      expect(screen.getByText(/login failed/i)).toBeInTheDocument();
-    });
-  });
-
-  it("shows loading state during login", async () => {
-    const user = userEvent.setup();
-    let resolveLogin!: (value: any) => void;
-    vi.mocked(mockLogin).mockReturnValue(
-      new Promise((resolve) => {
-        resolveLogin = resolve;
-      }),
-    );
-    renderLoginPage();
-    await user.type(screen.getByLabelText(/email/i), "test@example.com");
-    await user.click(screen.getByRole("button", { name: /log in/i }));
-    expect(screen.getByRole("button", { name: /logging in/i })).toBeDisabled();
-    resolveLogin({
-      user: {
-        id: "u1",
-        displayName: "Test",
-        email: "test@example.com",
-        avatarUrl: null,
-      },
-      keyPair: { publicKey: "pk", privateKey: "sk" },
-      token: "token-123",
-    });
-    await waitFor(() => {
-      expect(screen.queryByText(/logging in/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/no identity found/i)).toBeInTheDocument();
     });
   });
 
   it("has a link to the register page", () => {
     renderLoginPage();
-    const link = screen.getByRole("link", { name: /register|create account/i });
+    const link = screen.getByRole("link", {
+      name: /register|create account/i,
+    });
     expect(link).toBeInTheDocument();
   });
 

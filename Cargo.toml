@@ -37,3 +37,10 @@ futures = "0.3"
 tempfile = "3"
 async-trait = "0.1"
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.87.1" }
+serial_test = "3"
+jsonwebtoken = "9"
+fred = { version = "10", features = ["i-scripts"] }
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+subtle = "2"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+gethostname = "1"

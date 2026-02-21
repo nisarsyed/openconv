@@ -7,6 +7,7 @@ use openconv_shared::error::OpenConvError;
 ///
 /// Needed because of the orphan rule — neither the trait (`IntoResponse`)
 /// nor the type (`OpenConvError`) is defined in this crate.
+#[derive(Debug)]
 pub struct ServerError(pub OpenConvError);
 
 impl IntoResponse for ServerError {
@@ -18,6 +19,12 @@ impl IntoResponse for ServerError {
             OpenConvError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             OpenConvError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             OpenConvError::Crypto(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            OpenConvError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            OpenConvError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.0.to_string()),
+            OpenConvError::SessionCompromised => (StatusCode::UNAUTHORIZED, self.0.to_string()),
+            OpenConvError::ServiceUnavailable(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, self.0.to_string())
+            }
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
@@ -73,5 +80,52 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("error").is_some());
         assert_eq!(json["error"], "not found");
+    }
+
+    #[test]
+    fn test_conflict_maps_to_409() {
+        let response =
+            ServerError(OpenConvError::Conflict("already exists".into())).into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn test_rate_limited_maps_to_429() {
+        let response = ServerError(OpenConvError::RateLimited).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_session_compromised_maps_to_401() {
+        let response = ServerError(OpenConvError::SessionCompromised).into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_service_unavailable_maps_to_503() {
+        let response =
+            ServerError(OpenConvError::ServiceUnavailable("test".into())).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_new_error_variants_produce_json_body() {
+        let variants: Vec<OpenConvError> = vec![
+            OpenConvError::Conflict("test".into()),
+            OpenConvError::RateLimited,
+            OpenConvError::SessionCompromised,
+            OpenConvError::ServiceUnavailable("test".into()),
+        ];
+        for variant in variants {
+            let response = ServerError(variant).into_response();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(
+                json.get("error").is_some(),
+                "missing 'error' field in JSON response body"
+            );
+        }
     }
 }

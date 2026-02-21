@@ -12,6 +12,94 @@ async healthCheck() : Promise<Result<AppHealth, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async authRegisterStart(email: string, displayName: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_register_start", { email, displayName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authVerifyEmail(email: string, code: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_verify_email", { email, code }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authRegisterComplete(registrationToken: string, displayName: string) : Promise<Result<AuthResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_register_complete", { registrationToken, displayName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authLogin() : Promise<Result<AuthResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_login") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authRefresh() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_refresh") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authLogout() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_logout") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authRecoverStart(email: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_recover_start", { email }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authRecoverVerify(email: string, code: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_recover_verify", { email, code }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authRecoverComplete(recoveryToken: string) : Promise<Result<AuthResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_recover_complete", { recoveryToken }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authCheckIdentity() : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_check_identity") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async authGetPublicKey() : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("auth_get_public_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -25,7 +113,9 @@ async healthCheck() : Promise<Result<AppHealth, string>> {
 
 /** user-defined types **/
 
+export type AppError = { message: string }
 export type AppHealth = { version: string; db_status: string }
+export type AuthResult = { user_id: string; public_key: string; device_id: string }
 
 /** tauri-specta globals **/
 

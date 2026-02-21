@@ -164,8 +164,13 @@ mod tests {
         let keypair = generate_identity(&conn).unwrap();
 
         let b64 = get_public_key_string(&conn).unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
-        assert_eq!(decoded.as_slice(), keypair.public_key().serialize().as_ref());
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .unwrap();
+        assert_eq!(
+            decoded.as_slice(),
+            keypair.public_key().serialize().as_ref()
+        );
     }
 
     #[test]
@@ -176,9 +181,7 @@ mod tests {
         let challenge = b"test challenge bytes";
         let signature = sign_challenge(&conn, challenge).unwrap();
 
-        let valid = keypair
-            .public_key()
-            .verify_signature(challenge, &signature);
+        let valid = keypair.public_key().verify_signature(challenge, &signature);
         assert!(valid);
     }
 

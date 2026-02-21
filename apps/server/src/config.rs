@@ -1,5 +1,144 @@
 use serde::Deserialize;
 
+// ---------------------------------------------------------------------------
+// Sub-struct: Redis
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RedisConfig {
+    #[serde(default = "default_redis_url")]
+    pub url: String,
+}
+
+fn default_redis_url() -> String {
+    "redis://localhost:6379".to_string()
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            url: default_redis_url(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-struct: JWT
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JwtConfig {
+    /// Ed25519 private key PEM -- MUST come from JWT_PRIVATE_KEY_PEM env var
+    #[serde(default)]
+    pub private_key_pem: String,
+    /// Ed25519 public key PEM -- MUST come from JWT_PUBLIC_KEY_PEM env var
+    #[serde(default)]
+    pub public_key_pem: String,
+    /// Access token lifetime in seconds (default: 300 = 5 minutes)
+    #[serde(default = "default_access_ttl")]
+    pub access_token_ttl_seconds: u64,
+    /// Refresh token lifetime in seconds (default: 604800 = 7 days)
+    #[serde(default = "default_refresh_ttl")]
+    pub refresh_token_ttl_seconds: u64,
+}
+
+fn default_access_ttl() -> u64 {
+    300
+}
+fn default_refresh_ttl() -> u64 {
+    604800
+}
+
+impl Default for JwtConfig {
+    fn default() -> Self {
+        Self {
+            private_key_pem: String::new(),
+            public_key_pem: String::new(),
+            access_token_ttl_seconds: default_access_ttl(),
+            refresh_token_ttl_seconds: default_refresh_ttl(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-struct: Email
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default)]
+    pub smtp_username: String,
+    /// MUST come from SMTP_PASSWORD env var
+    #[serde(default)]
+    pub smtp_password: String,
+    #[serde(default)]
+    pub from_address: String,
+    #[serde(default = "default_from_name")]
+    pub from_name: String,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_from_name() -> String {
+    "OpenConv".to_string()
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            smtp_username: String::new(),
+            smtp_password: String::new(),
+            from_address: String::new(),
+            from_name: default_from_name(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-struct: Rate Limiting
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitConfig {
+    #[serde(default = "default_ip_limit")]
+    pub auth_per_ip_per_minute: u32,
+    #[serde(default = "default_key_limit")]
+    pub challenge_per_key_per_minute: u32,
+    #[serde(default = "default_email_limit")]
+    pub email_per_address_per_hour: u32,
+}
+
+fn default_ip_limit() -> u32 {
+    30
+}
+fn default_key_limit() -> u32 {
+    5
+}
+fn default_email_limit() -> u32 {
+    3
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            auth_per_ip_per_minute: default_ip_limit(),
+            challenge_per_key_per_minute: default_key_limit(),
+            email_per_address_per_hour: default_email_limit(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main ServerConfig
+// ---------------------------------------------------------------------------
+
 /// Server configuration loaded from config.toml with env var overrides.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -20,6 +159,15 @@ pub struct ServerConfig {
     /// Tracing log level. Default: "info"
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    #[serde(default)]
+    pub redis: RedisConfig,
+    #[serde(default)]
+    pub jwt: JwtConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 fn default_host() -> String {
@@ -47,6 +195,10 @@ impl Default for ServerConfig {
             max_db_connections: default_max_db_connections(),
             cors_origins: default_cors_origins(),
             log_level: default_log_level(),
+            redis: RedisConfig::default(),
+            jwt: JwtConfig::default(),
+            email: EmailConfig::default(),
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -93,6 +245,18 @@ impl ServerConfig {
         if let Ok(val) = std::env::var("LOG_LEVEL") {
             self.log_level = val;
         }
+        if let Ok(val) = std::env::var("JWT_PRIVATE_KEY_PEM") {
+            self.jwt.private_key_pem = val;
+        }
+        if let Ok(val) = std::env::var("JWT_PUBLIC_KEY_PEM") {
+            self.jwt.public_key_pem = val;
+        }
+        if let Ok(val) = std::env::var("SMTP_PASSWORD") {
+            self.email.smtp_password = val;
+        }
+        if let Ok(val) = std::env::var("REDIS_URL") {
+            self.redis.url = val;
+        }
         Ok(())
     }
 }
@@ -100,6 +264,7 @@ impl ServerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_config_loads_from_valid_toml_string() {
@@ -121,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_applies_env_var_overrides() {
         let toml = r#"
             database_url = "postgresql://original@localhost/db"
@@ -149,5 +315,105 @@ mod tests {
         let toml = "this is not valid = [[[toml";
         let result = ServerConfig::from_toml_str(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_parses_nested_redis_section() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+            [redis]
+            url = "redis://localhost:6380"
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.redis.url, "redis://localhost:6380");
+    }
+
+    #[test]
+    fn test_config_parses_nested_jwt_section() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+            [jwt]
+            access_token_ttl_seconds = 600
+            refresh_token_ttl_seconds = 86400
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.jwt.access_token_ttl_seconds, 600);
+        assert_eq!(config.jwt.refresh_token_ttl_seconds, 86400);
+    }
+
+    #[test]
+    fn test_config_parses_nested_email_section() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+            [email]
+            smtp_host = "smtp.example.com"
+            smtp_port = 587
+            smtp_username = "user"
+            from_address = "noreply@example.com"
+            from_name = "OpenConv"
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.email.smtp_host, "smtp.example.com");
+        assert_eq!(config.email.smtp_port, 587);
+    }
+
+    #[test]
+    fn test_config_parses_nested_rate_limit_section() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+            [rate_limit]
+            auth_per_ip_per_minute = 60
+            challenge_per_key_per_minute = 10
+            email_per_address_per_hour = 5
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.rate_limit.auth_per_ip_per_minute, 60);
+    }
+
+    #[test]
+    fn test_config_still_parses_minimal_config_with_defaults() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.redis.url, "redis://localhost:6379");
+        assert_eq!(config.jwt.access_token_ttl_seconds, 300);
+        assert_eq!(config.jwt.refresh_token_ttl_seconds, 604800);
+        assert_eq!(config.rate_limit.auth_per_ip_per_minute, 30);
+    }
+
+    #[test]
+    #[serial]
+    fn test_jwt_pem_keys_from_env_vars() {
+        std::env::set_var("JWT_PRIVATE_KEY_PEM", "test-private-pem");
+        std::env::set_var("JWT_PUBLIC_KEY_PEM", "test-public-pem");
+        let toml = r#"database_url = "postgresql://localhost/db""#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.jwt.private_key_pem, "test-private-pem");
+        assert_eq!(config.jwt.public_key_pem, "test-public-pem");
+        std::env::remove_var("JWT_PRIVATE_KEY_PEM");
+        std::env::remove_var("JWT_PUBLIC_KEY_PEM");
+    }
+
+    #[test]
+    #[serial]
+    fn test_smtp_password_from_env_var() {
+        std::env::set_var("SMTP_PASSWORD", "secret-smtp-pass");
+        let toml = r#"database_url = "postgresql://localhost/db""#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.email.smtp_password, "secret-smtp-pass");
+        std::env::remove_var("SMTP_PASSWORD");
+    }
+
+    #[test]
+    fn test_default_access_token_ttl_is_300() {
+        let jwt = JwtConfig::default();
+        assert_eq!(jwt.access_token_ttl_seconds, 300);
+    }
+
+    #[test]
+    fn test_default_refresh_token_ttl_is_604800() {
+        let jwt = JwtConfig::default();
+        assert_eq!(jwt.refresh_token_ttl_seconds, 604800);
     }
 }

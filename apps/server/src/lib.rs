@@ -1,6 +1,14 @@
 pub mod config;
+pub mod crypto_verify;
+pub mod email;
 pub mod error;
+pub mod extractors;
 pub mod handlers;
+pub mod jwt;
+pub mod middleware;
+pub mod redis;
 pub mod router;
 pub mod shutdown;
 pub mod state;
+pub mod tasks;
+pub mod validation;

@@ -8,7 +8,7 @@ fn configure_connection(conn: &Connection) -> Result<()> {
     )
 }
 
-const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001)];
+const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
 
 const MIGRATION_001: &str = "
 CREATE TABLE local_user (
@@ -72,6 +72,14 @@ CREATE TABLE sync_state (
     channel_id TEXT PRIMARY KEY,
     last_message_id TEXT,
     last_sync_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+";
+
+const MIGRATION_002: &str = "
+CREATE TABLE IF NOT EXISTS local_device (
+    id TEXT PRIMARY KEY,
+    device_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ";
 
@@ -175,6 +183,7 @@ mod tests {
             "cached_messages",
             "cached_files",
             "sync_state",
+            "local_device",
         ];
         for table in &expected {
             let exists: bool = conn

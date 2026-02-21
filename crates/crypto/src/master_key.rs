@@ -71,13 +71,16 @@ pub fn init_master_key_from_keychain() -> Result<MasterKey, CryptoError> {
 
     match entry.get_password() {
         Ok(mut hex_string) => {
-            let mut bytes = hex_decode(&hex_string)
-                .ok_or_else(|| CryptoError::KeychainError("malformed master key in keychain".into()))?;
+            let mut bytes = hex_decode(&hex_string).ok_or_else(|| {
+                CryptoError::KeychainError("malformed master key in keychain".into())
+            })?;
             hex_string.zeroize();
 
             if bytes.len() != 32 {
                 bytes.zeroize();
-                return Err(CryptoError::KeychainError("malformed master key in keychain".into()));
+                return Err(CryptoError::KeychainError(
+                    "malformed master key in keychain".into(),
+                ));
             }
             let mut key = [0u8; 32];
             key.copy_from_slice(&bytes);
@@ -88,9 +91,7 @@ pub fn init_master_key_from_keychain() -> Result<MasterKey, CryptoError> {
             let mut key = [0u8; 32];
             rand::RngCore::fill_bytes(&mut rand::rng(), &mut key);
             let mut hex_string = hex_encode(&key);
-            entry
-                .set_password(&hex_string)
-                .map_err(CryptoError::from)?;
+            entry.set_password(&hex_string).map_err(CryptoError::from)?;
             hex_string.zeroize();
             Ok(MasterKey { key })
         }
@@ -208,7 +209,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

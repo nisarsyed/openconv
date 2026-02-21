@@ -93,14 +93,10 @@ mod tests {
         let mut store = CryptoStore::new(&conn);
         let record = create_kyber_pre_key_record(1);
 
-        futures::executor::block_on(
-            store.save_kyber_pre_key(KyberPreKeyId::from(1), &record),
-        )
-        .unwrap();
-        let loaded = futures::executor::block_on(
-            store.get_kyber_pre_key(KyberPreKeyId::from(1)),
-        )
-        .unwrap();
+        futures::executor::block_on(store.save_kyber_pre_key(KyberPreKeyId::from(1), &record))
+            .unwrap();
+        let loaded =
+            futures::executor::block_on(store.get_kyber_pre_key(KyberPreKeyId::from(1))).unwrap();
 
         assert_eq!(loaded.serialize().unwrap(), record.serialize().unwrap());
     }
@@ -109,9 +105,8 @@ mod tests {
     fn get_kyber_pre_key_returns_error_for_nonexistent_id() {
         let conn = init_test_db();
         let store = CryptoStore::new(&conn);
-        let result = futures::executor::block_on(
-            store.get_kyber_pre_key(KyberPreKeyId::from(99999)),
-        );
+        let result =
+            futures::executor::block_on(store.get_kyber_pre_key(KyberPreKeyId::from(99999)));
         assert!(result.is_err());
     }
 
@@ -122,10 +117,8 @@ mod tests {
         let record = create_kyber_pre_key_record(1);
         let dummy_key = libsignal_protocol::KeyPair::generate(&mut rand::rng());
 
-        futures::executor::block_on(
-            store.save_kyber_pre_key(KyberPreKeyId::from(1), &record),
-        )
-        .unwrap();
+        futures::executor::block_on(store.save_kyber_pre_key(KyberPreKeyId::from(1), &record))
+            .unwrap();
 
         let result = futures::executor::block_on(store.mark_kyber_pre_key_used(
             KyberPreKeyId::from(1),

@@ -19,7 +19,6 @@ describe("App", () => {
 
   it("unauthenticated users see the login page by default", () => {
     render(<App />);
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /log in/i })).toBeInTheDocument();
   });
 

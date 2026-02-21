@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 openconv-shared = { path = "../../../crates/shared" }
+openconv-crypto = { path = "../../../crates/crypto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -20,12 +21,19 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rusqlite = { workspace = true }
+reqwest = { workspace = true }
+keyring = { workspace = true }
+base64 = { workspace = true }
+gethostname = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 specta-typescript = "0.0.9"
 tauri-plugin-decorum = "1"
 tauri-plugin-os = "2"
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

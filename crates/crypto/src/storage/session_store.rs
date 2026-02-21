@@ -21,7 +21,10 @@ impl SessionStore for CryptoStore<'_> {
         ) {
             Ok(bytes) => Ok(Some(SessionRecord::deserialize(&bytes)?)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(SignalProtocolError::InvalidState("load_session", e.to_string())),
+            Err(e) => Err(SignalProtocolError::InvalidState(
+                "load_session",
+                e.to_string(),
+            )),
         }
     }
 

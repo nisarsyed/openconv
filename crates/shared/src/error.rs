@@ -18,6 +18,18 @@ pub enum OpenConvError {
 
     #[error("crypto error: {0}")]
     Crypto(String),
+
+    #[error("rate limited")]
+    RateLimited,
+
+    #[error("session compromised")]
+    SessionCompromised,
+
+    #[error("conflict: {0}")]
+    Conflict(String),
+
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 #[cfg(test)]
@@ -51,9 +63,31 @@ mod tests {
             Box::new(OpenConvError::Validation("x".into())),
             Box::new(OpenConvError::Internal("y".into())),
             Box::new(OpenConvError::Crypto("z".into())),
+            Box::new(OpenConvError::Conflict("duplicate".into())),
+            Box::new(OpenConvError::RateLimited),
+            Box::new(OpenConvError::SessionCompromised),
+            Box::new(OpenConvError::ServiceUnavailable("redis down".into())),
         ];
         for e in &errors {
             let _ = e.to_string();
         }
+    }
+
+    #[test]
+    fn rate_limited_display() {
+        let err = OpenConvError::RateLimited;
+        assert_eq!(err.to_string(), "rate limited");
+    }
+
+    #[test]
+    fn session_compromised_display() {
+        let err = OpenConvError::SessionCompromised;
+        assert_eq!(err.to_string(), "session compromised");
+    }
+
+    #[test]
+    fn service_unavailable_display() {
+        let err = OpenConvError::ServiceUnavailable("redis down".into());
+        assert_eq!(err.to_string(), "service unavailable: redis down");
     }
 }
