@@ -23,6 +23,7 @@ pub fn build_router(state: AppState) -> axum::Router {
             axum::http::Method::GET,
             axum::http::Method::POST,
             axum::http::Method::PUT,
+            axum::http::Method::PATCH,
             axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ])
@@ -61,10 +62,27 @@ pub fn build_router(state: AppState) -> axum::Router {
             "auth".to_string(),
         ));
 
+    let user_routes = axum::Router::new()
+        .route(
+            "/me",
+            get(handlers::users::get_me).patch(handlers::users::update_me),
+        )
+        .route("/me/prekeys", post(handlers::users::upload_prekeys))
+        .route("/search", get(handlers::users::search_users))
+        .route("/{user_id}", get(handlers::users::get_user))
+        .route("/{user_id}/prekeys", get(handlers::users::get_prekeys))
+        .layer(crate::middleware::rate_limit::RateLimitLayer::new(
+            state.redis.clone(),
+            state.config.rate_limit.auth_per_ip_per_minute,
+            60,
+            "users".to_string(),
+        ));
+
     axum::Router::new()
         .route("/health/live", get(handlers::health::liveness))
         .route("/health/ready", get(handlers::health::readiness))
         .nest("/api/auth", auth_routes)
+        .nest("/api/users", user_routes)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(cors)

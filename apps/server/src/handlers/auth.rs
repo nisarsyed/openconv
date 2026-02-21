@@ -18,6 +18,7 @@ use subtle::ConstantTimeEq;
 use crate::error::ServerError;
 use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
+use crate::validation::validate_display_name;
 
 fn validate_email(email: &str) -> Result<(), ServerError> {
     let email = email.trim();
@@ -32,25 +33,6 @@ fn validate_email(email: &str) -> Result<(), ServerError> {
         return Err(OpenConvError::Validation("invalid email format".into()).into());
     }
     Ok(())
-}
-
-fn validate_display_name(name: &str) -> Result<String, ServerError> {
-    let trimmed = name.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(OpenConvError::Validation("display name is required".into()).into());
-    }
-    if trimmed.chars().count() > 64 {
-        return Err(
-            OpenConvError::Validation("display name must be 64 characters or fewer".into()).into(),
-        );
-    }
-    if trimmed.chars().any(|c| c.is_control()) {
-        return Err(
-            OpenConvError::Validation("display name must not contain control characters".into())
-                .into(),
-        );
-    }
-    Ok(trimmed)
 }
 
 fn validate_verification_code(code: &str) -> Result<(), ServerError> {
