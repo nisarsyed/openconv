@@ -113,6 +113,14 @@ pub struct RateLimitConfig {
     pub challenge_per_key_per_minute: u32,
     #[serde(default = "default_email_limit")]
     pub email_per_address_per_hour: u32,
+    #[serde(default = "default_guild_limit")]
+    pub guild_per_user_per_minute: u32,
+    #[serde(default = "default_channel_limit")]
+    pub channel_per_user_per_minute: u32,
+    #[serde(default = "default_file_limit")]
+    pub file_per_user_per_minute: u32,
+    #[serde(default = "default_invite_limit")]
+    pub invite_per_user_per_hour: u32,
 }
 
 fn default_ip_limit() -> u32 {
@@ -124,6 +132,18 @@ fn default_key_limit() -> u32 {
 fn default_email_limit() -> u32 {
     3
 }
+fn default_guild_limit() -> u32 {
+    10
+}
+fn default_channel_limit() -> u32 {
+    20
+}
+fn default_file_limit() -> u32 {
+    10
+}
+fn default_invite_limit() -> u32 {
+    10
+}
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
@@ -131,6 +151,10 @@ impl Default for RateLimitConfig {
             auth_per_ip_per_minute: default_ip_limit(),
             challenge_per_key_per_minute: default_key_limit(),
             email_per_address_per_hour: default_email_limit(),
+            guild_per_user_per_minute: default_guild_limit(),
+            channel_per_user_per_minute: default_channel_limit(),
+            file_per_user_per_minute: default_file_limit(),
+            invite_per_user_per_hour: default_invite_limit(),
         }
     }
 }
@@ -402,9 +426,29 @@ mod tests {
             auth_per_ip_per_minute = 60
             challenge_per_key_per_minute = 10
             email_per_address_per_hour = 5
+            guild_per_user_per_minute = 15
+            channel_per_user_per_minute = 30
+            file_per_user_per_minute = 5
+            invite_per_user_per_hour = 20
         "#;
         let config = ServerConfig::from_toml_str(toml).unwrap();
         assert_eq!(config.rate_limit.auth_per_ip_per_minute, 60);
+        assert_eq!(config.rate_limit.guild_per_user_per_minute, 15);
+        assert_eq!(config.rate_limit.channel_per_user_per_minute, 30);
+        assert_eq!(config.rate_limit.file_per_user_per_minute, 5);
+        assert_eq!(config.rate_limit.invite_per_user_per_hour, 20);
+    }
+
+    #[test]
+    fn test_rate_limit_user_fields_have_correct_defaults() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.rate_limit.guild_per_user_per_minute, 10);
+        assert_eq!(config.rate_limit.channel_per_user_per_minute, 20);
+        assert_eq!(config.rate_limit.file_per_user_per_minute, 10);
+        assert_eq!(config.rate_limit.invite_per_user_per_hour, 10);
     }
 
     #[test]

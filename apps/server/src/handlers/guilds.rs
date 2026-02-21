@@ -489,7 +489,7 @@ pub async fn list_members(
 
 /// Route builder for guild endpoints.
 pub fn routes() -> axum::Router<AppState> {
-    use axum::routing::{delete, get, post};
+    use axum::routing::{get, post};
 
     axum::Router::new()
         .route("/", post(create_guild).get(list_guilds))
@@ -498,9 +498,21 @@ pub fn routes() -> axum::Router<AppState> {
             get(get_guild).patch(update_guild).delete(delete_guild),
         )
         .route("/{guild_id}/restore", post(restore_guild))
-        .route("/{guild_id}/members", get(list_members))
-        .route("/{guild_id}/members/me", delete(leave_guild))
-        .route("/{guild_id}/members/{user_id}", delete(kick_member))
+}
+
+/// Route builder for guild member endpoints.
+/// Mounted at /api/guilds/{guild_id}/members by the router.
+pub fn member_routes() -> axum::Router<AppState> {
+    use axum::routing::{delete, get, put};
+
+    axum::Router::new()
+        .route("/", get(list_members))
+        .route("/me", delete(leave_guild))
+        .route("/{user_id}", delete(kick_member))
+        .route(
+            "/{user_id}/roles/{role_id}",
+            put(super::roles::assign_role).delete(super::roles::remove_role),
+        )
 }
 
 // Internal row types for sqlx queries
