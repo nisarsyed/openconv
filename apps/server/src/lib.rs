@@ -6,6 +6,7 @@ pub mod extractors;
 pub mod handlers;
 pub mod jwt;
 pub mod middleware;
+pub mod permissions;
 pub mod redis;
 pub mod router;
 pub mod shutdown;

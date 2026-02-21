@@ -3966,6 +3966,7 @@ name = "openconv-shared"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.11.0",
  "chrono",
  "serde",
  "serde_json",
