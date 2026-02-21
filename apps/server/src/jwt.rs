@@ -91,24 +91,34 @@ impl JwtService {
             .map_err(|e| OpenConvError::Internal(format!("JWT encode error: {e}")))
     }
 
+    /// Issue a refresh token. Returns `(token_string, jti)` so the caller
+    /// can store the jti in the database without re-validating the token.
     pub fn issue_refresh_token(
         &self,
         user_id: &UserId,
         device_id: &DeviceId,
         family: &str,
-    ) -> Result<String, OpenConvError> {
+    ) -> Result<(String, String), OpenConvError> {
         let now = now_epoch();
+        let jti = uuid::Uuid::new_v4().to_string();
         let claims = RefreshClaims {
             sub: user_id.to_string(),
             device_id: device_id.to_string(),
             purpose: "refresh".to_string(),
             exp: now + self.refresh_ttl.as_secs() as usize,
             iat: now,
-            jti: uuid::Uuid::new_v4().to_string(),
+            jti: jti.clone(),
             family: family.to_string(),
         };
-        jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &self.encoding_key)
-            .map_err(|e| OpenConvError::Internal(format!("JWT encode error: {e}")))
+        let token =
+            jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &self.encoding_key)
+                .map_err(|e| OpenConvError::Internal(format!("JWT encode error: {e}")))?;
+        Ok((token, jti))
+    }
+
+    /// Returns the refresh token TTL for computing expires_at timestamps.
+    pub fn refresh_ttl(&self) -> std::time::Duration {
+        self.refresh_ttl
     }
 
     pub fn issue_registration_token(
@@ -248,10 +258,12 @@ mod tests {
         let uid = UserId::new();
         let did = DeviceId::new();
         let family = uuid::Uuid::new_v4().to_string();
-        let token = svc.issue_refresh_token(&uid, &did, &family).unwrap();
+        let (token, jti) = svc.issue_refresh_token(&uid, &did, &family).unwrap();
+        assert!(!jti.is_empty());
         let claims = svc.validate_refresh_token(&token).unwrap();
         assert_eq!(claims.purpose, "refresh");
         assert_eq!(claims.family, family);
+        assert_eq!(claims.jti, jti);
     }
 
     #[test]
@@ -291,7 +303,7 @@ mod tests {
         let svc = test_jwt_service();
         let uid = UserId::new();
         let did = DeviceId::new();
-        let token = svc
+        let (token, _) = svc
             .issue_refresh_token(&uid, &did, "fam")
             .unwrap();
         assert!(svc.validate_access_token(&token).is_err());

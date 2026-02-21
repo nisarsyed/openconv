@@ -182,7 +182,7 @@ mod tests {
         let uid = UserId::new();
         let did = DeviceId::new();
         // Issue a refresh token instead of access token
-        let token = state
+        let (token, _) = state
             .jwt
             .issue_refresh_token(&uid, &did, "family123")
             .unwrap();

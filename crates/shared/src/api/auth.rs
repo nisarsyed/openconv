@@ -177,6 +177,12 @@ pub struct DeviceInfo {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Response body for GET /api/auth/devices.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevicesListResponse {
+    pub devices: Vec<DeviceInfo>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

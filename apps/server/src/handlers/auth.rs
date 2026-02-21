@@ -1,16 +1,20 @@
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
 use fred::interfaces::KeysInterface;
 use openconv_shared::api::auth::{
-    LoginChallengeRequest, LoginChallengeResponse, LoginVerifyRequest, LoginVerifyResponse,
+    DeviceInfo, DevicesListResponse, LoginChallengeRequest, LoginChallengeResponse,
+    LoginVerifyRequest, LoginVerifyResponse, RefreshRequest, RefreshResponse,
     RegisterCompleteRequest, RegisterResponse, RegisterStartRequest, RegisterStartResponse,
     RegisterVerifyRequest, RegisterVerifyResponse,
 };
 use openconv_shared::error::OpenConvError;
-use openconv_shared::ids::UserId;
+use openconv_shared::ids::{DeviceId, UserId};
 use rand::Rng;
+
 use crate::error::ServerError;
+use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 
 fn validate_email(email: &str) -> Result<(), ServerError> {
@@ -300,23 +304,17 @@ pub async fn register_complete(
     // 4. Generate token family and issue tokens
     let family = uuid::Uuid::now_v7().to_string();
     let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
-    let refresh_token = state
+    let (refresh_token, jti_str) = state
         .jwt
         .issue_refresh_token(&user_id, &req.device_id, &family)?;
 
-    // Decode refresh token to get jti and exp
-    let refresh_claims = state.jwt.validate_refresh_token(&refresh_token)?;
-    let expires_at = chrono::DateTime::from_timestamp(refresh_claims.exp as i64, 0)
-        .ok_or_else(|| OpenConvError::Internal("invalid token expiry".into()))?;
-
-    let jti: uuid::Uuid = refresh_claims
-        .jti
+    let jti: uuid::Uuid = jti_str
         .parse()
         .map_err(|_| OpenConvError::Internal("invalid jti format".into()))?;
-
     let family_uuid: uuid::Uuid = family
         .parse()
         .expect("family UUID was just generated from Uuid::now_v7()");
+    let expires_at = chrono::Utc::now() + state.jwt.refresh_ttl();
 
     // Store refresh token record
     sqlx::query(
@@ -494,23 +492,18 @@ pub async fn login_verify(
     // 9. Issue tokens
     let family = uuid::Uuid::now_v7().to_string();
     let access_token = state.jwt.issue_access_token(&user_id, &req.device_id)?;
-    let refresh_token = state
+    let (refresh_token, jti_str) = state
         .jwt
         .issue_refresh_token(&user_id, &req.device_id, &family)?;
 
     // 10. Store refresh token in database
-    let refresh_claims = state.jwt.validate_refresh_token(&refresh_token)?;
-    let expires_at = chrono::DateTime::from_timestamp(refresh_claims.exp as i64, 0)
-        .ok_or_else(|| OpenConvError::Internal("invalid token expiry".into()))?;
-
-    let jti: uuid::Uuid = refresh_claims
-        .jti
+    let jti: uuid::Uuid = jti_str
         .parse()
         .map_err(|_| OpenConvError::Internal("invalid jti format".into()))?;
-
     let family_uuid: uuid::Uuid = family
         .parse()
         .expect("family UUID was just generated from Uuid::now_v7()");
+    let expires_at = chrono::Utc::now() + state.jwt.refresh_ttl();
 
     sqlx::query(
         "INSERT INTO refresh_tokens (jti, user_id, device_id, family, expires_at, is_used) \
@@ -536,6 +529,209 @@ pub async fn login_verify(
         user_id,
         device_id: req.device_id,
     }))
+}
+
+pub async fn refresh(
+    State(state): State<AppState>,
+    Json(body): Json<RefreshRequest>,
+) -> Result<Json<RefreshResponse>, ServerError> {
+    // 1. Validate the refresh JWT
+    let claims = state.jwt.validate_refresh_token(&body.refresh_token)?;
+
+    // 2. Parse claims
+    let jti: uuid::Uuid = claims
+        .jti
+        .parse()
+        .map_err(|_| OpenConvError::Unauthorized)?;
+    let family_uuid: uuid::Uuid = claims
+        .family
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid family format".into()))?;
+    let user_id: UserId = claims
+        .sub
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid user_id in token".into()))?;
+    let device_id: DeviceId = claims
+        .device_id
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid device_id in token".into()))?;
+
+    // 3. Begin transaction to prevent race conditions
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("transaction start failed: {e}")))?;
+
+    // 4. Look up the token record by jti (with FOR UPDATE to lock the row)
+    let record: Option<(bool,)> =
+        sqlx::query_as("SELECT is_used FROM refresh_tokens WHERE jti = $1 FOR UPDATE")
+            .bind(jti)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    let (is_used,) = record.ok_or(OpenConvError::Unauthorized)?;
+
+    // 5. Check for token reuse (breach detection)
+    if is_used {
+        // Invalidate entire token family
+        sqlx::query(
+            "UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE family = $1",
+        )
+        .bind(family_uuid)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("transaction commit failed: {e}")))?;
+
+        return Err(OpenConvError::SessionCompromised.into());
+    }
+
+    // 6. Mark the current token as used
+    sqlx::query("UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE jti = $1")
+        .bind(jti)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // 7. Issue new token pair in the same family
+    let access_token = state.jwt.issue_access_token(&user_id, &device_id)?;
+    let (refresh_token, new_jti_str) = state
+        .jwt
+        .issue_refresh_token(&user_id, &device_id, &claims.family)?;
+
+    let new_jti: uuid::Uuid = new_jti_str
+        .parse()
+        .map_err(|_| OpenConvError::Internal("invalid jti format".into()))?;
+    let expires_at = chrono::Utc::now() + state.jwt.refresh_ttl();
+
+    // 8. Store the new refresh token record
+    sqlx::query(
+        "INSERT INTO refresh_tokens (jti, user_id, device_id, family, expires_at, is_used) VALUES ($1, $2, $3, $4, $5, false)",
+    )
+    .bind(new_jti)
+    .bind(user_id.0)
+    .bind(device_id.0)
+    .bind(family_uuid)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // 9. Update device last_active
+    sqlx::query("UPDATE devices SET last_active = NOW() WHERE id = $1")
+        .bind(device_id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("transaction commit failed: {e}")))?;
+
+    Ok(Json(RefreshResponse {
+        access_token,
+        refresh_token,
+    }))
+}
+
+pub async fn logout(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<StatusCode, ServerError> {
+    sqlx::query(
+        "UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE user_id = $1 AND device_id = $2 AND is_used = false",
+    )
+    .bind(auth.user_id.0)
+    .bind(auth.device_id.0)
+    .execute(&state.db)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    Ok(StatusCode::OK)
+}
+
+pub async fn logout_all(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<StatusCode, ServerError> {
+    sqlx::query(
+        "UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE user_id = $1 AND is_used = false",
+    )
+    .bind(auth.user_id.0)
+    .execute(&state.db)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    Ok(StatusCode::OK)
+}
+
+pub async fn list_devices(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<DevicesListResponse>, ServerError> {
+    let rows: Vec<(uuid::Uuid, String, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as(
+            "SELECT id, device_name, last_active, created_at FROM devices WHERE user_id = $1 ORDER BY last_active DESC",
+        )
+        .bind(auth.user_id.0)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    let devices = rows
+        .into_iter()
+        .map(|(id, device_name, last_active, created_at)| DeviceInfo {
+            id: DeviceId(id),
+            device_name,
+            last_active,
+            created_at,
+        })
+        .collect();
+
+    Ok(Json(DevicesListResponse { devices }))
+}
+
+pub async fn revoke_device(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(device_id): Path<DeviceId>,
+) -> Result<StatusCode, ServerError> {
+    // Look up the device
+    let owner: Option<(uuid::Uuid,)> =
+        sqlx::query_as("SELECT user_id FROM devices WHERE id = $1")
+            .bind(device_id.0)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    let (owner_id,) = owner.ok_or(OpenConvError::NotFound)?;
+
+    if owner_id != auth.user_id.0 {
+        return Err(OpenConvError::Forbidden.into());
+    }
+
+    // Soft-invalidate all refresh tokens for this device (audit trail)
+    sqlx::query(
+        "UPDATE refresh_tokens SET is_used = true, used_at = NOW() WHERE device_id = $1 AND is_used = false",
+    )
+    .bind(device_id.0)
+    .execute(&state.db)
+    .await
+    .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    // Delete the device (refresh_tokens cascade-delete via FK)
+    sqlx::query("DELETE FROM devices WHERE id = $1")
+        .bind(device_id.0)
+        .execute(&state.db)
+        .await
+        .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
+
+    Ok(StatusCode::OK)
 }
 
 #[cfg(test)]

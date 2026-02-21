@@ -1,7 +1,7 @@
 use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -40,6 +40,14 @@ pub fn build_router(state: AppState) -> axum::Router {
         )
         .route("/challenge", post(handlers::auth::challenge))
         .route("/verify", post(handlers::auth::login_verify))
+        .route("/refresh", post(handlers::auth::refresh))
+        .route("/logout", post(handlers::auth::logout))
+        .route("/logout-all", post(handlers::auth::logout_all))
+        .route("/devices", get(handlers::auth::list_devices))
+        .route(
+            "/devices/{device_id}",
+            delete(handlers::auth::revoke_device),
+        )
         .layer(crate::middleware::rate_limit::RateLimitLayer::new(
             state.redis.clone(),
             state.config.rate_limit.auth_per_ip_per_minute,
