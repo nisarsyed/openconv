@@ -123,6 +123,9 @@ jobs:
           cargo test -p openconv-crypto
           cargo test -p openconv-desktop
 
+      - name: Check bindings.ts is up to date
+        run: git diff --exit-code apps/desktop/src/bindings.ts
+
   # ---------------------------------------------------------------------------
   # Rust — server tests (needs PostgreSQL)
   # ---------------------------------------------------------------------------

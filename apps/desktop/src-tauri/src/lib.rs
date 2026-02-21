@@ -50,26 +50,29 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
+    tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
+        commands::health::health_check,
+        commands::auth::auth_register_start,
+        commands::auth::auth_verify_email,
+        commands::auth::auth_register_complete,
+        commands::auth::auth_login,
+        commands::auth::auth_refresh,
+        commands::auth::auth_logout,
+        commands::auth::auth_recover_start,
+        commands::auth::auth_recover_verify,
+        commands::auth::auth_recover_complete,
+        commands::auth::auth_check_identity,
+        commands::auth::auth_get_public_key,
+    ])
+}
+
 pub fn run() {
     use tauri::Manager;
 
     tracing_subscriber::fmt::init();
 
-    let builder =
-        tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
-            commands::health::health_check,
-            commands::auth::auth_register_start,
-            commands::auth::auth_verify_email,
-            commands::auth::auth_register_complete,
-            commands::auth::auth_login,
-            commands::auth::auth_refresh,
-            commands::auth::auth_logout,
-            commands::auth::auth_recover_start,
-            commands::auth::auth_recover_verify,
-            commands::auth::auth_recover_complete,
-            commands::auth::auth_check_identity,
-            commands::auth::auth_get_public_key,
-        ]);
+    let builder = specta_builder();
 
     #[cfg(debug_assertions)]
     builder
@@ -118,4 +121,20 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_bindings() {
+        specta_builder()
+            .export(
+                specta_typescript::Typescript::default()
+                    .bigint(specta_typescript::BigIntExportBehavior::Number),
+                "../src/bindings.ts",
+            )
+            .expect("failed to export typescript bindings");
+    }
 }
