@@ -108,6 +108,7 @@ mod tests {
             redis,
             jwt,
             email,
+            object_store: std::sync::Arc::new(object_store::memory::InMemory::new()),
         }
     }
 

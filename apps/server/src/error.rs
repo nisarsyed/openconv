@@ -25,6 +25,9 @@ impl IntoResponse for ServerError {
             OpenConvError::ServiceUnavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, self.0.to_string())
             }
+            OpenConvError::PayloadTooLarge(msg) => {
+                (StatusCode::PAYLOAD_TOO_LARGE, msg.clone())
+            }
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
@@ -108,6 +111,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    #[test]
+    fn test_payload_too_large_maps_to_413() {
+        let response =
+            ServerError(OpenConvError::PayloadTooLarge("too big".into())).into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     #[tokio::test]
     async fn test_new_error_variants_produce_json_body() {
         let variants: Vec<OpenConvError> = vec![
@@ -115,6 +125,7 @@ mod tests {
             OpenConvError::RateLimited,
             OpenConvError::SessionCompromised,
             OpenConvError::ServiceUnavailable("test".into()),
+            OpenConvError::PayloadTooLarge("test".into()),
         ];
         for variant in variants {
             let response = ServerError(variant).into_response();

@@ -9,6 +9,7 @@ use openconv_server::redis::create_redis_pool;
 use openconv_server::router::build_router;
 use openconv_server::shutdown::shutdown_signal;
 use openconv_server::state::AppState;
+use openconv_server::storage::create_object_store;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SmtpEmailService::new(&config.email)?)
     };
 
+    let object_store = create_object_store(&config.file_storage)?;
+    tracing::info!(backend = %config.file_storage.backend, "Object store initialized");
+
     // Shutdown coordination: cleanup task stops when the server does
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -69,6 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let file_cleanup_pool = pool.clone();
+    let file_cleanup_store = object_store.clone();
+    let mut file_cleanup_shutdown_rx = shutdown_rx.clone();
+
     let guild_cleanup_pool = pool.clone();
     tokio::spawn(async move {
         loop {
@@ -93,6 +101,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+    tokio::spawn(async move {
+        loop {
+            match openconv_server::tasks::file_cleanup::cleanup_orphan_files(
+                &file_cleanup_pool,
+                &*file_cleanup_store,
+            )
+            .await
+            {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(count, "Orphan file cleanup completed");
+                    }
+                }
+                Err(e) => tracing::error!("Orphan file cleanup failed: {e}"),
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
+                _ = file_cleanup_shutdown_rx.changed() => {
+                    tracing::info!("File cleanup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
 
     let addr = format!("{}:{}", config.host, config.port);
     let state = AppState {
@@ -101,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         redis,
         jwt,
         email,
+        object_store,
     };
     let app = build_router(state);
 

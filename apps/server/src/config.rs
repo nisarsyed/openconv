@@ -136,6 +136,40 @@ impl Default for RateLimitConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Sub-struct: File Storage
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileStorageConfig {
+    #[serde(default = "default_storage_backend")]
+    pub backend: String,
+    #[serde(default = "default_local_path")]
+    pub local_path: String,
+    #[serde(default = "default_max_file_size")]
+    pub max_file_size_bytes: u64,
+}
+
+fn default_storage_backend() -> String {
+    "local".to_string()
+}
+fn default_local_path() -> String {
+    "./data/files".to_string()
+}
+fn default_max_file_size() -> u64 {
+    26_214_400 // 25MB
+}
+
+impl Default for FileStorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_storage_backend(),
+            local_path: default_local_path(),
+            max_file_size_bytes: default_max_file_size(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main ServerConfig
 // ---------------------------------------------------------------------------
 
@@ -168,6 +202,8 @@ pub struct ServerConfig {
     pub email: EmailConfig,
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    #[serde(default)]
+    pub file_storage: FileStorageConfig,
 }
 
 fn default_host() -> String {
@@ -199,6 +235,7 @@ impl Default for ServerConfig {
             jwt: JwtConfig::default(),
             email: EmailConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            file_storage: FileStorageConfig::default(),
         }
     }
 }

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use object_store::ObjectStore;
+
 use crate::config::ServerConfig;
 use crate::email::EmailService;
 use crate::jwt::JwtService;
@@ -15,6 +17,7 @@ pub struct AppState {
     pub redis: fred::clients::Pool,
     pub jwt: Arc<JwtService>,
     pub email: Arc<dyn EmailService>,
+    pub object_store: Arc<dyn ObjectStore>,
 }
 
 #[cfg(test)]

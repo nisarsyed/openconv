@@ -48,6 +48,7 @@ async fn build_test_app(
         redis: redis.clone(),
         jwt: jwt.clone(),
         email: Arc::new(MockEmailService::new()),
+        object_store: Arc::new(object_store::memory::InMemory::new()),
     };
     (build_router(state), jwt, redis)
 }

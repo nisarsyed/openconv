@@ -39,6 +39,7 @@ async fn test_app() -> axum::Router {
         redis,
         jwt: test_jwt(),
         email: Arc::new(MockEmailService::new()),
+        object_store: Arc::new(object_store::memory::InMemory::new()),
     };
     build_router(state)
 }
@@ -71,6 +72,7 @@ async fn test_health_ready_returns_200_when_db_connected(pool: sqlx::PgPool) {
         redis,
         jwt: test_jwt(),
         email: Arc::new(MockEmailService::new()),
+        object_store: Arc::new(object_store::memory::InMemory::new()),
     };
     let app = build_router(state);
     let request = Request::builder()
