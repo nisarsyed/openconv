@@ -1,6 +1,7 @@
 pub(crate) mod auth_service;
 pub(crate) mod cache;
 pub(crate) mod commands;
+pub(crate) mod crypto_service;
 pub(crate) mod db;
 
 pub struct DbState {
@@ -119,6 +120,16 @@ pub fn run() {
             let crypto_db_path = app_data_dir.join("crypto.db");
             let api_base_url = std::env::var("OPENCONV_API_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".into());
+
+            let crypto_svc = crypto_service::CryptoService::new(
+                crypto_db_path.clone(),
+                api_base_url.clone(),
+            )
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            app.manage(crypto_service::CryptoState {
+                crypto_service: crypto_svc,
+            });
+
             let auth_svc = auth_service::AuthService::new(crypto_db_path, api_base_url)
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(auth_service::AuthState {

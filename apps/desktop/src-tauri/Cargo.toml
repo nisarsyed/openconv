@@ -25,6 +25,8 @@ reqwest = { workspace = true }
 keyring = { workspace = true }
 base64 = { workspace = true }
 gethostname = { workspace = true }
+libsignal-protocol = { workspace = true }
+zeroize = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }

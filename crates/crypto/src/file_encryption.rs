@@ -20,6 +20,23 @@ pub struct FileKey {
     pub(crate) key: [u8; 32],
 }
 
+impl FileKey {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CryptoError> {
+        if bytes.len() != 32 {
+            return Err(CryptoError::FileEncryptionError(
+                "file key must be exactly 32 bytes".into(),
+            ));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(bytes);
+        Ok(Self { key })
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.key
+    }
+}
+
 /// Container for encrypted output: `nonce (12 bytes) || ciphertext || auth tag (16 bytes)`.
 pub struct EncryptedBlob {
     pub data: Vec<u8>,

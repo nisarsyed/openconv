@@ -4006,6 +4006,7 @@ dependencies = [
  "chrono",
  "gethostname",
  "keyring",
+ "libsignal-protocol",
  "openconv-crypto",
  "openconv-shared",
  "reqwest 0.12.28",
@@ -4024,6 +4025,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
