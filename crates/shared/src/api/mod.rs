@@ -6,5 +6,6 @@ pub mod guild;
 pub mod invite;
 pub mod message;
 pub mod role;
+pub mod sync;
 pub mod user;
 pub mod ws;
