@@ -27,6 +27,10 @@ base64 = { workspace = true }
 gethostname = { workspace = true }
 libsignal-protocol = { workspace = true }
 zeroize = { workspace = true }
+tokio = { workspace = true }
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+rand = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 specta = { version = "=2.0.0-rc.22", features = ["derive"] }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
@@ -35,7 +39,6 @@ tauri-plugin-decorum = "1"
 tauri-plugin-os = "2"
 
 [dev-dependencies]
-tokio = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]

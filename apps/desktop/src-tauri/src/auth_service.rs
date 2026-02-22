@@ -96,13 +96,13 @@ pub struct AuthState {
 
 const KEYRING_SERVICE: &str = "com.openconv.auth";
 
-fn store_tokens(access_token: &str, refresh_token: &str) -> Result<(), AppError> {
+pub(crate) fn store_tokens(access_token: &str, refresh_token: &str) -> Result<(), AppError> {
     keyring::Entry::new(KEYRING_SERVICE, "access_token")?.set_password(access_token)?;
     keyring::Entry::new(KEYRING_SERVICE, "refresh_token")?.set_password(refresh_token)?;
     Ok(())
 }
 
-fn get_access_token() -> Result<String, AppError> {
+pub(crate) fn get_access_token() -> Result<String, AppError> {
     Ok(keyring::Entry::new(KEYRING_SERVICE, "access_token")?.get_password()?)
 }
 

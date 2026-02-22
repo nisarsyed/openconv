@@ -100,6 +100,72 @@ async authGetPublicKey() : Promise<Result<string, AppError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Initiate WebSocket connection. Obtains a ticket and connects.
+ */
+async wsConnect() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ws_connect") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Gracefully disconnect the WebSocket.
+ */
+async wsDisconnect() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ws_disconnect") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query current connection state.
+ */
+async wsGetState() : Promise<Result<WsConnectionState, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ws_get_state") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Subscribe to a channel's real-time events.
+ */
+async wsSubscribe(channelId: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ws_subscribe", { channelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Unsubscribe from a channel's events.
+ */
+async wsUnsubscribe(channelId: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ws_unsubscribe", { channelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a typing indicator for a channel.
+ */
+async wsSendTyping(channelId: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ws_send_typing", { channelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -116,6 +182,12 @@ async authGetPublicKey() : Promise<Result<string, AppError>> {
 export type AppError = { message: string }
 export type AppHealth = { version: string; db_status: string }
 export type AuthResult = { user_id: string; public_key: string; device_id: string }
+/**
+ * All possible states of the WebSocket connection.
+ * Stored in Arc<RwLock<WsConnectionState>> as Tauri managed state.
+ * Every state transition emits a `ws:state` Tauri event to the frontend.
+ */
+export type WsConnectionState = { status: "Disconnected" } | { status: "Connecting"; attempt: number } | { status: "Connected" } | { status: "Authenticated" } | { status: "Reconnecting"; attempt: number; next_retry_ms: number } | { status: "Failed"; reason: string }
 
 /** tauri-specta globals **/
 

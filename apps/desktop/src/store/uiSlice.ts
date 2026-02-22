@@ -1,4 +1,5 @@
 import type { Notification } from "../types";
+import type { WsConnectionState } from "../types/ws";
 import type { SliceCreator } from "./index";
 
 export interface UISlice {
@@ -9,6 +10,7 @@ export interface UISlice {
   typingUsers: Record<string, string[]>;
   notifications: Notification[];
   scrollPositionByChannel: Record<string, number>;
+  connectionState: WsConnectionState;
   toggleTheme: () => void;
   toggleChannelSidebar: () => void;
   toggleMemberList: () => void;
@@ -20,6 +22,7 @@ export interface UISlice {
   dismissNotification: (id: string) => void;
   saveScrollPosition: (channelId: string, position: number) => void;
   getScrollPosition: (channelId: string) => number;
+  setConnectionState: (state: WsConnectionState) => void;
 }
 
 export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
@@ -30,6 +33,7 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
   typingUsers: {},
   notifications: [],
   scrollPositionByChannel: {},
+  connectionState: { status: "Disconnected" },
 
   toggleTheme: () =>
     set((draft) => {
@@ -83,4 +87,9 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
 
   getScrollPosition: (channelId) =>
     get().scrollPositionByChannel[channelId] ?? 0,
+
+  setConnectionState: (state) =>
+    set((draft) => {
+      draft.connectionState = state;
+    }),
 });

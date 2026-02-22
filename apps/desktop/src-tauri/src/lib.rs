@@ -3,6 +3,7 @@ pub(crate) mod cache;
 pub(crate) mod commands;
 pub(crate) mod crypto_service;
 pub(crate) mod db;
+pub(crate) mod ws;
 
 pub struct DbState {
     pub conn: std::sync::Mutex<rusqlite::Connection>,
@@ -66,6 +67,12 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::auth::auth_recover_complete,
         commands::auth::auth_check_identity,
         commands::auth::auth_get_public_key,
+        ws::client::ws_connect,
+        ws::client::ws_disconnect,
+        ws::client::ws_get_state,
+        ws::client::ws_subscribe,
+        ws::client::ws_unsubscribe,
+        ws::client::ws_send_typing,
     ])
 }
 
@@ -135,6 +142,8 @@ pub fn run() {
             app.manage(auth_service::AuthState {
                 auth_service: auth_svc,
             });
+
+            app.manage(ws::WsState::new());
 
             setup_tray(app)?;
 
