@@ -125,11 +125,7 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 }
 
 /// Create a guild via the API and return the response JSON.
-async fn create_guild_via_api(
-    app: &axum::Router,
-    token: &str,
-    name: &str,
-) -> serde_json::Value {
+async fn create_guild_via_api(app: &axum::Router, token: &str, name: &str) -> serde_json::Value {
     let req = authed_post("/api/guilds", token, serde_json::json!({ "name": name }));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -137,7 +133,11 @@ async fn create_guild_via_api(
 }
 
 /// Add a user as a guild member with the "member" role.
-async fn add_member(pool: &sqlx::PgPool, user_id: openconv_shared::ids::UserId, guild_uuid: uuid::Uuid) {
+async fn add_member(
+    pool: &sqlx::PgPool,
+    user_id: openconv_shared::ids::UserId,
+    guild_uuid: uuid::Uuid,
+) {
     sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
         .bind(user_id.0)
         .bind(guild_uuid)
@@ -145,13 +145,12 @@ async fn add_member(pool: &sqlx::PgPool, user_id: openconv_shared::ids::UserId, 
         .await
         .unwrap();
 
-    let member_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let member_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'")
+            .bind(guild_uuid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_id.0)
@@ -353,10 +352,7 @@ async fn cannot_delete_last_channel(pool: sqlx::PgPool) {
             .await
             .unwrap();
 
-    let req = authed_delete(
-        &format!("/api/channels/{main_channel_id}"),
-        &token,
-    );
+    let req = authed_delete(&format!("/api/channels/{main_channel_id}"), &token);
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

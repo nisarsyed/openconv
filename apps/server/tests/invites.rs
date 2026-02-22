@@ -114,11 +114,7 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 }
 
 /// Create a guild via the API and return the guild JSON.
-async fn create_guild_via_api(
-    app: &axum::Router,
-    token: &str,
-    name: &str,
-) -> serde_json::Value {
+async fn create_guild_via_api(app: &axum::Router, token: &str, name: &str) -> serde_json::Value {
     let req = authed_post("/api/guilds", token, serde_json::json!({ "name": name }));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -132,18 +128,18 @@ async fn create_invite_via_api(
     guild_id: &str,
     body: serde_json::Value,
 ) -> serde_json::Value {
-    let req = authed_post(
-        &format!("/api/guilds/{guild_id}/invites"),
-        token,
-        body,
-    );
+    let req = authed_post(&format!("/api/guilds/{guild_id}/invites"), token, body);
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     body_json(resp).await
 }
 
 /// Add a user as a basic member of a guild (for permission testing).
-async fn add_member(pool: &sqlx::PgPool, user_id: openconv_shared::ids::UserId, guild_uuid: uuid::Uuid) {
+async fn add_member(
+    pool: &sqlx::PgPool,
+    user_id: openconv_shared::ids::UserId,
+    guild_uuid: uuid::Uuid,
+) {
     sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
         .bind(user_id.0)
         .bind(guild_uuid)
@@ -151,13 +147,12 @@ async fn add_member(pool: &sqlx::PgPool, user_id: openconv_shared::ids::UserId, 
         .await
         .unwrap();
 
-    let member_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let member_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'")
+            .bind(guild_uuid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_id.0)
@@ -273,10 +268,7 @@ async fn revoke_invite_removes_it(pool: sqlx::PgPool) {
     let code = invite["code"].as_str().unwrap();
 
     // Delete the invite
-    let req = authed_delete(
-        &format!("/api/guilds/{guild_id}/invites/{code}"),
-        &token,
-    );
+    let req = authed_delete(&format!("/api/guilds/{guild_id}/invites/{code}"), &token);
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
@@ -393,12 +385,11 @@ async fn accept_invite_increments_use_count(pool: sqlx::PgPool) {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Verify use_count incremented
-    let use_count: i32 =
-        sqlx::query_scalar("SELECT use_count FROM guild_invites WHERE code = $1")
-            .bind(code)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let use_count: i32 = sqlx::query_scalar("SELECT use_count FROM guild_invites WHERE code = $1")
+        .bind(code)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(use_count, 1);
 }
 
@@ -555,12 +546,11 @@ async fn guild_hard_delete_cascades_to_invites(pool: sqlx::PgPool) {
     create_invite_via_api(&app, &token, guild_id, serde_json::json!({})).await;
 
     // Verify invite exists
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM guild_invites WHERE guild_id = $1")
-            .bind(guild_uuid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild_invites WHERE guild_id = $1")
+        .bind(guild_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 1);
 
     // Hard-delete the guild (bypassing soft-delete for this test)
@@ -571,12 +561,11 @@ async fn guild_hard_delete_cascades_to_invites(pool: sqlx::PgPool) {
         .unwrap();
 
     // Verify invites are gone (ON DELETE CASCADE)
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM guild_invites WHERE guild_id = $1")
-            .bind(guild_uuid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild_invites WHERE guild_id = $1")
+        .bind(guild_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }
 
@@ -634,14 +623,16 @@ async fn concurrent_accepts_cannot_exceed_max_uses(pool: sqlx::PgPool) {
         }
     }
 
-    assert_eq!(success_count, 1, "exactly 1 concurrent accept should succeed");
+    assert_eq!(
+        success_count, 1,
+        "exactly 1 concurrent accept should succeed"
+    );
 
     // Verify use_count == 1 in database
-    let use_count: i32 =
-        sqlx::query_scalar("SELECT use_count FROM guild_invites WHERE code = $1")
-            .bind(&code)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let use_count: i32 = sqlx::query_scalar("SELECT use_count FROM guild_invites WHERE code = $1")
+        .bind(&code)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(use_count, 1);
 }

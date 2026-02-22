@@ -123,14 +123,8 @@ pub async fn handle_subscribe(
     let broadcast_rx = broadcast_tx.subscribe();
 
     // Replay missed messages (if any last_seen exists in Redis)
-    if let Err(e) = replay::replay_missed_messages(
-        &state.db,
-        &state.redis,
-        user_id,
-        channel_id,
-        &mpsc_tx,
-    )
-    .await
+    if let Err(e) =
+        replay::replay_missed_messages(&state.db, &state.redis, user_id, channel_id, &mpsc_tx).await
     {
         tracing::warn!(
             user_id = %user_id,
@@ -336,7 +330,13 @@ pub async fn handle_edit_message(
             }
         }
         Ok(false) => {
-            send_error(state, user_id, device_id, 4007, "message not found or not yours");
+            send_error(
+                state,
+                user_id,
+                device_id,
+                4007,
+                "message not found or not yours",
+            );
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to edit message");

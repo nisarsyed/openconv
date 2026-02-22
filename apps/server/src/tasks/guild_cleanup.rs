@@ -66,12 +66,10 @@ pub async fn cleanup_expired_guilds(
         if result.rows_affected() > 0 {
             // Clean up file DB records that used prefix-based storage paths
             // (these may not be cascade-deleted if message_id was already NULL)
-            sqlx::query(
-                "DELETE FROM files WHERE storage_path LIKE 'guilds/' || $1::text || '/%'",
-            )
-            .bind(guild_id)
-            .execute(pool)
-            .await?;
+            sqlx::query("DELETE FROM files WHERE storage_path LIKE 'guilds/' || $1::text || '/%'")
+                .bind(guild_id)
+                .execute(pool)
+                .await?;
         }
 
         deleted_count += result.rows_affected();

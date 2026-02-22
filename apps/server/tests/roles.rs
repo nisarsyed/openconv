@@ -134,18 +134,18 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
     serde_json::from_slice(&body).unwrap()
 }
 
-async fn create_guild_via_api(
-    app: &axum::Router,
-    token: &str,
-    name: &str,
-) -> serde_json::Value {
+async fn create_guild_via_api(app: &axum::Router, token: &str, name: &str) -> serde_json::Value {
     let req = authed_post("/api/guilds", token, serde_json::json!({ "name": name }));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     body_json(resp).await
 }
 
-async fn add_member(pool: &sqlx::PgPool, user_id: openconv_shared::ids::UserId, guild_uuid: uuid::Uuid) {
+async fn add_member(
+    pool: &sqlx::PgPool,
+    user_id: openconv_shared::ids::UserId,
+    guild_uuid: uuid::Uuid,
+) {
     sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
         .bind(user_id.0)
         .bind(guild_uuid)
@@ -153,13 +153,12 @@ async fn add_member(pool: &sqlx::PgPool, user_id: openconv_shared::ids::UserId, 
         .await
         .unwrap();
 
-    let member_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let member_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'")
+            .bind(guild_uuid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_id.0)
@@ -252,7 +251,10 @@ async fn list_roles_returns_ordered_by_position(pool: sqlx::PgPool) {
     assert_eq!(roles.len(), 5);
 
     // Verify sorted by position
-    let positions: Vec<i64> = roles.iter().map(|r| r["position"].as_i64().unwrap()).collect();
+    let positions: Vec<i64> = roles
+        .iter()
+        .map(|r| r["position"].as_i64().unwrap())
+        .collect();
     let mut sorted = positions.clone();
     sorted.sort();
     assert_eq!(positions, sorted);
@@ -326,13 +328,12 @@ async fn cannot_delete_builtin_role(pool: sqlx::PgPool) {
     let guild_uuid: uuid::Uuid = guild_id.parse().unwrap();
 
     // Get the admin role ID
-    let admin_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let admin_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'")
+            .bind(guild_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let req = authed_delete(
         &format!("/api/guilds/{guild_id}/roles/{admin_role_id}"),
@@ -362,13 +363,12 @@ async fn cannot_create_role_with_perms_actor_lacks(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let admin_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let admin_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'")
+            .bind(guild_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_admin.0)
@@ -425,13 +425,12 @@ async fn cannot_modify_role_at_or_above_actor_position(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let admin_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let admin_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'")
+            .bind(guild_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_admin.0)
@@ -450,7 +449,9 @@ async fn cannot_modify_role_at_or_above_actor_position(pool: sqlx::PgPool) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let high_role: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap(),
+        &axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap(),
     )
     .unwrap();
     let high_role_id = high_role["id"].as_str().unwrap();

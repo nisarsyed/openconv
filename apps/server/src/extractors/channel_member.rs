@@ -45,10 +45,9 @@ impl FromRequestParts<AppState> for ChannelMember {
             .await
             .map_err(|_| GuildMemberRejection::Unauthenticated)?;
 
-        let Path(params): Path<HashMap<String, String>> =
-            Path::from_request_parts(parts, state)
-                .await
-                .map_err(|_| GuildMemberRejection::NotFound)?;
+        let Path(params): Path<HashMap<String, String>> = Path::from_request_parts(parts, state)
+            .await
+            .map_err(|_| GuildMemberRejection::NotFound)?;
 
         let channel_id: ChannelId = params
             .get("channel_id")
@@ -56,17 +55,14 @@ impl FromRequestParts<AppState> for ChannelMember {
             .parse()
             .map_err(|_| GuildMemberRejection::NotFound)?;
 
-        let guild_id: GuildId = sqlx::query_scalar(
-            "SELECT guild_id FROM channels WHERE id = $1",
-        )
-        .bind(channel_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| GuildMemberRejection::Internal(e.to_string()))?
-        .ok_or(GuildMemberRejection::NotFound)?;
+        let guild_id: GuildId = sqlx::query_scalar("SELECT guild_id FROM channels WHERE id = $1")
+            .bind(channel_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| GuildMemberRejection::Internal(e.to_string()))?
+            .ok_or(GuildMemberRejection::NotFound)?;
 
-        let permissions =
-            resolve_guild_membership(&state.db, auth.user_id, guild_id).await?;
+        let permissions = resolve_guild_membership(&state.db, auth.user_id, guild_id).await?;
 
         let member = ChannelMember {
             user_id: auth.user_id,

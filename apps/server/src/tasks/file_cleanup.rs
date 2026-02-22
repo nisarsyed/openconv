@@ -65,8 +65,7 @@ mod tests {
     #[test]
     fn cleanup_interval_is_24_hours() {
         // The SQL uses '24 hours' interval - verify this is the intended value
-        let query =
-            "WHERE message_id IS NULL AND created_at < NOW() - INTERVAL '24 hours'";
+        let query = "WHERE message_id IS NULL AND created_at < NOW() - INTERVAL '24 hours'";
         assert!(query.contains("24 hours"));
     }
 }

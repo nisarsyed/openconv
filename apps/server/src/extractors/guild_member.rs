@@ -103,10 +103,9 @@ impl FromRequestParts<AppState> for GuildMember {
             .await
             .map_err(|_| GuildMemberRejection::Unauthenticated)?;
 
-        let Path(params): Path<HashMap<String, String>> =
-            Path::from_request_parts(parts, state)
-                .await
-                .map_err(|_| GuildMemberRejection::NotFound)?;
+        let Path(params): Path<HashMap<String, String>> = Path::from_request_parts(parts, state)
+            .await
+            .map_err(|_| GuildMemberRejection::NotFound)?;
 
         let guild_id: GuildId = params
             .get("guild_id")

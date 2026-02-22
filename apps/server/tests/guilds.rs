@@ -125,11 +125,7 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 }
 
 /// Create a guild via the API and return the guild ID string.
-async fn create_guild_via_api(
-    app: &axum::Router,
-    token: &str,
-    name: &str,
-) -> serde_json::Value {
+async fn create_guild_via_api(app: &axum::Router, token: &str, name: &str) -> serde_json::Value {
     let req = authed_post("/api/guilds", token, serde_json::json!({ "name": name }));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -159,12 +155,11 @@ async fn create_guild_creates_default_roles(pool: sqlx::PgPool) {
     let guild_id: uuid::Uuid = guild["id"].as_str().unwrap().parse().unwrap();
 
     // Check that 3 default roles were created
-    let role_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM roles WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let role_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM roles WHERE guild_id = $1")
+        .bind(guild_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(role_count, 3);
 
     // Check role types
@@ -186,12 +181,11 @@ async fn create_guild_creates_default_channel(pool: sqlx::PgPool) {
     let guild = create_guild_via_api(&app, &token, "Test Guild").await;
     let guild_id: uuid::Uuid = guild["id"].as_str().unwrap().parse().unwrap();
 
-    let channel_name: String =
-        sqlx::query_scalar("SELECT name FROM channels WHERE guild_id = $1")
-            .bind(guild_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let channel_name: String = sqlx::query_scalar("SELECT name FROM channels WHERE guild_id = $1")
+        .bind(guild_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(channel_name, "main");
 }
 
@@ -328,13 +322,12 @@ async fn update_guild_requires_manage_guild_permission(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let member_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let member_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'")
+            .bind(guild_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_b.0)
@@ -385,13 +378,12 @@ async fn delete_guild_requires_owner(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let admin_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let admin_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'admin'")
+            .bind(guild_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_b.0)
@@ -518,13 +510,12 @@ async fn member_can_leave_guild(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let member_role_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'",
-    )
-    .bind(guild_uuid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let member_role_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'")
+            .bind(guild_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
         .bind(user_b.0)
@@ -587,18 +578,18 @@ async fn cleanup_deletes_expired_guilds(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let count = openconv_server::tasks::guild_cleanup::cleanup_expired_guilds(&pool)
+    let store = object_store::memory::InMemory::new();
+    let count = openconv_server::tasks::guild_cleanup::cleanup_expired_guilds(&pool, &store)
         .await
         .unwrap();
     assert_eq!(count, 1);
 
     // Verify guild is gone
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
-            .bind(guild_uuid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
+        .bind(guild_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(!exists);
 }
 
@@ -617,17 +608,17 @@ async fn cleanup_does_not_delete_within_7_day_window(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    let count = openconv_server::tasks::guild_cleanup::cleanup_expired_guilds(&pool)
+    let store = object_store::memory::InMemory::new();
+    let count = openconv_server::tasks::guild_cleanup::cleanup_expired_guilds(&pool, &store)
         .await
         .unwrap();
     assert_eq!(count, 0);
 
     // Guild still exists
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
-            .bind(guild_uuid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM guilds WHERE id = $1)")
+        .bind(guild_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(exists);
 }

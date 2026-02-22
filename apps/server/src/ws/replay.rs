@@ -80,8 +80,7 @@ pub async fn replay_missed_messages(
     };
 
     let last_seen_ts: i64 = ts_str.parse()?;
-    let last_seen =
-        chrono::DateTime::from_timestamp(last_seen_ts, 0).ok_or("invalid timestamp")?;
+    let last_seen = chrono::DateTime::from_timestamp(last_seen_ts, 0).ok_or("invalid timestamp")?;
 
     // Query messages since last_seen (capped)
     let rows: Vec<ReplayRow> = sqlx::query_as(

@@ -54,7 +54,9 @@ pub async fn handle_connection(
     }
 
     // Now register the connection in WsState
-    state.ws.register_with_sender(user_id, device_id, guild_ids.clone(), tx);
+    state
+        .ws
+        .register_with_sender(user_id, device_id, guild_ids.clone(), tx);
 
     // Set up guild broadcast subscriptions and announce presence
     super::presence::setup_guild_subscriptions(&state, user_id, device_id, &guild_ids);
@@ -153,16 +155,14 @@ async fn recv_loop(
 ) {
     while let Some(result) = ws_receiver.next().await {
         match result {
-            Ok(Message::Text(text)) => {
-                match serde_json::from_str::<ClientMessage>(&text) {
-                    Ok(client_msg) => {
-                        handle_client_message(&state, user_id, device_id, client_msg).await;
-                    }
-                    Err(_) => {
-                        send_error(&state, user_id, device_id, 4004, "invalid message format");
-                    }
+            Ok(Message::Text(text)) => match serde_json::from_str::<ClientMessage>(&text) {
+                Ok(client_msg) => {
+                    handle_client_message(&state, user_id, device_id, client_msg).await;
                 }
-            }
+                Err(_) => {
+                    send_error(&state, user_id, device_id, 4004, "invalid message format");
+                }
+            },
             Ok(Message::Pong(_)) => {
                 pong_received.store(true, Ordering::SeqCst);
             }
@@ -170,7 +170,13 @@ async fn recv_loop(
                 break;
             }
             Ok(Message::Binary(_)) => {
-                send_error(&state, user_id, device_id, 4004, "binary messages not supported");
+                send_error(
+                    &state,
+                    user_id,
+                    device_id,
+                    4004,
+                    "binary messages not supported",
+                );
             }
             Ok(Message::Ping(_)) => {
                 // Axum auto-responds with Pong
@@ -251,7 +257,12 @@ async fn handle_client_message(
     }
 }
 
-pub(super) fn send_to_connection(state: &AppState, user_id: UserId, device_id: DeviceId, msg: ServerMessage) {
+pub(super) fn send_to_connection(
+    state: &AppState,
+    user_id: UserId,
+    device_id: DeviceId,
+    msg: ServerMessage,
+) {
     if let Some(conn) = state.ws.connections.get(&(user_id, device_id)) {
         if let Err(e) = conn.sender.try_send(msg) {
             tracing::warn!(
@@ -264,7 +275,13 @@ pub(super) fn send_to_connection(state: &AppState, user_id: UserId, device_id: D
     }
 }
 
-pub(super) fn send_error(state: &AppState, user_id: UserId, device_id: DeviceId, code: u32, message: &str) {
+pub(super) fn send_error(
+    state: &AppState,
+    user_id: UserId,
+    device_id: DeviceId,
+    code: u32,
+    message: &str,
+) {
     let err = ServerMessage::Error {
         code,
         message: message.to_string(),
@@ -297,12 +314,11 @@ async fn fetch_user_guild_ids(
     state: &AppState,
     user_id: UserId,
 ) -> Result<std::collections::HashSet<GuildId>, sqlx::Error> {
-    let rows: Vec<GuildId> = sqlx::query_scalar(
-        "SELECT guild_id FROM guild_members WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(&state.db)
-    .await?;
+    let rows: Vec<GuildId> =
+        sqlx::query_scalar("SELECT guild_id FROM guild_members WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_all(&state.db)
+            .await?;
 
     Ok(rows.into_iter().collect())
 }

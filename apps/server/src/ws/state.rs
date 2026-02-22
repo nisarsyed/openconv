@@ -124,12 +124,10 @@ impl WsState {
     }
 
     /// Remove a connection and return its state for cleanup.
-    pub fn disconnect(
-        &self,
-        user_id: UserId,
-        device_id: DeviceId,
-    ) -> Option<ConnectionState> {
-        self.connections.remove(&(user_id, device_id)).map(|(_, v)| v)
+    pub fn disconnect(&self, user_id: UserId, device_id: DeviceId) -> Option<ConnectionState> {
+        self.connections
+            .remove(&(user_id, device_id))
+            .map(|(_, v)| v)
     }
 
     /// Get or create a broadcast sender for a channel.
@@ -212,7 +210,8 @@ impl PermissionCache {
 
     /// Cache a permission resolution result.
     pub fn insert(&self, user_id: UserId, guild_id: GuildId, perms: Permissions) {
-        self.cache.insert((user_id, guild_id), (perms, Instant::now()));
+        self.cache
+            .insert((user_id, guild_id), (perms, Instant::now()));
     }
 
     /// Invalidate a specific cache entry (e.g. on role change).
@@ -246,7 +245,10 @@ impl WsRateLimiter {
         let mut entry = self.windows.entry((user_id, channel_id)).or_default();
 
         // Evict timestamps outside the 1-second window
-        while entry.front().is_some_and(|t| now.duration_since(*t) > window) {
+        while entry
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > window)
+        {
             entry.pop_front();
         }
 
@@ -266,6 +268,12 @@ pub struct TypingManager {
     active: DashMap<(UserId, ChannelId), tokio::task::AbortHandle>,
 }
 
+impl Default for TypingManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypingManager {
     pub fn new() -> Self {
         Self {
@@ -274,7 +282,12 @@ impl TypingManager {
     }
 
     /// Register a typing timeout task. Aborts any existing timeout for the same key.
-    pub fn start_typing(&self, user_id: UserId, channel_id: ChannelId, handle: tokio::task::AbortHandle) {
+    pub fn start_typing(
+        &self,
+        user_id: UserId,
+        channel_id: ChannelId,
+        handle: tokio::task::AbortHandle,
+    ) {
         if let Some(old) = self.active.insert((user_id, channel_id), handle) {
             old.abort();
         }
@@ -590,7 +603,8 @@ mod tests {
         let task_handle = task.abort_handle();
 
         if let Some(mut conn) = ws.connections.get_mut(&(uid, did)) {
-            conn.channel_forward_tasks.insert(ChannelId::new(), task_handle);
+            conn.channel_forward_tasks
+                .insert(ChannelId::new(), task_handle);
         }
 
         // Disconnect drops ConnectionState, which should abort the task

@@ -63,9 +63,7 @@ mod sqlx_impls {
     }
 
     impl<'r> Decode<'r, Postgres> for Permissions {
-        fn decode(
-            value: PgValueRef<'r>,
-        ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
             let val = <i64 as Decode<'r, Postgres>>::decode(value)?;
             Ok(Permissions::from_bits_truncate(val as u64))
         }
