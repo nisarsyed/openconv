@@ -166,6 +166,58 @@ async wsSendTyping(channelId: string) : Promise<Result<null, AppError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Send an encrypted message to a channel.
+ * 
+ * Inserts an optimistic local message with status="pending", then sends via WebSocket.
+ * Encryption per-device will be wired in once the member/device directory is available.
+ */
+async sendMessage(channelId: string, plaintext: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_message", { channelId, plaintext }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Edit a previously sent message.
+ * 
+ * Updates local cache and FTS, then sends the edit via WebSocket.
+ */
+async editMessage(channelId: string, messageId: string, newPlaintext: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("edit_message", { channelId, messageId, newPlaintext }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a message (soft-delete locally, notify server).
+ */
+async deleteMessage(channelId: string, messageId: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_message", { channelId, messageId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Retry decryption of a previously failed message.
+ * 
+ * For SessionNotFound/SessionCorrupted: re-fetch pre-key bundle,
+ * establish new session, then attempt decryption with retained ciphertext.
+ */
+async retryDecrypt(messageId: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_decrypt", { messageId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

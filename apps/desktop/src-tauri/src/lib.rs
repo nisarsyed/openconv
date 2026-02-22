@@ -73,6 +73,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         ws::client::ws_subscribe,
         ws::client::ws_unsubscribe,
         ws::client::ws_send_typing,
+        commands::messaging::send_message,
+        commands::messaging::edit_message,
+        commands::messaging::delete_message,
+        commands::messaging::retry_decrypt,
     ])
 }
 
@@ -144,6 +148,9 @@ pub fn run() {
             });
 
             app.manage(ws::WsState::new());
+            app.manage(std::sync::Mutex::new(
+                commands::messaging::MessageRateLimiter::new(5),
+            ));
 
             setup_tray(app)?;
 

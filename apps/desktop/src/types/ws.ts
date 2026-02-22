@@ -10,8 +10,9 @@ export interface WsMessagePayload {
   channel_id: string;
   message_id: string;
   sender_id: string;
-  ciphertext: number[];
-  message_type: string;
+  plaintext: string | null;
+  /** "delivered", "pending", "decrypt_failed" */
+  status: string;
   created_at: string;
 }
 
@@ -19,8 +20,9 @@ export interface WsMessageUpdatedPayload {
   channel_id: string;
   message_id: string;
   sender_id: string;
-  ciphertext: number[];
-  message_type: string;
+  plaintext: string | null;
+  /** "delivered", "decrypt_failed" */
+  status: string;
   edited_at: string;
 }
 

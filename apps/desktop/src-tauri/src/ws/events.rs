@@ -10,8 +10,9 @@ pub struct WsMessagePayload {
     pub channel_id: ChannelId,
     pub message_id: MessageId,
     pub sender_id: UserId,
-    pub ciphertext: Vec<u8>,
-    pub message_type: String,
+    pub plaintext: Option<String>,
+    /// "delivered", "pending", "decrypt_failed"
+    pub status: String,
     pub created_at: String,
 }
 
@@ -21,8 +22,9 @@ pub struct WsMessageUpdatedPayload {
     pub channel_id: ChannelId,
     pub message_id: MessageId,
     pub sender_id: UserId,
-    pub ciphertext: Vec<u8>,
-    pub message_type: String,
+    pub plaintext: Option<String>,
+    /// "delivered", "decrypt_failed"
+    pub status: String,
     pub edited_at: String,
 }
 
@@ -157,57 +159,19 @@ pub fn emit_error(app: &AppHandle, code: u32, message: &str) {
 }
 
 /// Dispatch a ServerMessage to the appropriate event emission.
+///
+/// Note: MessageCreated, MessageUpdated, and MessageDeleted are handled by
+/// the messaging pipeline in handlers.rs (decrypt → cache → emit), not here.
 /// Returns true if the message was handled.
 pub fn dispatch_server_message(app: &AppHandle, msg: &ServerMessage) -> bool {
     match msg {
-        ServerMessage::MessageCreated {
-            channel_id,
-            message_id,
-            sender_id,
-            ciphertext,
-            message_type,
-            created_at,
-        } => {
-            emit_message(
-                app,
-                &WsMessagePayload {
-                    channel_id: *channel_id,
-                    message_id: *message_id,
-                    sender_id: *sender_id,
-                    ciphertext: ciphertext.clone(),
-                    message_type: message_type.clone(),
-                    created_at: created_at.to_rfc3339(),
-                },
-            );
-            true
-        }
-        ServerMessage::MessageUpdated {
-            channel_id,
-            message_id,
-            sender_id,
-            ciphertext,
-            message_type,
-            edited_at,
-        } => {
-            emit_message_updated(
-                app,
-                &WsMessageUpdatedPayload {
-                    channel_id: *channel_id,
-                    message_id: *message_id,
-                    sender_id: *sender_id,
-                    ciphertext: ciphertext.clone(),
-                    message_type: message_type.clone(),
-                    edited_at: edited_at.to_rfc3339(),
-                },
-            );
-            true
-        }
-        ServerMessage::MessageDeleted {
-            channel_id,
-            message_id,
-        } => {
-            emit_message_deleted(app, channel_id, message_id);
-            true
+        // MessageCreated/Updated/Deleted are handled by the decrypt-store-emit
+        // pipeline in handlers.rs -- they should not reach here.
+        ServerMessage::MessageCreated { .. }
+        | ServerMessage::MessageUpdated { .. }
+        | ServerMessage::MessageDeleted { .. } => {
+            tracing::warn!("dispatch_server_message: message variant should be handled by pipeline");
+            false
         }
         ServerMessage::TypingStarted {
             channel_id,
@@ -272,15 +236,16 @@ mod tests {
             channel_id: ChannelId::new(),
             message_id: MessageId::new(),
             sender_id: UserId::new(),
-            ciphertext: vec![1, 2, 3],
-            message_type: "signal".into(),
+            plaintext: Some("hello world".into()),
+            status: "delivered".into(),
             created_at: "2025-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert!(json.get("channel_id").is_some());
         assert!(json.get("message_id").is_some());
         assert!(json.get("sender_id").is_some());
-        assert_eq!(json["message_type"], "signal");
+        assert_eq!(json["status"], "delivered");
+        assert_eq!(json["plaintext"], "hello world");
     }
 
     #[test]
@@ -333,12 +298,12 @@ mod tests {
             channel_id: ChannelId::new(),
             message_id: MessageId::new(),
             sender_id: UserId::new(),
-            ciphertext: vec![4, 5, 6],
-            message_type: "prekey".into(),
+            plaintext: Some("updated content".into()),
+            status: "delivered".into(),
             edited_at: "2025-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["message_type"], "prekey");
+        assert_eq!(json["status"], "delivered");
         assert!(json.get("edited_at").is_some());
     }
 }

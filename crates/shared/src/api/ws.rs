@@ -46,6 +46,9 @@ pub enum ClientMessage {
         dm_channel_id: Option<DmChannelId>,
         /// Per-device ciphertext for each recipient device
         recipients: Vec<RecipientPayload>,
+        /// Client-generated nonce for correlating server echo with optimistic insert
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_nonce: Option<String>,
     },
     EditMessage {
         channel_id: ChannelId,
@@ -91,6 +94,9 @@ pub enum ServerMessage {
         /// "prekey" or "signal"
         message_type: String,
         created_at: chrono::DateTime<chrono::Utc>,
+        /// Echoed client nonce for correlating with optimistic insert
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_nonce: Option<String>,
     },
     MessageUpdated {
         channel_id: ChannelId,
@@ -222,6 +228,7 @@ mod tests {
                     message_type: "prekey".to_string(),
                 },
             ],
+            client_nonce: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"SendMessage""#));
@@ -231,6 +238,7 @@ mod tests {
                 recipients,
                 channel_id,
                 dm_channel_id,
+                ..
             } => {
                 assert_eq!(recipients.len(), 2);
                 assert!(channel_id.is_some());
@@ -246,6 +254,7 @@ mod tests {
             channel_id: Some(ChannelId::new()),
             dm_channel_id: None,
             recipients: vec![],
+            client_nonce: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -264,6 +273,7 @@ mod tests {
             channel_id: Some(ch),
             dm_channel_id: None,
             recipients: vec![],
+            client_nonce: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -287,6 +297,7 @@ mod tests {
             channel_id: None,
             dm_channel_id: Some(dm),
             recipients: vec![],
+            client_nonce: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -402,6 +413,7 @@ mod tests {
             ciphertext: b"device_specific_ct".to_vec(),
             message_type: "prekey".to_string(),
             created_at: now,
+            client_nonce: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"MessageCreated""#));
@@ -432,6 +444,7 @@ mod tests {
             ciphertext: b"ct".to_vec(),
             message_type: "signal".to_string(),
             created_at: chrono::Utc::now(),
+            client_nonce: None,
         };
         let json = serde_json::to_value(&msg).unwrap();
         assert!(json.get("sender_id").is_some());
@@ -508,6 +521,7 @@ mod tests {
             channel_id: None,
             dm_channel_id: None,
             recipients: vec![],
+            client_nonce: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ClientMessage = serde_json::from_str(&json).unwrap();

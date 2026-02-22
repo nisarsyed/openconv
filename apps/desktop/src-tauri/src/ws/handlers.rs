@@ -3,17 +3,32 @@ use std::time::Instant;
 
 use futures_util::StreamExt;
 use openconv_shared::api::ws::{ClientMessage, ServerMessage};
-use tauri::AppHandle;
+use openconv_shared::ids::{ChannelId, MessageId, UserId};
+use tauri::{AppHandle, Manager};
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::cache::CacheDb;
+use crate::cache::messages::{self, CachedMessage};
+use crate::cache::read_positions;
+use crate::cache::search;
+use crate::crypto_service::CryptoState;
 
 use super::events;
 use super::state::{WsConnectionState, WsState};
+
+/// Message status constants.
+pub const MSG_STATUS_PENDING: &str = "pending";
+pub const MSG_STATUS_DELIVERED: &str = "delivered";
+pub const MSG_STATUS_DECRYPT_FAILED: &str = "decrypt_failed";
+pub const MSG_STATUS_QUEUED: &str = "queued";
+pub const MSG_STATUS_DELETED: &str = "deleted";
 
 /// Read incoming WebSocket messages and dispatch them.
 ///
 /// Runs until the WebSocket stream ends, errors, or `shutdown_notify` is signalled.
 /// On `Ready`, transitions state to `Authenticated` and re-subscribes to tracked channels.
 /// On `Pong`, updates `last_pong` timestamp.
+/// Message variants (Created/Updated/Deleted) go through the decrypt-store-emit pipeline.
 /// All other messages are dispatched via `events::dispatch_server_message`.
 pub async fn recv_loop(
     app: AppHandle,
@@ -70,6 +85,10 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
                 guild_ids.len()
             );
             {
+                let mut uid = ws_state.current_user_id.write().await;
+                *uid = Some(*user_id);
+            }
+            {
                 let mut state = ws_state.connection_state.write().await;
                 *state = WsConnectionState::Authenticated;
                 events::emit_state(app, &state);
@@ -90,10 +109,286 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             let mut last_pong = ws_state.last_pong.write().await;
             *last_pong = Instant::now();
         }
+        ServerMessage::MessageCreated {
+            channel_id,
+            message_id,
+            sender_id,
+            ciphertext,
+            message_type,
+            created_at,
+            client_nonce,
+        } => {
+            handle_message_created(
+                app,
+                ws_state,
+                *channel_id,
+                *message_id,
+                *sender_id,
+                ciphertext,
+                message_type,
+                created_at,
+                client_nonce.as_deref(),
+            )
+            .await;
+        }
+        ServerMessage::MessageUpdated {
+            channel_id,
+            message_id,
+            sender_id,
+            ciphertext,
+            message_type,
+            edited_at,
+        } => {
+            handle_message_updated(
+                app,
+                *channel_id,
+                *message_id,
+                *sender_id,
+                ciphertext,
+                message_type,
+                edited_at,
+            )
+            .await;
+        }
+        ServerMessage::MessageDeleted {
+            channel_id,
+            message_id,
+        } => {
+            handle_message_deleted(app, *channel_id, *message_id);
+        }
         _ => {
             events::dispatch_server_message(app, &server_msg);
         }
     }
+}
+
+/// Decrypt an incoming message via spawn_blocking, store in cache, index in FTS, emit event.
+async fn handle_message_created(
+    app: &AppHandle,
+    ws_state: &WsState,
+    channel_id: ChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    ciphertext: &[u8],
+    message_type: &str,
+    created_at: &chrono::DateTime<chrono::Utc>,
+    client_nonce: Option<&str>,
+) {
+    let msg_id_str = message_id.to_string();
+    let sender_id_str = sender_id.to_string();
+    let channel_id_str = channel_id.to_string();
+    let created_at_ms = created_at.timestamp_millis();
+    let created_at_rfc3339 = created_at.to_rfc3339();
+    let ciphertext_owned = ciphertext.to_vec();
+    let message_type_owned = message_type.to_string();
+
+    // Check for optimistic insert dedup via nonce-based matching
+    if let Some(nonce) = client_nonce {
+        let local_msg_id = {
+            let mut nonces = ws_state.pending_nonces.write().await;
+            nonces.remove(nonce)
+        };
+        if let Some(local_id) = local_msg_id {
+            // This is our own message echoed back - update status to delivered
+            if let Ok(conn) = app.state::<CacheDb>().lock() {
+                let _ = messages::update_message_status(&conn, &local_id, MSG_STATUS_DELIVERED);
+                if let Ok(Some(existing)) = messages::get_message(&conn, &local_id) {
+                    if let Some(ref pt) = existing.plaintext {
+                        events::emit_message(
+                            app,
+                            &events::WsMessagePayload {
+                                channel_id,
+                                message_id,
+                                sender_id,
+                                plaintext: Some(pt.clone()),
+                                status: MSG_STATUS_DELIVERED.into(),
+                                created_at: created_at_rfc3339,
+                            },
+                        );
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    // Attempt decryption via spawn_blocking
+    let app_clone = app.clone();
+    let decrypt_result = tokio::task::spawn_blocking(move || {
+        let crypto_state = app_clone.state::<CryptoState>();
+        crypto_state.crypto_service.decrypt_message(
+            &sender_id_str,
+            1, // TODO: device_id should come from server message
+            &ciphertext_owned,
+            &message_type_owned,
+        )
+    })
+    .await;
+
+    let (plaintext, status) = match decrypt_result {
+        Ok(Ok(plaintext_bytes)) => {
+            let pt = String::from_utf8_lossy(&plaintext_bytes).to_string();
+            (Some(pt), MSG_STATUS_DELIVERED)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("decrypt failed for message {msg_id_str}: {e}");
+            (None, MSG_STATUS_DECRYPT_FAILED)
+        }
+        Err(e) => {
+            tracing::error!("spawn_blocking failed for message {msg_id_str}: {e}");
+            (None, MSG_STATUS_DECRYPT_FAILED)
+        }
+    };
+
+    // Store in local cache
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cached = CachedMessage {
+        id: msg_id_str.clone(),
+        channel_id: Some(channel_id_str.clone()),
+        dm_channel_id: None,
+        sender_id: sender_id.to_string(),
+        plaintext: plaintext.clone(),
+        ciphertext: if status == MSG_STATUS_DECRYPT_FAILED {
+            Some(ciphertext.to_vec())
+        } else {
+            None
+        },
+        message_type: Some(message_type.to_string()),
+        created_at: created_at_ms,
+        edited_at: None,
+        decrypted_at: if status == MSG_STATUS_DELIVERED {
+            Some(now_ms)
+        } else {
+            None
+        },
+        status: status.to_string(),
+    };
+
+    // Check if this is the sender's own message (skip unread increment if so)
+    let is_own_message = {
+        let uid = ws_state.current_user_id.read().await;
+        uid.as_ref() == Some(&sender_id)
+    };
+
+    if let Ok(conn) = app.state::<CacheDb>().lock() {
+        if let Err(e) = messages::insert_message(&conn, &cached) {
+            tracing::warn!("failed to cache message {msg_id_str}: {e}");
+        }
+
+        // Index in FTS if decrypted successfully
+        if let Some(ref pt) = plaintext {
+            if let Err(e) = search::index_message(&conn, &msg_id_str, pt) {
+                tracing::warn!("failed to index message {msg_id_str} in FTS: {e}");
+            }
+        }
+
+        if !is_own_message {
+            if let Err(e) = read_positions::increment_unread(&conn, &channel_id_str) {
+                tracing::warn!("failed to increment unread for channel {channel_id_str}: {e}");
+            }
+        }
+    }
+
+    // Emit event to frontend
+    events::emit_message(
+        app,
+        &events::WsMessagePayload {
+            channel_id,
+            message_id,
+            sender_id,
+            plaintext,
+            status: status.to_string(),
+            created_at: created_at_rfc3339,
+        },
+    );
+}
+
+/// Decrypt an updated message, update cache and FTS, emit event.
+async fn handle_message_updated(
+    app: &AppHandle,
+    channel_id: ChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    ciphertext: &[u8],
+    message_type: &str,
+    edited_at: &chrono::DateTime<chrono::Utc>,
+) {
+    let msg_id_str = message_id.to_string();
+    let sender_id_str = sender_id.to_string();
+    let edited_at_ms = edited_at.timestamp_millis();
+    let edited_at_rfc3339 = edited_at.to_rfc3339();
+    let ciphertext_owned = ciphertext.to_vec();
+    let message_type_owned = message_type.to_string();
+
+    // Attempt decryption
+    let app_clone = app.clone();
+    let decrypt_result = tokio::task::spawn_blocking(move || {
+        let crypto_state = app_clone.state::<CryptoState>();
+        crypto_state.crypto_service.decrypt_message(
+            &sender_id_str,
+            1, // TODO: device_id
+            &ciphertext_owned,
+            &message_type_owned,
+        )
+    })
+    .await;
+
+    let (plaintext, status) = match decrypt_result {
+        Ok(Ok(plaintext_bytes)) => {
+            let pt = String::from_utf8_lossy(&plaintext_bytes).to_string();
+            (Some(pt), MSG_STATUS_DELIVERED)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("decrypt failed for updated message {msg_id_str}: {e}");
+            (None, MSG_STATUS_DECRYPT_FAILED)
+        }
+        Err(e) => {
+            tracing::error!("spawn_blocking failed for updated message {msg_id_str}: {e}");
+            (None, MSG_STATUS_DECRYPT_FAILED)
+        }
+    };
+
+    // Update local cache
+    if let Ok(conn) = app.state::<CacheDb>().lock() {
+        if let Some(ref pt) = plaintext {
+            if let Err(e) = messages::update_message_content(&conn, &msg_id_str, pt, edited_at_ms) {
+                tracing::warn!("failed to update cached message {msg_id_str}: {e}");
+            }
+            // Update FTS index
+            if let Err(e) = search::reindex_message(&conn, &msg_id_str, pt) {
+                tracing::warn!("failed to reindex message {msg_id_str} in FTS: {e}");
+            }
+        }
+    }
+
+    // Emit event
+    events::emit_message_updated(
+        app,
+        &events::WsMessageUpdatedPayload {
+            channel_id,
+            message_id,
+            sender_id,
+            plaintext,
+            status: status.to_string(),
+            edited_at: edited_at_rfc3339,
+        },
+    );
+}
+
+/// Handle a deleted message: soft-delete in cache, remove from FTS, emit event.
+fn handle_message_deleted(app: &AppHandle, channel_id: ChannelId, message_id: MessageId) {
+    let msg_id_str = message_id.to_string();
+
+    if let Ok(conn) = app.state::<CacheDb>().lock() {
+        if let Err(e) = messages::soft_delete_message(&conn, &msg_id_str) {
+            tracing::warn!("failed to soft-delete message {msg_id_str}: {e}");
+        }
+        if let Err(e) = search::deindex_message(&conn, &msg_id_str) {
+            tracing::warn!("failed to deindex message {msg_id_str} from FTS: {e}");
+        }
+    }
+
+    events::emit_message_deleted(app, &channel_id, &message_id);
 }
 
 /// Calculate reconnection backoff delay in milliseconds.

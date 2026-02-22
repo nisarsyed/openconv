@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use openconv_shared::api::ws::ClientMessage;
-use openconv_shared::ids::ChannelId;
+use openconv_shared::ids::{ChannelId, UserId};
 use tokio::sync::{mpsc, RwLock};
 
 /// All possible states of the WebSocket connection.
@@ -41,6 +41,10 @@ pub struct WsState {
     pub api_base_url: Arc<RwLock<String>>,
     /// Shared HTTP client for ticket requests.
     pub http_client: reqwest::Client,
+    /// Current authenticated user ID, set on Ready.
+    pub current_user_id: Arc<RwLock<Option<UserId>>>,
+    /// Maps client_nonce -> local message_id for optimistic insert dedup.
+    pub pending_nonces: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl WsState {
@@ -58,6 +62,8 @@ impl WsState {
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
+            current_user_id: Arc::new(RwLock::new(None)),
+            pending_nonces: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
