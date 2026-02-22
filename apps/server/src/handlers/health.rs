@@ -6,12 +6,14 @@ use fred::interfaces::ClientLike;
 
 use crate::state::AppState;
 
+#[utoipa::path(get, path = "/health/live", tag = "Health", responses((status = 200, description = "Service is alive")))]
 /// GET /health/live — returns 200 unconditionally.
 /// Used by load balancers to check if the process is alive.
 pub async fn liveness() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+#[utoipa::path(get, path = "/health/ready", tag = "Health", responses((status = 200, description = "Service is ready"), (status = 503, description = "Service unavailable")))]
 /// GET /health/ready — queries database and Redis to verify connectivity.
 /// Returns 200 on success, 503 on failure.
 pub async fn readiness(State(state): State<AppState>) -> impl IntoResponse {

@@ -30,6 +30,9 @@ pub enum OpenConvError {
 
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
+
+    #[error("payload too large: {0}")]
+    PayloadTooLarge(String),
 }
 
 #[cfg(test)]
@@ -67,6 +70,7 @@ mod tests {
             Box::new(OpenConvError::RateLimited),
             Box::new(OpenConvError::SessionCompromised),
             Box::new(OpenConvError::ServiceUnavailable("redis down".into())),
+            Box::new(OpenConvError::PayloadTooLarge("too big".into())),
         ];
         for e in &errors {
             let _ = e.to_string();

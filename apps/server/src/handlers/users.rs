@@ -14,7 +14,7 @@ use crate::validation::{escape_ilike, validate_display_name};
 // Request / Response Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct UserProfileResponse {
     pub id: UserId,
     pub email: String,
@@ -25,7 +25,7 @@ pub struct UserProfileResponse {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct PublicProfileResponse {
     pub id: UserId,
     pub display_name: String,
@@ -33,31 +33,31 @@ pub struct PublicProfileResponse {
     pub public_key: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct SearchUsersQuery {
     pub q: String,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SearchUsersResponse {
     pub users: Vec<PublicProfileResponse>,
     pub total: i64,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct UploadPreKeysRequest {
     pub pre_key_bundles: Vec<Vec<u8>>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct PreKeyBundleResponse {
     pub key_data: Vec<u8>,
 }
@@ -66,6 +66,7 @@ pub struct PreKeyBundleResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
+#[utoipa::path(get, path = "/api/users/me", tag = "Users", security(("bearer_auth" = [])), responses((status = 200, body = UserProfileResponse), (status = 401, body = crate::error::ErrorResponse)))]
 /// GET /api/users/me — full profile including email.
 pub async fn get_me(
     State(state): State<AppState>,
@@ -83,6 +84,7 @@ pub async fn get_me(
     Ok(Json(profile_from_row(&row)))
 }
 
+#[utoipa::path(patch, path = "/api/users/me", tag = "Users", security(("bearer_auth" = [])), request_body = UpdateProfileRequest, responses((status = 200, body = UserProfileResponse), (status = 400, body = crate::error::ErrorResponse)))]
 /// PATCH /api/users/me — update display_name and/or avatar_url.
 pub async fn update_me(
     State(state): State<AppState>,
@@ -142,6 +144,7 @@ pub async fn update_me(
     Ok(Json(profile_from_row(&row)))
 }
 
+#[utoipa::path(get, path = "/api/users/{user_id}", tag = "Users", security(("bearer_auth" = [])), params(("user_id" = uuid::Uuid, Path, description = "User ID")), responses((status = 200, body = PublicProfileResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// GET /api/users/:user_id — public profile (no email).
 pub async fn get_user(
     State(state): State<AppState>,
@@ -159,6 +162,7 @@ pub async fn get_user(
     Ok(Json(public_profile_from_row(&row)))
 }
 
+#[utoipa::path(get, path = "/api/users/search", tag = "Users", security(("bearer_auth" = [])), params(SearchUsersQuery), responses((status = 200, body = SearchUsersResponse), (status = 400, body = crate::error::ErrorResponse)))]
 /// GET /api/users/search — search by display_name (ILIKE).
 pub async fn search_users(
     State(state): State<AppState>,
@@ -204,6 +208,7 @@ pub async fn search_users(
     }))
 }
 
+#[utoipa::path(get, path = "/api/users/{user_id}/prekeys", tag = "Users", security(("bearer_auth" = [])), params(("user_id" = uuid::Uuid, Path, description = "User ID")), responses((status = 200, body = PreKeyBundleResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// GET /api/users/:user_id/prekeys — fetch one unused pre-key bundle.
 pub async fn get_prekeys(
     State(state): State<AppState>,
@@ -245,6 +250,7 @@ pub async fn get_prekeys(
 
 const MAX_BUNDLE_SIZE: usize = 1024;
 
+#[utoipa::path(post, path = "/api/users/me/prekeys", tag = "Users", security(("bearer_auth" = [])), request_body = UploadPreKeysRequest, responses((status = 201), (status = 400, body = crate::error::ErrorResponse)))]
 /// POST /api/users/me/prekeys — upload new pre-key bundles.
 pub async fn upload_prekeys(
     State(state): State<AppState>,

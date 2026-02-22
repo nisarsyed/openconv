@@ -4,6 +4,7 @@ macro_rules! define_id {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
         #[cfg_attr(feature = "sqlx", sqlx(transparent))]
+        #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
         pub struct $name(pub uuid::Uuid);
 
         #[allow(clippy::new_without_default)]

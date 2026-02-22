@@ -1,5 +1,10 @@
 pub mod auth;
 pub mod channel;
+pub mod dm_channel;
+pub mod file;
 pub mod guild;
+pub mod invite;
 pub mod message;
+pub mod role;
 pub mod user;
+pub mod ws;

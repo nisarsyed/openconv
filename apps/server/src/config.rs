@@ -113,6 +113,14 @@ pub struct RateLimitConfig {
     pub challenge_per_key_per_minute: u32,
     #[serde(default = "default_email_limit")]
     pub email_per_address_per_hour: u32,
+    #[serde(default = "default_guild_limit")]
+    pub guild_per_user_per_minute: u32,
+    #[serde(default = "default_channel_limit")]
+    pub channel_per_user_per_minute: u32,
+    #[serde(default = "default_file_limit")]
+    pub file_per_user_per_minute: u32,
+    #[serde(default = "default_invite_limit")]
+    pub invite_per_user_per_hour: u32,
 }
 
 fn default_ip_limit() -> u32 {
@@ -124,6 +132,18 @@ fn default_key_limit() -> u32 {
 fn default_email_limit() -> u32 {
     3
 }
+fn default_guild_limit() -> u32 {
+    10
+}
+fn default_channel_limit() -> u32 {
+    20
+}
+fn default_file_limit() -> u32 {
+    10
+}
+fn default_invite_limit() -> u32 {
+    10
+}
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
@@ -131,6 +151,44 @@ impl Default for RateLimitConfig {
             auth_per_ip_per_minute: default_ip_limit(),
             challenge_per_key_per_minute: default_key_limit(),
             email_per_address_per_hour: default_email_limit(),
+            guild_per_user_per_minute: default_guild_limit(),
+            channel_per_user_per_minute: default_channel_limit(),
+            file_per_user_per_minute: default_file_limit(),
+            invite_per_user_per_hour: default_invite_limit(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-struct: File Storage
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileStorageConfig {
+    #[serde(default = "default_storage_backend")]
+    pub backend: String,
+    #[serde(default = "default_local_path")]
+    pub local_path: String,
+    #[serde(default = "default_max_file_size")]
+    pub max_file_size_bytes: u64,
+}
+
+fn default_storage_backend() -> String {
+    "local".to_string()
+}
+fn default_local_path() -> String {
+    "./data/files".to_string()
+}
+fn default_max_file_size() -> u64 {
+    26_214_400 // 25MB
+}
+
+impl Default for FileStorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_storage_backend(),
+            local_path: default_local_path(),
+            max_file_size_bytes: default_max_file_size(),
         }
     }
 }
@@ -168,6 +226,8 @@ pub struct ServerConfig {
     pub email: EmailConfig,
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    #[serde(default)]
+    pub file_storage: FileStorageConfig,
 }
 
 fn default_host() -> String {
@@ -199,6 +259,7 @@ impl Default for ServerConfig {
             jwt: JwtConfig::default(),
             email: EmailConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            file_storage: FileStorageConfig::default(),
         }
     }
 }
@@ -365,9 +426,29 @@ mod tests {
             auth_per_ip_per_minute = 60
             challenge_per_key_per_minute = 10
             email_per_address_per_hour = 5
+            guild_per_user_per_minute = 15
+            channel_per_user_per_minute = 30
+            file_per_user_per_minute = 5
+            invite_per_user_per_hour = 20
         "#;
         let config = ServerConfig::from_toml_str(toml).unwrap();
         assert_eq!(config.rate_limit.auth_per_ip_per_minute, 60);
+        assert_eq!(config.rate_limit.guild_per_user_per_minute, 15);
+        assert_eq!(config.rate_limit.channel_per_user_per_minute, 30);
+        assert_eq!(config.rate_limit.file_per_user_per_minute, 5);
+        assert_eq!(config.rate_limit.invite_per_user_per_hour, 20);
+    }
+
+    #[test]
+    fn test_rate_limit_user_fields_have_correct_defaults() {
+        let toml = r#"
+            database_url = "postgresql://localhost/db"
+        "#;
+        let config = ServerConfig::from_toml_str(toml).unwrap();
+        assert_eq!(config.rate_limit.guild_per_user_per_minute, 10);
+        assert_eq!(config.rate_limit.channel_per_user_per_minute, 20);
+        assert_eq!(config.rate_limit.file_per_user_per_minute, 10);
+        assert_eq!(config.rate_limit.invite_per_user_per_hour, 10);
     }
 
     #[test]

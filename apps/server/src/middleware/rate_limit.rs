@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -8,6 +9,8 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use tower::{Layer, Service};
+
+use crate::jwt::JwtService;
 
 /// Tower layer that applies per-IP rate limiting using Redis.
 #[derive(Clone)]
@@ -217,6 +220,115 @@ pub async fn check_email_rate_limit(
         })
 }
 
+// ---------------------------------------------------------------------------
+// Per-user rate limiter (authenticated endpoints)
+// ---------------------------------------------------------------------------
+
+/// Tower layer that applies per-user rate limiting using Redis.
+/// Falls back to per-IP rate limiting if no valid JWT is present.
+#[derive(Clone)]
+pub struct UserRateLimitLayer {
+    redis: fred::clients::Pool,
+    jwt: Arc<JwtService>,
+    max_requests: u32,
+    window_seconds: u64,
+    endpoint_prefix: String,
+}
+
+impl UserRateLimitLayer {
+    pub fn new(
+        redis: fred::clients::Pool,
+        jwt: Arc<JwtService>,
+        max_requests: u32,
+        window_seconds: u64,
+        endpoint_prefix: String,
+    ) -> Self {
+        Self {
+            redis,
+            jwt,
+            max_requests,
+            window_seconds,
+            endpoint_prefix,
+        }
+    }
+}
+
+impl<S> Layer<S> for UserRateLimitLayer {
+    type Service = UserRateLimitService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        UserRateLimitService {
+            inner,
+            redis: self.redis.clone(),
+            jwt: self.jwt.clone(),
+            max_requests: self.max_requests,
+            window_seconds: self.window_seconds,
+            endpoint_prefix: self.endpoint_prefix.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct UserRateLimitService<S> {
+    inner: S,
+    redis: fred::clients::Pool,
+    jwt: Arc<JwtService>,
+    max_requests: u32,
+    window_seconds: u64,
+    endpoint_prefix: String,
+}
+
+/// Extract user ID from the Authorization Bearer token without performing
+/// full authentication. Returns None if the header is missing, malformed,
+/// or the JWT is invalid.
+fn extract_user_id_from_jwt<B>(req: &Request<B>, jwt: &JwtService) -> Option<String> {
+    let auth_header = req.headers().get("authorization")?.to_str().ok()?;
+    let token = auth_header.strip_prefix("Bearer ")?;
+    let claims = jwt.validate_access_token(token).ok()?;
+    Some(claims.sub)
+}
+
+impl<S> Service<Request<Body>> for UserRateLimitService<S>
+where
+    S: Service<Request<Body>, Response = Response> + Clone + Send + 'static,
+    S::Future: Send,
+{
+    type Response = Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let redis = self.redis.clone();
+        let jwt = self.jwt.clone();
+        let max = self.max_requests;
+        let window = self.window_seconds;
+        let prefix = self.endpoint_prefix.clone();
+        let mut inner = self.inner.clone();
+        std::mem::swap(&mut self.inner, &mut inner);
+
+        Box::pin(async move {
+            let key = if let Some(user_id) = extract_user_id_from_jwt(&req, &jwt) {
+                format!("rl:user:{user_id}:{prefix}")
+            } else {
+                let ip = extract_client_ip(&req);
+                format!("rl:ip:{ip}:{prefix}")
+            };
+
+            match check_redis_rate_limit(&redis, &key, max, window).await {
+                Ok(()) => inner.call(req).await,
+                Err(retry_after) => Ok(RateLimitError {
+                    retry_after_seconds: retry_after,
+                }
+                .into_response()),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +520,135 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         // Should fail open and return 200
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- UserRateLimitLayer tests ---
+
+    fn test_jwt_service() -> Arc<crate::jwt::JwtService> {
+        let config = crate::config::JwtConfig {
+            private_key_pem: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIONXw0UoRsRapn/WATSl25Hsej6hTuwsf+olF9npjjSs\n-----END PRIVATE KEY-----".to_string(),
+            public_key_pem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA9eB0735gPgffPc6aheXCqzsXb4ylG7Yi6I0yUIb2vZ4=\n-----END PUBLIC KEY-----".to_string(),
+            access_token_ttl_seconds: 300,
+            refresh_token_ttl_seconds: 604800,
+        };
+        Arc::new(crate::jwt::JwtService::new(&config).unwrap())
+    }
+
+    fn user_test_app(
+        redis: fred::clients::Pool,
+        jwt: Arc<crate::jwt::JwtService>,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Router {
+        let handler = || async { "ok" };
+        Router::new()
+            .route("/test", get(handler))
+            .layer(UserRateLimitLayer::new(
+                redis,
+                jwt,
+                max_requests,
+                window_seconds,
+                "utest".to_string(),
+            ))
+    }
+
+    #[tokio::test]
+    async fn user_rate_limit_uses_user_key_with_valid_jwt() {
+        let Some(redis) = get_test_redis().await else {
+            eprintln!("skipping: Redis not available");
+            return;
+        };
+        let jwt = test_jwt_service();
+        let user_id = openconv_shared::ids::UserId::new();
+        let device_id = openconv_shared::ids::DeviceId::new();
+        let token = jwt.issue_access_token(&user_id, &device_id).unwrap();
+
+        let key = format!("rl:user:{user_id}:utest");
+        cleanup_redis_key(&redis, &key).await;
+
+        let app = user_test_app(redis.clone(), jwt, 10, 60);
+        let request = Request::builder()
+            .uri("/test")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the user key was incremented (not the IP key)
+        use fred::interfaces::KeysInterface;
+        let exists: bool = redis.exists(&key).await.unwrap();
+        assert!(exists, "expected user rate limit key to exist");
+
+        cleanup_redis_key(&redis, &key).await;
+    }
+
+    #[tokio::test]
+    async fn user_rate_limit_falls_back_to_ip_without_jwt() {
+        let Some(redis) = get_test_redis().await else {
+            eprintln!("skipping: Redis not available");
+            return;
+        };
+        let jwt = test_jwt_service();
+        let ip_key = "rl:ip:10.0.0.50:utest";
+        cleanup_redis_key(&redis, ip_key).await;
+
+        let app = user_test_app(redis.clone(), jwt, 10, 60);
+        let request = Request::builder()
+            .uri("/test")
+            .header("X-Forwarded-For", "10.0.0.50")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify the IP key was used
+        use fred::interfaces::KeysInterface;
+        let exists: bool = redis.exists(ip_key).await.unwrap();
+        assert!(exists, "expected IP rate limit key to exist as fallback");
+
+        cleanup_redis_key(&redis, ip_key).await;
+    }
+
+    #[tokio::test]
+    async fn user_rate_limit_returns_429_when_exceeded() {
+        let Some(redis) = get_test_redis().await else {
+            eprintln!("skipping: Redis not available");
+            return;
+        };
+        let jwt = test_jwt_service();
+        let user_id = openconv_shared::ids::UserId::new();
+        let device_id = openconv_shared::ids::DeviceId::new();
+        let token = jwt.issue_access_token(&user_id, &device_id).unwrap();
+
+        let key = format!("rl:user:{user_id}:utest");
+        cleanup_redis_key(&redis, &key).await;
+
+        let max_requests = 2u32;
+
+        // Fill up the limit
+        for _ in 0..max_requests {
+            let app = user_test_app(redis.clone(), jwt.clone(), max_requests, 60);
+            let request = Request::builder()
+                .uri("/test")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        // One more should be rejected
+        let app = user_test_app(redis.clone(), jwt.clone(), max_requests, 60);
+        let request = Request::builder()
+            .uri("/test")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key("Retry-After"));
+
+        cleanup_redis_key(&redis, &key).await;
     }
 }

@@ -88,6 +88,7 @@ end
 return {0, ""}
 "#;
 
+#[utoipa::path(post, path = "/api/auth/register/start", tag = "Auth", request_body = RegisterStartRequest, responses((status = 200, body = RegisterStartResponse), (status = 400, body = crate::error::ErrorResponse), (status = 429, body = crate::error::ErrorResponse)))]
 pub async fn register_start(
     State(state): State<AppState>,
     Json(req): Json<RegisterStartRequest>,
@@ -148,6 +149,7 @@ pub async fn register_start(
     }))
 }
 
+#[utoipa::path(post, path = "/api/auth/register/verify", tag = "Auth", request_body = RegisterVerifyRequest, responses((status = 200, body = RegisterVerifyResponse), (status = 400, body = crate::error::ErrorResponse)))]
 pub async fn register_verify(
     State(state): State<AppState>,
     Json(req): Json<RegisterVerifyRequest>,
@@ -197,6 +199,7 @@ pub async fn register_verify(
     }
 }
 
+#[utoipa::path(post, path = "/api/auth/register/complete", tag = "Auth", request_body = RegisterCompleteRequest, responses((status = 200, body = RegisterResponse), (status = 400, body = crate::error::ErrorResponse), (status = 409, body = crate::error::ErrorResponse)))]
 pub async fn register_complete(
     State(state): State<AppState>,
     Json(req): Json<RegisterCompleteRequest>,
@@ -327,6 +330,7 @@ struct StoredChallenge {
     exists: bool,
 }
 
+#[utoipa::path(post, path = "/api/auth/challenge", tag = "Auth", request_body = LoginChallengeRequest, responses((status = 200, body = LoginChallengeResponse), (status = 400, body = crate::error::ErrorResponse), (status = 429, body = crate::error::ErrorResponse)))]
 pub async fn challenge(
     State(state): State<AppState>,
     Json(req): Json<LoginChallengeRequest>,
@@ -390,6 +394,7 @@ pub async fn challenge(
     }))
 }
 
+#[utoipa::path(post, path = "/api/auth/verify", tag = "Auth", request_body = LoginVerifyRequest, responses((status = 200, body = LoginVerifyResponse), (status = 401, body = crate::error::ErrorResponse)))]
 pub async fn login_verify(
     State(state): State<AppState>,
     Json(req): Json<LoginVerifyRequest>,
@@ -505,6 +510,7 @@ pub async fn login_verify(
     }))
 }
 
+#[utoipa::path(post, path = "/api/auth/refresh", tag = "Auth", request_body = RefreshRequest, responses((status = 200, body = RefreshResponse), (status = 401, body = crate::error::ErrorResponse)))]
 pub async fn refresh(
     State(state): State<AppState>,
     Json(body): Json<RefreshRequest>,
@@ -612,6 +618,7 @@ pub async fn refresh(
     }))
 }
 
+#[utoipa::path(post, path = "/api/auth/logout", tag = "Auth", security(("bearer_auth" = [])), responses((status = 200), (status = 401, body = crate::error::ErrorResponse)))]
 pub async fn logout(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -628,6 +635,7 @@ pub async fn logout(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(post, path = "/api/auth/logout-all", tag = "Auth", security(("bearer_auth" = [])), responses((status = 200), (status = 401, body = crate::error::ErrorResponse)))]
 pub async fn logout_all(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -643,6 +651,7 @@ pub async fn logout_all(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(get, path = "/api/auth/devices", tag = "Auth", security(("bearer_auth" = [])), responses((status = 200, body = DevicesListResponse), (status = 401, body = crate::error::ErrorResponse)))]
 pub async fn list_devices(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -675,6 +684,7 @@ pub async fn list_devices(
     Ok(Json(DevicesListResponse { devices }))
 }
 
+#[utoipa::path(delete, path = "/api/auth/devices/{device_id}", tag = "Auth", security(("bearer_auth" = [])), params(("device_id" = DeviceId, Path, description = "Device to revoke")), responses((status = 200), (status = 401, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 pub async fn revoke_device(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -758,6 +768,7 @@ end
 return {0, ""}
 "#;
 
+#[utoipa::path(post, path = "/api/auth/recover/start", tag = "Auth", request_body = RecoverStartRequest, responses((status = 200, body = RecoverStartResponse), (status = 429, body = crate::error::ErrorResponse)))]
 pub async fn recover_start(
     State(state): State<AppState>,
     Json(req): Json<RecoverStartRequest>,
@@ -817,6 +828,7 @@ pub async fn recover_start(
     }))
 }
 
+#[utoipa::path(post, path = "/api/auth/recover/verify", tag = "Auth", request_body = RecoverVerifyRequest, responses((status = 200, body = RecoverVerifyResponse), (status = 400, body = crate::error::ErrorResponse)))]
 pub async fn recover_verify(
     State(state): State<AppState>,
     Json(req): Json<RecoverVerifyRequest>,
@@ -902,6 +914,7 @@ pub async fn recover_verify(
     }
 }
 
+#[utoipa::path(post, path = "/api/auth/recover/complete", tag = "Auth", request_body = RecoverCompleteRequest, responses((status = 200, body = RecoverCompleteResponse), (status = 400, body = crate::error::ErrorResponse)))]
 pub async fn recover_complete(
     State(state): State<AppState>,
     Json(req): Json<RecoverCompleteRequest>,

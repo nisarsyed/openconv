@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 sqlx = ["dep:sqlx"]
+utoipa = ["dep:utoipa"]
 
 [dependencies]
 serde = { workspace = true }
@@ -14,7 +15,12 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
+bitflags = { workspace = true }
 
 [dependencies.sqlx]
+workspace = true
+optional = true
+
+[dependencies.utoipa]
 workspace = true
 optional = true
