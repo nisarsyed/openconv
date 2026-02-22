@@ -64,14 +64,20 @@ pub async fn guild_messages(
     let rows = if let Some(ref cursor) = params.cursor {
         let decoded = decode_cursor(cursor)?;
         sqlx::query_as::<_, MessageRow>(
-            "SELECT id, channel_id, sender_id, encrypted_content, nonce, edited_at, created_at \
-             FROM messages \
-             WHERE channel_id = $1 AND deleted = false \
-               AND (created_at, id) < ($2, $3) \
-             ORDER BY created_at DESC, id DESC \
-             LIMIT $4",
+            "SELECT m.id, m.channel_id, m.sender_id, m.encrypted_content, m.nonce, \
+                    m.edited_at, m.created_at, \
+                    mr.ciphertext, mr.message_type \
+             FROM messages m \
+             LEFT JOIN message_recipients mr \
+               ON mr.message_id = m.id AND mr.user_id = $2 AND mr.device_id = $3 \
+             WHERE m.channel_id = $1 AND m.deleted = false \
+               AND (m.created_at, m.id) < ($4, $5) \
+             ORDER BY m.created_at DESC, m.id DESC \
+             LIMIT $6",
         )
         .bind(channel_member.channel_id)
+        .bind(channel_member.user_id)
+        .bind(channel_member.device_id)
         .bind(decoded.created_at)
         .bind(decoded.id)
         .bind(limit + 1)
@@ -80,13 +86,19 @@ pub async fn guild_messages(
         .map_err(db_err)?
     } else {
         sqlx::query_as::<_, MessageRow>(
-            "SELECT id, channel_id, sender_id, encrypted_content, nonce, edited_at, created_at \
-             FROM messages \
-             WHERE channel_id = $1 AND deleted = false \
-             ORDER BY created_at DESC, id DESC \
-             LIMIT $2",
+            "SELECT m.id, m.channel_id, m.sender_id, m.encrypted_content, m.nonce, \
+                    m.edited_at, m.created_at, \
+                    mr.ciphertext, mr.message_type \
+             FROM messages m \
+             LEFT JOIN message_recipients mr \
+               ON mr.message_id = m.id AND mr.user_id = $2 AND mr.device_id = $3 \
+             WHERE m.channel_id = $1 AND m.deleted = false \
+             ORDER BY m.created_at DESC, m.id DESC \
+             LIMIT $4",
         )
         .bind(channel_member.channel_id)
+        .bind(channel_member.user_id)
+        .bind(channel_member.device_id)
         .bind(limit + 1)
         .fetch_all(&state.db)
         .await
@@ -112,7 +124,8 @@ pub async fn guild_messages(
 // ─── Message edit/delete (WebSocket operation helpers) ───────
 
 /// Edit a message. Validates sender ownership and channel association.
-/// Called by WebSocket dispatch (section-09).
+/// Note: Per-recipient edits now go through WebSocket fanout (ws/fanout.rs).
+/// This REST helper remains for backward compatibility.
 pub async fn handle_edit_message(
     db: &sqlx::PgPool,
     user_id: UserId,
@@ -145,7 +158,8 @@ pub async fn handle_edit_message(
         "UPDATE messages \
          SET encrypted_content = $1, nonce = $2, edited_at = NOW() \
          WHERE id = $3 AND deleted = false \
-         RETURNING id, channel_id, sender_id, encrypted_content, nonce, edited_at, created_at",
+         RETURNING id, channel_id, sender_id, encrypted_content, nonce, edited_at, created_at, \
+                   NULL::bytea AS ciphertext, NULL::text AS message_type",
     )
     .bind(&encrypted_content)
     .bind(&nonce)
@@ -218,10 +232,12 @@ struct MessageRow {
     id: MessageId,
     channel_id: ChannelId,
     sender_id: UserId,
-    encrypted_content: Vec<u8>,
-    nonce: Vec<u8>,
+    encrypted_content: Option<Vec<u8>>,
+    nonce: Option<Vec<u8>>,
     edited_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
+    ciphertext: Option<Vec<u8>>,
+    message_type: Option<String>,
 }
 
 impl MessageRow {
@@ -233,6 +249,8 @@ impl MessageRow {
             sender_id: self.sender_id,
             encrypted_content: self.encrypted_content,
             nonce: self.nonce,
+            ciphertext: self.ciphertext,
+            message_type: self.message_type,
             edited_at: self.edited_at,
             created_at: self.created_at,
         }

@@ -7,5 +7,6 @@ pub mod health;
 pub mod invites;
 pub mod messages;
 pub mod roles;
+pub mod sync;
 pub mod users;
 pub mod ws;

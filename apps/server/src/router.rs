@@ -69,6 +69,10 @@ pub fn build_router(state: AppState) -> axum::Router {
             get(handlers::users::get_me).patch(handlers::users::update_me),
         )
         .route("/me/prekeys", post(handlers::users::upload_prekeys))
+        .route(
+            "/me/read-state",
+            get(handlers::users::get_read_state).post(handlers::users::update_read_state),
+        )
         .route("/search", get(handlers::users::search_users))
         .route("/{user_id}", get(handlers::users::get_user))
         .route("/{user_id}/prekeys", get(handlers::users::get_prekeys))
@@ -112,6 +116,7 @@ pub fn build_router(state: AppState) -> axum::Router {
     let invite_public_routes = handlers::invites::public_routes();
     let dm_routes = handlers::dm_channels::routes();
     let message_routes = handlers::messages::guild_message_routes();
+    let sync_routes = handlers::sync::routes();
 
     // File upload routes get a higher body limit (25MB) and per-user rate limiting
     let guild_file_routes = handlers::files::guild_file_routes()
@@ -161,6 +166,7 @@ pub fn build_router(state: AppState) -> axum::Router {
         .nest("/api/guilds/{guild_id}/members", member_routes)
         .nest("/api/guilds/{guild_id}/invites", invite_guild_routes)
         .nest("/api/invites", invite_public_routes)
+        .nest("/api/sync", sync_routes)
         .nest("/api/dm-channels", dm_routes)
         .nest("/api/dm-channels/{dm_channel_id}/files", dm_file_routes)
         .nest("/api/files", file_routes)

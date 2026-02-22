@@ -1,5 +1,5 @@
 use crate::api::message::base64_serde;
-use crate::ids::{ChannelId, DmChannelId, GuildId, MessageId, UserId};
+use crate::ids::{ChannelId, DeviceId, DmChannelId, GuildId, MessageId, UserId};
 use serde::{Deserialize, Serialize};
 
 /// Presence status for a user connection.
@@ -18,7 +18,7 @@ pub enum PresenceStatus {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecipientPayload {
     pub user_id: UserId,
-    pub device_id: u32,
+    pub device_id: DeviceId,
     #[serde(with = "base64_serde")]
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub ciphertext: Vec<u8>,
@@ -177,14 +177,14 @@ mod tests {
     fn recipient_payload_round_trip() {
         let payload = RecipientPayload {
             user_id: UserId::new(),
-            device_id: 42,
+            device_id: DeviceId::new(),
             ciphertext: b"encrypted_for_device".to_vec(),
             message_type: "signal".to_string(),
         };
         let json = serde_json::to_string(&payload).unwrap();
         let back: RecipientPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(back.user_id, payload.user_id);
-        assert_eq!(back.device_id, 42);
+        assert_eq!(back.device_id, payload.device_id);
         assert_eq!(back.ciphertext, b"encrypted_for_device");
         assert_eq!(back.message_type, "signal");
     }
@@ -193,7 +193,7 @@ mod tests {
     fn recipient_payload_ciphertext_is_base64() {
         let payload = RecipientPayload {
             user_id: UserId::new(),
-            device_id: 1,
+            device_id: DeviceId::new(),
             ciphertext: b"test_bytes".to_vec(),
             message_type: "prekey".to_string(),
         };
@@ -211,13 +211,13 @@ mod tests {
             recipients: vec![
                 RecipientPayload {
                     user_id: UserId::new(),
-                    device_id: 1,
+                    device_id: DeviceId::new(),
                     ciphertext: b"ct1".to_vec(),
                     message_type: "signal".to_string(),
                 },
                 RecipientPayload {
                     user_id: UserId::new(),
-                    device_id: 2,
+                    device_id: DeviceId::new(),
                     ciphertext: b"ct2".to_vec(),
                     message_type: "prekey".to_string(),
                 },
@@ -310,7 +310,7 @@ mod tests {
             message_id: MessageId::new(),
             recipients: vec![RecipientPayload {
                 user_id: UserId::new(),
-                device_id: 3,
+                device_id: DeviceId::new(),
                 ciphertext: b"edited_ct".to_vec(),
                 message_type: "signal".to_string(),
             }],
@@ -321,7 +321,7 @@ mod tests {
         match back {
             ClientMessage::EditMessage { recipients, .. } => {
                 assert_eq!(recipients.len(), 1);
-                assert_eq!(recipients[0].device_id, 3);
+                assert_eq!(recipients[0].ciphertext, b"edited_ct");
             }
             _ => panic!("wrong variant"),
         }

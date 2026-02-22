@@ -19,6 +19,33 @@ pub mod base64_serde {
     }
 }
 
+/// Serde module for serializing `Option<Vec<u8>>` as optional base64 strings.
+pub mod option_base64_serde {
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match bytes {
+            Some(b) => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+                s.serialize_some(&encoded)
+            }
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let opt: Option<String> = Option::deserialize(d)?;
+        match opt {
+            Some(s) => base64::engine::general_purpose::STANDARD
+                .decode(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+}
+
 /// Request to send an encrypted message to a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -40,12 +67,33 @@ pub struct MessageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dm_channel_id: Option<DmChannelId>,
     pub sender_id: UserId,
-    #[serde(with = "base64_serde")]
-    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
-    pub encrypted_content: Vec<u8>,
-    #[serde(with = "base64_serde")]
-    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
-    pub nonce: Vec<u8>,
+    /// Legacy single-blob encrypted content (nullable for per-recipient messages).
+    #[serde(
+        with = "option_base64_serde",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub encrypted_content: Option<Vec<u8>>,
+    /// Legacy nonce (nullable for per-recipient messages).
+    #[serde(
+        with = "option_base64_serde",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub nonce: Option<Vec<u8>>,
+    /// Per-device ciphertext from message_recipients table.
+    #[serde(
+        with = "option_base64_serde",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub ciphertext: Option<Vec<u8>>,
+    /// Message type for per-device ciphertext ("prekey" or "signal").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
     pub edited_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -78,8 +126,10 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
-            encrypted_content: b"encrypted_data".to_vec(),
-            nonce: b"nonce_bytes".to_vec(),
+            encrypted_content: Some(b"encrypted_data".to_vec()),
+            nonce: Some(b"nonce_bytes".to_vec()),
+            ciphertext: None,
+            message_type: None,
             edited_at: None,
             created_at: chrono::Utc::now(),
         };
@@ -100,8 +150,10 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
-            encrypted_content: b"data".to_vec(),
-            nonce: b"nonce".to_vec(),
+            encrypted_content: Some(b"data".to_vec()),
+            nonce: Some(b"nonce".to_vec()),
+            ciphertext: None,
+            message_type: None,
             edited_at: None,
             created_at: chrono::Utc::now(),
         };
@@ -117,8 +169,10 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
-            encrypted_content: b"data".to_vec(),
-            nonce: b"nonce".to_vec(),
+            encrypted_content: Some(b"data".to_vec()),
+            nonce: Some(b"nonce".to_vec()),
+            ciphertext: None,
+            message_type: None,
             edited_at: Some(now),
             created_at: now,
         };
@@ -127,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn vec_u8_fields_serialize_as_base64_in_json() {
+    fn optional_base64_fields_serialize_as_base64_in_json() {
         let content = b"hello encrypted world".to_vec();
         let nonce = b"random_nonce_12".to_vec();
         let resp = MessageResponse {
@@ -135,15 +189,16 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
-            encrypted_content: content.clone(),
-            nonce: nonce.clone(),
+            encrypted_content: Some(content.clone()),
+            nonce: Some(nonce.clone()),
+            ciphertext: None,
+            message_type: None,
             edited_at: None,
             created_at: chrono::Utc::now(),
         };
 
         let json_str = serde_json::to_string(&resp).unwrap();
 
-        // Verify the JSON contains base64 strings, not raw bytes
         use base64::Engine;
         let expected_content = base64::engine::general_purpose::STANDARD.encode(&content);
         let expected_nonce = base64::engine::general_purpose::STANDARD.encode(&nonce);
@@ -152,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn vec_u8_fields_roundtrip_via_json() {
+    fn optional_base64_fields_roundtrip_via_json() {
         let content = b"test content bytes".to_vec();
         let nonce = b"test nonce bytes".to_vec();
         let resp = MessageResponse {
@@ -160,8 +215,10 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
-            encrypted_content: content.clone(),
-            nonce: nonce.clone(),
+            encrypted_content: Some(content.clone()),
+            nonce: Some(nonce.clone()),
+            ciphertext: None,
+            message_type: None,
             edited_at: None,
             created_at: chrono::Utc::now(),
         };
@@ -169,8 +226,54 @@ mod tests {
         let json_str = serde_json::to_string(&resp).unwrap();
         let deserialized: MessageResponse = serde_json::from_str(&json_str).unwrap();
 
-        assert_eq!(deserialized.encrypted_content, content);
-        assert_eq!(deserialized.nonce, nonce);
+        assert_eq!(deserialized.encrypted_content, Some(content));
+        assert_eq!(deserialized.nonce, Some(nonce));
+    }
+
+    #[test]
+    fn per_device_ciphertext_fields_roundtrip() {
+        let ct = b"per-device encrypted data".to_vec();
+        let resp = MessageResponse {
+            id: MessageId::new(),
+            channel_id: ChannelId::new(),
+            dm_channel_id: None,
+            sender_id: UserId::new(),
+            encrypted_content: None,
+            nonce: None,
+            ciphertext: Some(ct.clone()),
+            message_type: Some("signal".to_string()),
+            edited_at: None,
+            created_at: chrono::Utc::now(),
+        };
+
+        let json_str = serde_json::to_string(&resp).unwrap();
+        let deserialized: MessageResponse = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(deserialized.ciphertext, Some(ct));
+        assert_eq!(deserialized.message_type.as_deref(), Some("signal"));
+        assert!(deserialized.encrypted_content.is_none());
+        assert!(deserialized.nonce.is_none());
+    }
+
+    #[test]
+    fn null_optional_fields_omitted_from_json() {
+        let resp = MessageResponse {
+            id: MessageId::new(),
+            channel_id: ChannelId::new(),
+            dm_channel_id: None,
+            sender_id: UserId::new(),
+            encrypted_content: None,
+            nonce: None,
+            ciphertext: None,
+            message_type: None,
+            edited_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("encrypted_content").is_none());
+        assert!(json.get("nonce").is_none());
+        assert!(json.get("ciphertext").is_none());
+        assert!(json.get("message_type").is_none());
     }
 
     #[test]
@@ -223,8 +326,10 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
-            encrypted_content: b"data".to_vec(),
-            nonce: b"nonce".to_vec(),
+            encrypted_content: Some(b"data".to_vec()),
+            nonce: Some(b"nonce".to_vec()),
+            ciphertext: None,
+            message_type: None,
             edited_at: None,
             created_at: chrono::Utc::now(),
         };
@@ -240,8 +345,10 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: Some(dm_id),
             sender_id: UserId::new(),
-            encrypted_content: b"data".to_vec(),
-            nonce: b"nonce".to_vec(),
+            encrypted_content: Some(b"data".to_vec()),
+            nonce: Some(b"nonce".to_vec()),
+            ciphertext: None,
+            message_type: None,
             edited_at: None,
             created_at: chrono::Utc::now(),
         };

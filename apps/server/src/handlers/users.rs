@@ -1,8 +1,9 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use openconv_shared::api::sync::{BatchUpdateReadStateRequest, ReadStateEntry};
 use openconv_shared::error::OpenConvError;
-use openconv_shared::ids::UserId;
+use openconv_shared::ids::{ChannelId, MessageId, UserId};
 use sqlx::Row;
 
 use crate::error::ServerError;
@@ -299,6 +300,93 @@ pub async fn upload_prekeys(
         .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
 
     Ok(StatusCode::CREATED)
+}
+
+// ---------------------------------------------------------------------------
+// Read State
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct ReadStateResponse {
+    pub read_positions: Vec<ReadStateEntry>,
+}
+
+#[utoipa::path(get, path = "/api/users/me/read-state", tag = "Users", security(("bearer_auth" = [])), responses((status = 200, body = ReadStateResponse), (status = 401, body = crate::error::ErrorResponse)))]
+/// GET /api/users/me/read-state — get all read positions for the authenticated user.
+pub async fn get_read_state(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<Json<ReadStateResponse>, ServerError> {
+    let rows: Vec<ReadStateRow> = sqlx::query_as(
+        "SELECT channel_id, last_read_message_id, updated_at \
+         FROM user_channel_read_state WHERE user_id = $1",
+    )
+    .bind(auth_user.user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    Ok(Json(ReadStateResponse {
+        read_positions: rows
+            .into_iter()
+            .map(|r| ReadStateEntry {
+                channel_id: r.channel_id,
+                last_read_message_id: r.last_read_message_id,
+                updated_at: r.updated_at,
+            })
+            .collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/users/me/read-state", tag = "Users", security(("bearer_auth" = [])), request_body = openconv_shared::api::sync::BatchUpdateReadStateRequest, responses((status = 204), (status = 400, body = crate::error::ErrorResponse)))]
+/// POST /api/users/me/read-state — batch update read positions.
+pub async fn update_read_state(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(req): Json<BatchUpdateReadStateRequest>,
+) -> Result<StatusCode, ServerError> {
+    if req.entries.is_empty() {
+        return Err(OpenConvError::Validation("entries must not be empty".into()).into());
+    }
+    if req.entries.len() > 100 {
+        return Err(
+            OpenConvError::Validation("entries must not exceed 100".into()).into(),
+        );
+    }
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    for entry in &req.entries {
+        sqlx::query(
+            "INSERT INTO user_channel_read_state (user_id, channel_id, last_read_message_id, updated_at) \
+             VALUES ($1, $2, $3, NOW()) \
+             ON CONFLICT (user_id, channel_id) \
+             DO UPDATE SET last_read_message_id = EXCLUDED.last_read_message_id, updated_at = NOW()",
+        )
+        .bind(auth_user.user_id)
+        .bind(entry.channel_id)
+        .bind(entry.last_read_message_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(sqlx::FromRow)]
+struct ReadStateRow {
+    channel_id: ChannelId,
+    last_read_message_id: MessageId,
+    updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 // ---------------------------------------------------------------------------

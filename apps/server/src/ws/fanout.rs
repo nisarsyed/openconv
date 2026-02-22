@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use openconv_shared::api::ws::RecipientPayload;
 use openconv_shared::ids::{ChannelId, DeviceId, GuildId, MessageId, UserId};
 use openconv_shared::permissions::Permissions;
 use tokio::sync::broadcast;
@@ -124,7 +125,7 @@ pub async fn handle_subscribe(
 
     // Replay missed messages (if any last_seen exists in Redis)
     if let Err(e) =
-        replay::replay_missed_messages(&state.db, &state.redis, user_id, channel_id, &mpsc_tx).await
+        replay::replay_missed_messages(&state.db, &state.redis, user_id, device_id, channel_id, &mpsc_tx).await
     {
         tracing::warn!(
             user_id = %user_id,
@@ -208,14 +209,25 @@ pub fn handle_unsubscribe(
 
 // ─── Send Message ────────────────────────────────────────────
 
+const MAX_RECIPIENTS: usize = 200;
+
 pub async fn handle_send_message(
     state: &AppState,
     user_id: UserId,
     device_id: DeviceId,
     channel_id: ChannelId,
-    encrypted_content: Vec<u8>,
-    nonce: Vec<u8>,
+    recipients: Vec<RecipientPayload>,
 ) {
+    // Validate recipients
+    if recipients.is_empty() {
+        send_error(state, user_id, device_id, 4004, "recipients must not be empty");
+        return;
+    }
+    if recipients.len() > MAX_RECIPIENTS {
+        send_error(state, user_id, device_id, 4004, "too many recipients");
+        return;
+    }
+
     // Rate limit check
     if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
         send_error(state, user_id, device_id, 4003, "rate limited");
@@ -237,10 +249,10 @@ pub async fn handle_send_message(
         return;
     }
 
-    // Persist to database (Vec<u8> maps directly to BYTEA column)
-    let message_id =
-        match persist_message(&state.db, channel_id, user_id, &encrypted_content, &nonce).await {
-            Ok(id) => id,
+    // Persist message + recipients + channel event in a single transaction
+    let (message_id, created_at) =
+        match persist_message(&state.db, channel_id, user_id, &recipients).await {
+            Ok(result) => result,
             Err(e) => {
                 tracing::error!(error = %e, "failed to persist message");
                 send_error(state, user_id, device_id, 4004, "failed to send message");
@@ -248,34 +260,91 @@ pub async fn handle_send_message(
             }
         };
 
-    // Broadcast to channel subscribers
-    let event = ServerMessage::MessageCreated {
-        channel_id,
-        message_id,
-    };
-
-    if let Some(sender) = state.ws.channels.get(&channel_id) {
-        let _ = sender.send(event);
-    }
+    // Per-device fan-out: send each subscribed connection its own ciphertext
+    fan_out_message_created(state, channel_id, message_id, user_id, &recipients, created_at);
 }
 
+/// Persist message metadata, per-device recipient payloads, and channel event in one transaction.
 async fn persist_message(
     db: &sqlx::PgPool,
     channel_id: ChannelId,
     sender_id: UserId,
-    encrypted_content: &[u8],
-    nonce: &[u8],
-) -> Result<MessageId, sqlx::Error> {
-    sqlx::query_scalar(
+    recipients: &[RecipientPayload],
+) -> Result<(MessageId, chrono::DateTime<chrono::Utc>), sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    // Insert message row (encrypted_content/nonce NULL; content lives in message_recipients)
+    let row: (MessageId, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
         "INSERT INTO messages (channel_id, sender_id, encrypted_content, nonce) \
-         VALUES ($1, $2, $3, $4) RETURNING id",
+         VALUES ($1, $2, NULL, NULL) RETURNING id, created_at",
     )
     .bind(channel_id)
     .bind(sender_id)
-    .bind(encrypted_content)
-    .bind(nonce)
-    .fetch_one(db)
-    .await
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let (message_id, created_at) = row;
+
+    // Batch-insert recipient payloads
+    for rp in recipients {
+        sqlx::query(
+            "INSERT INTO message_recipients (message_id, user_id, device_id, ciphertext, message_type) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(message_id)
+        .bind(rp.user_id)
+        .bind(rp.device_id)
+        .bind(&rp.ciphertext)
+        .bind(&rp.message_type)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Insert channel event for sync
+    sqlx::query(
+        "INSERT INTO channel_events (channel_id, event_type, message_id) VALUES ($1, 'message_created', $2)",
+    )
+    .bind(channel_id)
+    .bind(message_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok((message_id, created_at))
+}
+
+/// Send a personalized MessageCreated to each subscribed connection
+/// that has a matching RecipientPayload.
+fn fan_out_message_created(
+    state: &AppState,
+    channel_id: ChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    recipients: &[RecipientPayload],
+    created_at: chrono::DateTime<chrono::Utc>,
+) {
+    for conn_ref in state.ws.connections.iter() {
+        let ((uid, did), conn) = conn_ref.pair();
+        if !conn.subscribed_channels.contains(&channel_id) {
+            continue;
+        }
+        // Find the matching recipient payload for this connection's (user_id, device_id)
+        if let Some(rp) = recipients
+            .iter()
+            .find(|rp| rp.user_id == *uid && rp.device_id == *did)
+        {
+            let event = ServerMessage::MessageCreated {
+                channel_id,
+                message_id,
+                sender_id,
+                ciphertext: rp.ciphertext.clone(),
+                message_type: rp.message_type.clone(),
+                created_at,
+            };
+            let _ = conn.sender.try_send(event);
+        }
+    }
 }
 
 // ─── Edit Message ────────────────────────────────────────────
@@ -286,9 +355,18 @@ pub async fn handle_edit_message(
     device_id: DeviceId,
     channel_id: ChannelId,
     message_id: MessageId,
-    encrypted_content: Vec<u8>,
-    nonce: Vec<u8>,
+    recipients: Vec<RecipientPayload>,
 ) {
+    // Validate recipients
+    if recipients.is_empty() {
+        send_error(state, user_id, device_id, 4004, "recipients must not be empty");
+        return;
+    }
+    if recipients.len() > MAX_RECIPIENTS {
+        send_error(state, user_id, device_id, 4004, "too many recipients");
+        return;
+    }
+
     // Rate limit check
     if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
         send_error(state, user_id, device_id, 4003, "rate limited");
@@ -309,27 +387,20 @@ pub async fn handle_edit_message(
         return;
     }
 
-    // Atomic update with ownership check (Vec<u8> maps directly to BYTEA column)
-    match persist_edit(
-        &state.db,
-        user_id,
-        channel_id,
-        message_id,
-        &encrypted_content,
-        &nonce,
-    )
-    .await
-    {
-        Ok(true) => {
-            let event = ServerMessage::MessageUpdated {
+    // Atomic update with ownership check, replace recipients, log event
+    match persist_edit(&state.db, user_id, channel_id, message_id, &recipients).await {
+        Ok(Some(edited_at)) => {
+            // Per-device fan-out for edit
+            fan_out_message_updated(
+                state,
                 channel_id,
                 message_id,
-            };
-            if let Some(sender) = state.ws.channels.get(&channel_id) {
-                let _ = sender.send(event);
-            }
+                user_id,
+                &recipients,
+                edited_at,
+            );
         }
-        Ok(false) => {
+        Ok(None) => {
             send_error(
                 state,
                 user_id,
@@ -345,28 +416,97 @@ pub async fn handle_edit_message(
     }
 }
 
-/// Atomic edit: single UPDATE with WHERE sender_id check. Returns true if a row was updated.
+/// Atomic edit: UPDATE message, replace recipient rows, log channel event.
+/// Returns Some(edited_at) if a row was updated, None if no matching message found.
 async fn persist_edit(
     db: &sqlx::PgPool,
     user_id: UserId,
     channel_id: ChannelId,
     message_id: MessageId,
-    encrypted_content: &[u8],
-    nonce: &[u8],
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE messages SET encrypted_content = $1, nonce = $2, edited_at = NOW() \
-         WHERE id = $3 AND channel_id = $4 AND sender_id = $5 AND deleted = false",
+    recipients: &[RecipientPayload],
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    // Update message metadata with ownership check
+    let result: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
+        "UPDATE messages SET edited_at = NOW() \
+         WHERE id = $1 AND channel_id = $2 AND sender_id = $3 AND deleted = false \
+         RETURNING edited_at",
     )
-    .bind(encrypted_content)
-    .bind(nonce)
     .bind(message_id)
     .bind(channel_id)
     .bind(user_id)
-    .execute(db)
+    .fetch_optional(&mut *tx)
     .await?;
 
-    Ok(result.rows_affected() > 0)
+    let edited_at = match result {
+        Some((ts,)) => ts,
+        None => return Ok(None),
+    };
+
+    // Replace recipient rows: delete old, insert new
+    sqlx::query("DELETE FROM message_recipients WHERE message_id = $1")
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await?;
+
+    for rp in recipients {
+        sqlx::query(
+            "INSERT INTO message_recipients (message_id, user_id, device_id, ciphertext, message_type) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(message_id)
+        .bind(rp.user_id)
+        .bind(rp.device_id)
+        .bind(&rp.ciphertext)
+        .bind(&rp.message_type)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Log channel event
+    sqlx::query(
+        "INSERT INTO channel_events (channel_id, event_type, message_id) VALUES ($1, 'message_updated', $2)",
+    )
+    .bind(channel_id)
+    .bind(message_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(Some(edited_at))
+}
+
+/// Send personalized MessageUpdated to each subscribed connection.
+fn fan_out_message_updated(
+    state: &AppState,
+    channel_id: ChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    recipients: &[RecipientPayload],
+    edited_at: chrono::DateTime<chrono::Utc>,
+) {
+    for conn_ref in state.ws.connections.iter() {
+        let ((uid, did), conn) = conn_ref.pair();
+        if !conn.subscribed_channels.contains(&channel_id) {
+            continue;
+        }
+        if let Some(rp) = recipients
+            .iter()
+            .find(|rp| rp.user_id == *uid && rp.device_id == *did)
+        {
+            let event = ServerMessage::MessageUpdated {
+                channel_id,
+                message_id,
+                sender_id,
+                ciphertext: rp.ciphertext.clone(),
+                message_type: rp.message_type.clone(),
+                edited_at,
+            };
+            let _ = conn.sender.try_send(event);
+        }
+    }
 }
 
 // ─── Delete Message ──────────────────────────────────────────
@@ -424,8 +564,9 @@ pub async fn handle_delete_message(
     }
 }
 
-/// Atomic delete with authorization. Tries sender ownership first,
-/// then MANAGE_MESSAGES if the user has that permission.
+/// Atomic delete with authorization, cryptographic erasure, and event logging.
+/// Tries sender ownership first, then MANAGE_MESSAGES if the user has that permission.
+/// Deletes message_recipients rows and logs a channel event within the same transaction.
 async fn persist_delete(
     db: &sqlx::PgPool,
     user_id: UserId,
@@ -433,6 +574,7 @@ async fn persist_delete(
     channel_id: ChannelId,
     message_id: MessageId,
 ) -> Result<bool, sqlx::Error> {
+    let mut tx = db.begin().await?;
     let empty: &[u8] = &[];
 
     // Try sender ownership delete first (most common case)
@@ -445,15 +587,12 @@ async fn persist_delete(
     .bind(message_id)
     .bind(channel_id)
     .bind(user_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
-    if result.rows_affected() > 0 {
-        return Ok(true);
-    }
-
-    // If sender doesn't match, try MANAGE_MESSAGES path
-    if can_manage_messages {
+    let deleted = if result.rows_affected() > 0 {
+        true
+    } else if can_manage_messages {
         let result = sqlx::query(
             "UPDATE messages SET deleted = true, encrypted_content = $1, nonce = $2 \
              WHERE id = $3 AND channel_id = $4 AND deleted = false",
@@ -462,13 +601,34 @@ async fn persist_delete(
         .bind(empty)
         .bind(message_id)
         .bind(channel_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
 
-        return Ok(result.rows_affected() > 0);
+        result.rows_affected() > 0
+    } else {
+        false
+    };
+
+    if deleted {
+        // Cryptographic erasure: remove per-device ciphertext
+        sqlx::query("DELETE FROM message_recipients WHERE message_id = $1")
+            .bind(message_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Log channel event for sync
+        sqlx::query(
+            "INSERT INTO channel_events (channel_id, event_type, message_id) VALUES ($1, 'message_deleted', $2)",
+        )
+        .bind(channel_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await?;
     }
 
-    Ok(false)
+    tx.commit().await?;
+
+    Ok(deleted)
 }
 
 // ─── Periodic cleanup ────────────────────────────────────────

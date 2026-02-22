@@ -211,24 +211,30 @@ async fn handle_client_message(
         }
         ClientMessage::SendMessage {
             channel_id,
-            encrypted_content,
-            nonce,
+            dm_channel_id: _,
+            recipients,
         } => {
+            // Resolve effective channel_id (DM support deferred to section-08)
+            let effective_channel_id = match channel_id {
+                Some(cid) => cid,
+                None => {
+                    send_error(state, user_id, device_id, 4004, "channel_id required");
+                    return;
+                }
+            };
             super::fanout::handle_send_message(
                 state,
                 user_id,
                 device_id,
-                channel_id,
-                encrypted_content,
-                nonce,
+                effective_channel_id,
+                recipients,
             )
             .await;
         }
         ClientMessage::EditMessage {
             channel_id,
             message_id,
-            encrypted_content,
-            nonce,
+            recipients,
         } => {
             super::fanout::handle_edit_message(
                 state,
@@ -236,8 +242,7 @@ async fn handle_client_message(
                 device_id,
                 channel_id,
                 message_id,
-                encrypted_content,
-                nonce,
+                recipients,
             )
             .await;
         }
