@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Request body for POST /api/guilds/:guild_id/invites.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateInviteRequest {
     /// Maximum number of uses. None = unlimited.
     pub max_uses: Option<i32>,
@@ -13,6 +14,7 @@ pub struct CreateInviteRequest {
 
 /// Response for invite CRUD operations (guild-scoped).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct InviteResponse {
     pub code: String,
     pub guild_id: GuildId,
@@ -26,6 +28,7 @@ pub struct InviteResponse {
 /// Response for GET /api/invites/:code (public invite lookup).
 /// Contains enough info for the user to decide whether to join.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct InviteInfoResponse {
     pub code: String,
     pub guild_name: String,

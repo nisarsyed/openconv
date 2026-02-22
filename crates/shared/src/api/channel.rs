@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Request to create a new channel in a guild.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateChannelRequest {
     pub name: String,
     pub channel_type: String,
@@ -10,6 +11,7 @@ pub struct CreateChannelRequest {
 
 /// Request to update an existing channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct UpdateChannelRequest {
     pub name: Option<String>,
     pub topic: Option<String>,
@@ -17,11 +19,13 @@ pub struct UpdateChannelRequest {
 
 /// Request to reorder channels within a guild.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ReorderChannelsRequest {
     pub channels: Vec<ChannelPosition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ChannelPosition {
     pub channel_id: ChannelId,
     pub position: i32,
@@ -29,6 +33,7 @@ pub struct ChannelPosition {
 
 /// Channel details response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ChannelResponse {
     pub id: ChannelId,
     pub guild_id: GuildId,

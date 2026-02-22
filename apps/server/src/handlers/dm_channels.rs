@@ -64,6 +64,7 @@ fn build_response(row: DmChannelRow, members: Vec<UserId>) -> DmChannelResponse 
     }
 }
 
+#[utoipa::path(post, path = "/api/dm-channels", tag = "DM Channels", security(("bearer_auth" = [])), request_body = openconv_shared::api::dm_channel::CreateDmChannelRequest, responses((status = 201, body = openconv_shared::api::dm_channel::DmChannelResponse), (status = 200, body = openconv_shared::api::dm_channel::DmChannelResponse), (status = 400, body = crate::error::ErrorResponse)))]
 /// POST /api/dm-channels
 /// Create a DM channel (1:1 or group).
 pub async fn create(
@@ -99,13 +100,11 @@ async fn create_one_to_one(
     target_user_id: UserId,
 ) -> Result<(StatusCode, Json<DmChannelResponse>), ServerError> {
     // Validate target user exists
-    let user_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
-    )
-    .bind(target_user_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let user_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(target_user_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if !user_exists {
         return Err(ServerError(OpenConvError::NotFound));
@@ -185,7 +184,7 @@ async fn create_group(
     }
 
     let total = participants.len();
-    if total < 2 || total > 25 {
+    if !(2..=25).contains(&total) {
         return Err(ServerError(OpenConvError::Validation(
             "group DMs must have between 2 and 25 participants".into(),
         )));
@@ -193,13 +192,11 @@ async fn create_group(
 
     // Validate all user IDs exist using ANY($1)
     let participant_uuids: Vec<uuid::Uuid> = participants.iter().map(|u| u.0).collect();
-    let existing_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users WHERE id = ANY($1)",
-    )
-    .bind(&participant_uuids)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let existing_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = ANY($1)")
+        .bind(&participant_uuids)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if existing_count != participants.len() as i64 {
         return Err(ServerError(OpenConvError::Validation(
@@ -233,6 +230,7 @@ async fn create_group(
     Ok((StatusCode::CREATED, Json(build_response(row, participants))))
 }
 
+#[utoipa::path(get, path = "/api/dm-channels", tag = "DM Channels", security(("bearer_auth" = [])), responses((status = 200, body = Vec<openconv_shared::api::dm_channel::DmChannelResponse>)))]
 /// GET /api/dm-channels
 /// List the authenticated user's DM channels.
 pub async fn list(
@@ -271,7 +269,10 @@ pub async fn list(
     let mut members_map: std::collections::HashMap<DmChannelId, Vec<UserId>> =
         std::collections::HashMap::new();
     for mr in member_rows {
-        members_map.entry(mr.dm_channel_id).or_default().push(mr.user_id);
+        members_map
+            .entry(mr.dm_channel_id)
+            .or_default()
+            .push(mr.user_id);
     }
 
     let result = rows
@@ -285,6 +286,7 @@ pub async fn list(
     Ok(Json(result))
 }
 
+#[utoipa::path(get, path = "/api/dm-channels/{id}", tag = "DM Channels", security(("bearer_auth" = [])), params(("id" = openconv_shared::ids::DmChannelId, Path, description = "DM channel ID")), responses((status = 200, body = openconv_shared::api::dm_channel::DmChannelResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// GET /api/dm-channels/:id
 /// Get DM channel details.
 pub async fn get_one(
@@ -307,6 +309,7 @@ pub async fn get_one(
     Ok(Json(build_response(row, members)))
 }
 
+#[utoipa::path(post, path = "/api/dm-channels/{id}/members", tag = "DM Channels", security(("bearer_auth" = [])), params(("id" = openconv_shared::ids::DmChannelId, Path, description = "DM channel ID")), request_body = openconv_shared::api::dm_channel::AddDmMemberRequest, responses((status = 200, body = openconv_shared::api::dm_channel::DmChannelResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// POST /api/dm-channels/:id/members
 /// Add a member to a group DM.
 pub async fn add_member(
@@ -318,13 +321,11 @@ pub async fn add_member(
     require_dm_membership(&state.db, id, auth.user_id).await?;
 
     // Use is_group column for definitive 1:1 vs group check
-    let is_group: bool = sqlx::query_scalar(
-        "SELECT is_group FROM dm_channels WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let is_group: bool = sqlx::query_scalar("SELECT is_group FROM dm_channels WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if !is_group {
         return Err(ServerError(OpenConvError::Validation(
@@ -332,13 +333,12 @@ pub async fn add_member(
         )));
     }
 
-    let member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM dm_channel_members WHERE dm_channel_id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dm_channel_members WHERE dm_channel_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(db_err)?;
 
     if member_count >= 25 {
         return Err(ServerError(OpenConvError::Validation(
@@ -347,13 +347,11 @@ pub async fn add_member(
     }
 
     // Validate target user exists
-    let user_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
-    )
-    .bind(body.user_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let user_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(body.user_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if !user_exists {
         return Err(ServerError(OpenConvError::NotFound));
@@ -395,6 +393,7 @@ pub async fn add_member(
     Ok(Json(build_response(row, members)))
 }
 
+#[utoipa::path(delete, path = "/api/dm-channels/{id}/members/me", tag = "DM Channels", security(("bearer_auth" = [])), params(("id" = openconv_shared::ids::DmChannelId, Path, description = "DM channel ID")), responses((status = 204), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// DELETE /api/dm-channels/:id/members/me
 /// Leave a group DM.
 pub async fn leave(
@@ -405,13 +404,11 @@ pub async fn leave(
     require_dm_membership(&state.db, id, auth.user_id).await?;
 
     // Use is_group column for definitive check
-    let is_group: bool = sqlx::query_scalar(
-        "SELECT is_group FROM dm_channels WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let is_group: bool = sqlx::query_scalar("SELECT is_group FROM dm_channels WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if !is_group {
         return Err(ServerError(OpenConvError::Validation(
@@ -427,13 +424,12 @@ pub async fn leave(
         .map_err(db_err)?;
 
     // If channel is now empty, clean it up
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM dm_channel_members WHERE dm_channel_id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(db_err)?;
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dm_channel_members WHERE dm_channel_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(db_err)?;
 
     if remaining == 0 {
         sqlx::query("DELETE FROM dm_channels WHERE id = $1")
@@ -446,6 +442,7 @@ pub async fn leave(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/api/dm-channels/{id}/messages", tag = "DM Channels", security(("bearer_auth" = [])), params(("id" = openconv_shared::ids::DmChannelId, Path, description = "DM channel ID"), crate::handlers::dm_channels::MessageQuery), responses((status = 200, body = crate::handlers::dm_channels::MessagePage), (status = 403, body = crate::error::ErrorResponse)))]
 /// GET /api/dm-channels/:id/messages
 /// Cursor-paginated message history for a DM channel.
 pub async fn messages(
@@ -456,7 +453,7 @@ pub async fn messages(
 ) -> Result<Json<MessagePage>, ServerError> {
     require_dm_membership(&state.db, id, auth.user_id).await?;
 
-    let limit = params.limit.unwrap_or(50).min(100).max(1) as i64;
+    let limit = params.limit.unwrap_or(50).clamp(1, 100) as i64;
 
     let rows = if let Some(ref cursor) = params.cursor {
         let decoded = base64_decode_cursor(cursor)?;
@@ -494,7 +491,8 @@ pub async fn messages(
     let msgs: Vec<MessageRow> = rows.into_iter().take(limit as usize).collect();
 
     let next_cursor = if has_more {
-        msgs.last().map(|m| base64_encode_cursor(m.created_at, m.id))
+        msgs.last()
+            .map(|m| base64_encode_cursor(m.created_at, m.id))
     } else {
         None
     };
@@ -533,20 +531,20 @@ struct MemberRow {
     user_id: UserId,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct MessageQuery {
     pub cursor: Option<String>,
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct MessagePage {
     pub messages: Vec<MessageResponse>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct MessageResponse {
     pub id: uuid::Uuid,
     pub dm_channel_id: Option<DmChannelId>,

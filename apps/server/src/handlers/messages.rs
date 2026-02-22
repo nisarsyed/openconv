@@ -49,6 +49,7 @@ fn decode_cursor(cursor: &str) -> Result<CursorData, ServerError> {
 
 // ─── Guild channel message history ─────────────────────────
 
+#[utoipa::path(get, path = "/api/channels/{channel_id}/messages", tag = "Messages", security(("bearer_auth" = [])), params(("channel_id" = openconv_shared::ids::ChannelId, Path, description = "Channel ID"), openconv_shared::api::message::MessageHistoryQuery), responses((status = 200, body = openconv_shared::api::message::MessageHistoryResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// GET /api/channels/:channel_id/messages
 /// Cursor-paginated message history for a guild channel.
 pub async fn guild_messages(
@@ -292,8 +293,7 @@ mod tests {
 
     #[test]
     fn cursor_with_bad_uuid_returns_error() {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode("12345|not-a-uuid");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("12345|not-a-uuid");
         assert!(decode_cursor(&encoded).is_err());
     }
 

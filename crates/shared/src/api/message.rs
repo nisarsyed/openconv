@@ -21,15 +21,19 @@ pub mod base64_serde {
 
 /// Request to send an encrypted message to a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct SendMessageRequest {
     #[serde(with = "base64_serde")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub encrypted_content: Vec<u8>,
     #[serde(with = "base64_serde")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub nonce: Vec<u8>,
 }
 
 /// Message details response with encrypted content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct MessageResponse {
     pub id: MessageId,
     pub channel_id: ChannelId,
@@ -37,8 +41,10 @@ pub struct MessageResponse {
     pub dm_channel_id: Option<DmChannelId>,
     pub sender_id: UserId,
     #[serde(with = "base64_serde")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub encrypted_content: Vec<u8>,
     #[serde(with = "base64_serde")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub nonce: Vec<u8>,
     pub edited_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -46,6 +52,7 @@ pub struct MessageResponse {
 
 /// Query parameters for cursor-based message history.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema, utoipa::IntoParams))]
 pub struct MessageHistoryQuery {
     pub cursor: Option<String>,
     pub limit: Option<u32>,
@@ -53,6 +60,7 @@ pub struct MessageHistoryQuery {
 
 /// Paginated message history response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct MessageHistoryResponse {
     pub messages: Vec<MessageResponse>,
     pub next_cursor: Option<String>,
@@ -137,10 +145,8 @@ mod tests {
 
         // Verify the JSON contains base64 strings, not raw bytes
         use base64::Engine;
-        let expected_content =
-            base64::engine::general_purpose::STANDARD.encode(&content);
-        let expected_nonce =
-            base64::engine::general_purpose::STANDARD.encode(&nonce);
+        let expected_content = base64::engine::general_purpose::STANDARD.encode(&content);
+        let expected_nonce = base64::engine::general_purpose::STANDARD.encode(&nonce);
         assert!(json_str.contains(&expected_content));
         assert!(json_str.contains(&expected_nonce));
     }

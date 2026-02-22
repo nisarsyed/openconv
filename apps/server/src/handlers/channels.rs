@@ -43,6 +43,7 @@ fn validate_channel_name(name: &str) -> Result<(), ServerError> {
     Ok(())
 }
 
+#[utoipa::path(post, path = "/api/guilds/{guild_id}/channels", tag = "Channels", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), request_body = openconv_shared::api::channel::CreateChannelRequest, responses((status = 201, body = openconv_shared::api::channel::ChannelResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Create a new channel in a guild.
 pub async fn create_channel(
     State(state): State<AppState>,
@@ -55,9 +56,10 @@ pub async fn create_channel(
     validate_channel_name(&body.name)?;
 
     if !ALLOWED_CHANNEL_TYPES.contains(&body.channel_type.as_str()) {
-        return Err(ServerError(OpenConvError::Validation(
-            format!("Invalid channel type. Allowed: {}", ALLOWED_CHANNEL_TYPES.join(", ")),
-        )));
+        return Err(ServerError(OpenConvError::Validation(format!(
+            "Invalid channel type. Allowed: {}",
+            ALLOWED_CHANNEL_TYPES.join(", ")
+        ))));
     }
 
     // Atomic INSERT with position calculation in a single statement
@@ -85,6 +87,7 @@ pub async fn create_channel(
     Ok((StatusCode::CREATED, Json(row.into_response())))
 }
 
+#[utoipa::path(get, path = "/api/guilds/{guild_id}/channels", tag = "Channels", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 200, body = Vec<openconv_shared::api::channel::ChannelResponse>)))]
 /// List all channels in a guild, ordered by position.
 pub async fn list_channels(
     State(state): State<AppState>,
@@ -103,6 +106,7 @@ pub async fn list_channels(
     Ok(Json(rows.into_iter().map(|r| r.into_response()).collect()))
 }
 
+#[utoipa::path(get, path = "/api/channels/{channel_id}", tag = "Channels", security(("bearer_auth" = [])), params(("channel_id" = openconv_shared::ids::ChannelId, Path, description = "Channel ID")), responses((status = 200, body = openconv_shared::api::channel::ChannelResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// Get a single channel by ID.
 pub async fn get_channel(
     State(state): State<AppState>,
@@ -122,6 +126,7 @@ pub async fn get_channel(
     Ok(Json(row.into_response()))
 }
 
+#[utoipa::path(patch, path = "/api/channels/{channel_id}", tag = "Channels", security(("bearer_auth" = [])), params(("channel_id" = openconv_shared::ids::ChannelId, Path, description = "Channel ID")), request_body = openconv_shared::api::channel::UpdateChannelRequest, responses((status = 200, body = openconv_shared::api::channel::ChannelResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Update a channel's name and/or topic.
 pub async fn update_channel(
     State(state): State<AppState>,
@@ -143,9 +148,9 @@ pub async fn update_channel(
 
     if let Some(ref topic) = body.topic {
         if topic.len() > MAX_TOPIC_LENGTH {
-            return Err(ServerError(OpenConvError::Validation(
-                format!("Topic must be at most {MAX_TOPIC_LENGTH} characters"),
-            )));
+            return Err(ServerError(OpenConvError::Validation(format!(
+                "Topic must be at most {MAX_TOPIC_LENGTH} characters"
+            ))));
         }
     }
 
@@ -193,6 +198,7 @@ pub async fn update_channel(
     Ok(Json(row.into_response()))
 }
 
+#[utoipa::path(delete, path = "/api/channels/{channel_id}", tag = "Channels", security(("bearer_auth" = [])), params(("channel_id" = openconv_shared::ids::ChannelId, Path, description = "Channel ID")), responses((status = 200), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Delete a channel. Cannot delete the last channel in a guild.
 /// Uses SELECT FOR UPDATE within a transaction for true atomicity.
 pub async fn delete_channel(
@@ -205,13 +211,12 @@ pub async fn delete_channel(
     let mut tx = state.db.begin().await.map_err(db_err)?;
 
     // Lock all channels in this guild to prevent concurrent deletes
-    let locked_ids: Vec<ChannelId> = sqlx::query_scalar(
-        "SELECT id FROM channels WHERE guild_id = $1 FOR UPDATE",
-    )
-    .bind(channel_member.guild_id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    let locked_ids: Vec<ChannelId> =
+        sqlx::query_scalar("SELECT id FROM channels WHERE guild_id = $1 FOR UPDATE")
+            .bind(channel_member.guild_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(db_err)?;
 
     if locked_ids.len() <= 1 {
         return Err(ServerError(OpenConvError::Validation(
@@ -230,6 +235,7 @@ pub async fn delete_channel(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(patch, path = "/api/guilds/{guild_id}/channels/reorder", tag = "Channels", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), request_body = openconv_shared::api::channel::ReorderChannelsRequest, responses((status = 204), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Reorder channels within a guild.
 pub async fn reorder_channels(
     State(state): State<AppState>,
@@ -258,14 +264,13 @@ pub async fn reorder_channels(
     let mut tx = state.db.begin().await.map_err(db_err)?;
 
     // Validate all channel_ids belong to this guild (inside transaction)
-    let valid_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM channels WHERE guild_id = $1 AND id = ANY($2)",
-    )
-    .bind(guild_id)
-    .bind(&channel_ids)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    let valid_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE guild_id = $1 AND id = ANY($2)")
+            .bind(guild_id)
+            .bind(&channel_ids)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
 
     if valid_count != channel_ids.len() as i64 {
         return Err(ServerError(OpenConvError::Validation(

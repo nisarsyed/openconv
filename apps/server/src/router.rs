@@ -4,9 +4,12 @@ use axum::middleware;
 use axum::routing::{delete, get, post};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+use utoipa_scalar::{Scalar, Servable};
 
 use crate::handlers;
 use crate::middleware::rate_limit::UserRateLimitLayer;
+use crate::openapi::ApiDoc;
 use crate::state::AppState;
 
 /// Builds the application router with all middleware and routes.
@@ -98,14 +101,13 @@ pub fn build_router(state: AppState) -> axum::Router {
     let role_routes = handlers::roles::routes();
     let member_routes = handlers::guilds::member_routes();
 
-    let invite_guild_routes =
-        handlers::invites::guild_routes().layer(UserRateLimitLayer::new(
-            state.redis.clone(),
-            state.jwt.clone(),
-            rl.invite_per_user_per_hour,
-            3600,
-            "invites".to_string(),
-        ));
+    let invite_guild_routes = handlers::invites::guild_routes().layer(UserRateLimitLayer::new(
+        state.redis.clone(),
+        state.jwt.clone(),
+        rl.invite_per_user_per_hour,
+        3600,
+        "invites".to_string(),
+    ));
 
     let invite_public_routes = handlers::invites::public_routes();
     let dm_routes = handlers::dm_channels::routes();
@@ -145,20 +147,15 @@ pub fn build_router(state: AppState) -> axum::Router {
         ));
 
     axum::Router::new()
+        .merge(Scalar::with_url("/docs", ApiDoc::openapi()))
         .route("/health/live", get(handlers::health::liveness))
         .route("/health/ready", get(handlers::health::readiness))
         .nest("/api/auth", auth_routes)
         .nest("/api/users", user_routes)
         .nest("/api/guilds", guild_routes)
         .nest("/api/guilds/{guild_id}/channels", channel_routes)
-        .nest(
-            "/api/channels/{channel_id}/messages",
-            message_routes,
-        )
-        .nest(
-            "/api/channels/{channel_id}/files",
-            guild_file_routes,
-        )
+        .nest("/api/channels/{channel_id}/messages", message_routes)
+        .nest("/api/channels/{channel_id}/files", guild_file_routes)
         .nest("/api/channels", channel_detail_routes)
         .nest("/api/guilds/{guild_id}/roles", role_routes)
         .nest("/api/guilds/{guild_id}/members", member_routes)

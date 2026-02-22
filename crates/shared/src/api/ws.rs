@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Presence status for a user connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum PresenceStatus {
     Online,
     Idle,
@@ -13,10 +14,15 @@ pub enum PresenceStatus {
 
 /// Messages sent from the client to the server over WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum ClientMessage {
-    Subscribe { channel_id: ChannelId },
-    Unsubscribe { channel_id: ChannelId },
+    Subscribe {
+        channel_id: ChannelId,
+    },
+    Unsubscribe {
+        channel_id: ChannelId,
+    },
     SendMessage {
         channel_id: ChannelId,
         #[serde(with = "base64_serde")]
@@ -36,14 +42,23 @@ pub enum ClientMessage {
         channel_id: ChannelId,
         message_id: MessageId,
     },
-    StartTyping { channel_id: ChannelId },
-    StopTyping { channel_id: ChannelId },
-    SetPresence { status: PresenceStatus },
-    Ping { ts: u64 },
+    StartTyping {
+        channel_id: ChannelId,
+    },
+    StopTyping {
+        channel_id: ChannelId,
+    },
+    SetPresence {
+        status: PresenceStatus,
+    },
+    Ping {
+        ts: u64,
+    },
 }
 
 /// Messages sent from the server to the client over WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum ServerMessage {
     Ready {
@@ -78,9 +93,16 @@ pub enum ServerMessage {
         guild_id: GuildId,
         user_id: UserId,
     },
-    Pong { ts: u64 },
-    Error { code: u32, message: String },
-    ReplayComplete { channel_id: ChannelId },
+    Pong {
+        ts: u64,
+    },
+    Error {
+        code: u32,
+        message: String,
+    },
+    ReplayComplete {
+        channel_id: ChannelId,
+    },
 }
 
 /// WebSocket error codes.

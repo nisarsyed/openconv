@@ -8,7 +8,7 @@ name = "openconv-server"
 path = "src/main.rs"
 
 [dependencies]
-openconv-shared = { path = "../../crates/shared", features = ["sqlx"] }
+openconv-shared = { path = "../../crates/shared", features = ["sqlx", "utoipa"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -36,7 +36,10 @@ object_store = { workspace = true }
 axum-extra = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
+utoipa = { workspace = true }
+utoipa-scalar = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+reqwest = { workspace = true }

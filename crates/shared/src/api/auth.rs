@@ -20,6 +20,7 @@ pub struct RegisterRequest {
 
 /// POST /api/auth/register/start
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RegisterStartRequest {
     pub email: String,
     pub display_name: String,
@@ -27,12 +28,14 @@ pub struct RegisterStartRequest {
 
 /// Response for register/start (always the same, privacy-first).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RegisterStartResponse {
     pub message: String,
 }
 
 /// POST /api/auth/register/verify
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RegisterVerifyRequest {
     pub email: String,
     pub code: String,
@@ -40,12 +43,14 @@ pub struct RegisterVerifyRequest {
 
 /// Response for register/verify (contains registration token).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RegisterVerifyResponse {
     pub registration_token: String,
 }
 
 /// POST /api/auth/register/complete
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RegisterCompleteRequest {
     pub registration_token: String,
     pub public_key: String,
@@ -57,6 +62,7 @@ pub struct RegisterCompleteRequest {
 
 /// Registration response with user ID, tokens, and device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RegisterResponse {
     pub user_id: UserId,
     pub access_token: String,
@@ -70,18 +76,21 @@ pub struct RegisterResponse {
 
 /// Login challenge request with public key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LoginChallengeRequest {
     pub public_key: String,
 }
 
 /// Login challenge response containing the challenge to sign.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LoginChallengeResponse {
     pub challenge: String,
 }
 
 /// Login verification request with public key, signed challenge, and device info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LoginVerifyRequest {
     pub public_key: String,
     pub signature: String,
@@ -91,6 +100,7 @@ pub struct LoginVerifyRequest {
 
 /// Login verification response with tokens and identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LoginVerifyResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -104,12 +114,14 @@ pub struct LoginVerifyResponse {
 
 /// POST /api/auth/refresh
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
 /// Response for token refresh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RefreshResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -121,18 +133,21 @@ pub struct RefreshResponse {
 
 /// POST /api/auth/recover/start
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecoverStartRequest {
     pub email: String,
 }
 
 /// Response for recover/start (always the same, privacy-first).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecoverStartResponse {
     pub message: String,
 }
 
 /// POST /api/auth/recover/verify
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecoverVerifyRequest {
     pub email: String,
     pub code: String,
@@ -140,12 +155,14 @@ pub struct RecoverVerifyRequest {
 
 /// Response for recover/verify (contains recovery token).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecoverVerifyResponse {
     pub recovery_token: String,
 }
 
 /// POST /api/auth/recover/complete
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecoverCompleteRequest {
     pub recovery_token: String,
     pub new_public_key: String,
@@ -157,6 +174,7 @@ pub struct RecoverCompleteRequest {
 
 /// Response for recover/complete.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RecoverCompleteResponse {
     pub user_id: UserId,
     pub access_token: String,
@@ -170,6 +188,7 @@ pub struct RecoverCompleteResponse {
 
 /// A device record returned in device listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeviceInfo {
     pub id: DeviceId,
     pub device_name: String,
@@ -179,6 +198,7 @@ pub struct DeviceInfo {
 
 /// Response body for GET /api/auth/devices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DevicesListResponse {
     pub devices: Vec<DeviceInfo>,
 }

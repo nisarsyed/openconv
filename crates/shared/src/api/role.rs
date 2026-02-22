@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Request to create a new custom role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateRoleRequest {
     pub name: String,
     pub permissions: u64,
@@ -11,6 +12,7 @@ pub struct CreateRoleRequest {
 
 /// Request to update an existing role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct UpdateRoleRequest {
     pub name: Option<String>,
     pub permissions: Option<u64>,
@@ -19,6 +21,7 @@ pub struct UpdateRoleRequest {
 
 /// Role details response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RoleResponse {
     pub id: RoleId,
     pub guild_id: GuildId,

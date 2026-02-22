@@ -3,6 +3,12 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use openconv_shared::error::OpenConvError;
 
+/// Error response body for OpenAPI documentation.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
 /// Newtype wrapper for `OpenConvError` that implements `IntoResponse`.
 ///
 /// Needed because of the orphan rule — neither the trait (`IntoResponse`)
@@ -25,9 +31,7 @@ impl IntoResponse for ServerError {
             OpenConvError::ServiceUnavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, self.0.to_string())
             }
-            OpenConvError::PayloadTooLarge(msg) => {
-                (StatusCode::PAYLOAD_TOO_LARGE, msg.clone())
-            }
+            OpenConvError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }

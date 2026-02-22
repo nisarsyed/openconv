@@ -28,6 +28,7 @@ async fn fetch_guild_owner(db: &sqlx::PgPool, guild_id: GuildId) -> Result<UserI
         .ok_or(ServerError(OpenConvError::NotFound))
 }
 
+#[utoipa::path(post, path = "/api/guilds", tag = "Guilds", security(("bearer_auth" = [])), request_body = openconv_shared::api::guild::CreateGuildRequest, responses((status = 201, body = openconv_shared::api::guild::GuildResponse), (status = 400, body = crate::error::ErrorResponse)))]
 /// Create a new guild. Auth only -- no guild membership required.
 pub async fn create_guild(
     auth: AuthUser,
@@ -59,9 +60,10 @@ pub async fn create_guild(
         | Permissions::MENTION_EVERYONE
         | Permissions::MANAGE_MESSAGES)
         .bits() as i64;
-    let member_perms =
-        (Permissions::SEND_MESSAGES | Permissions::READ_MESSAGES | Permissions::ATTACH_FILES)
-            .bits() as i64;
+    let member_perms = (Permissions::SEND_MESSAGES
+        | Permissions::READ_MESSAGES
+        | Permissions::ATTACH_FILES)
+        .bits() as i64;
 
     let mut tx = state.db.begin().await.map_err(db_err)?;
 
@@ -104,15 +106,13 @@ pub async fn create_guild(
         .map_err(db_err)?;
 
     // 4. Assign owner role to creator
-    sqlx::query(
-        "INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)",
-    )
-    .bind(auth.user_id)
-    .bind(guild_id)
-    .bind(owner_role_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
+        .bind(auth.user_id)
+        .bind(guild_id)
+        .bind(owner_role_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
 
     // 5. Insert #main channel
     sqlx::query("INSERT INTO channels (id, guild_id, name, position) VALUES ($1, $2, 'main', 0)")
@@ -137,6 +137,7 @@ pub async fn create_guild(
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
+#[utoipa::path(get, path = "/api/guilds", tag = "Guilds", security(("bearer_auth" = [])), responses((status = 200, body = openconv_shared::api::guild::GuildListResponse)))]
 /// List guilds where the authenticated user is a member.
 pub async fn list_guilds(
     auth: AuthUser,
@@ -169,6 +170,7 @@ pub async fn list_guilds(
     Ok(Json(GuildListResponse { guilds }))
 }
 
+#[utoipa::path(get, path = "/api/guilds/{guild_id}", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 200, body = openconv_shared::api::guild::GuildResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// Get a single guild's details. Requires guild membership (GuildMember extractor).
 pub async fn get_guild(
     member: GuildMember,
@@ -196,6 +198,7 @@ pub async fn get_guild(
     }))
 }
 
+#[utoipa::path(patch, path = "/api/guilds/{guild_id}", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), request_body = openconv_shared::api::guild::UpdateGuildRequest, responses((status = 200, body = openconv_shared::api::guild::GuildResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Update guild name/icon. Requires MANAGE_GUILD permission.
 pub async fn update_guild(
     member: GuildMember,
@@ -262,6 +265,7 @@ pub async fn update_guild(
     }))
 }
 
+#[utoipa::path(delete, path = "/api/guilds/{guild_id}", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 204), (status = 403, body = crate::error::ErrorResponse)))]
 /// Soft-delete a guild. Only the guild owner can do this.
 /// Uses atomic owner check + update in a single query to avoid race conditions.
 pub async fn delete_guild(
@@ -291,6 +295,7 @@ pub async fn delete_guild(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(post, path = "/api/guilds/{guild_id}/restore", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 200, body = openconv_shared::api::guild::GuildResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Restore a soft-deleted guild within the 7-day window. Owner only.
 ///
 /// NOTE: The GuildMember extractor does NOT filter by `deleted_at IS NULL` on the guilds table.
@@ -337,6 +342,7 @@ pub async fn restore_guild(
     }
 }
 
+#[utoipa::path(delete, path = "/api/guilds/{guild_id}/members/me", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 204), (status = 400, body = crate::error::ErrorResponse)))]
 /// Leave a guild. Owner cannot leave.
 pub async fn leave_guild(
     member: GuildMember,
@@ -360,6 +366,7 @@ pub async fn leave_guild(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(delete, path = "/api/guilds/{guild_id}/members/{user_id}", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID"), ("user_id" = openconv_shared::ids::UserId, Path, description = "User to kick")), responses((status = 204), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// Kick a member from the guild. Requires KICK_MEMBERS and hierarchy check.
 pub async fn kick_member(
     member: GuildMember,
@@ -433,6 +440,7 @@ pub async fn kick_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/api/guilds/{guild_id}/members", tag = "Guilds", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 200, body = Vec<openconv_shared::api::guild::GuildMemberResponse>)))]
 /// List guild members with their roles.
 pub async fn list_members(
     member: GuildMember,

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// - For 1:1 DMs: provide a single user_id in `user_ids`
 /// - For group DMs: provide 2+ user_ids (up to 24, since the creator is added automatically)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateDmChannelRequest {
     pub user_ids: Vec<UserId>,
     pub name: Option<String>,
@@ -13,6 +14,7 @@ pub struct CreateDmChannelRequest {
 
 /// Response for a DM channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DmChannelResponse {
     pub id: DmChannelId,
     pub name: Option<String>,
@@ -24,6 +26,7 @@ pub struct DmChannelResponse {
 
 /// Request to add a member to a group DM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AddDmMemberRequest {
     pub user_id: UserId,
 }

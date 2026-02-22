@@ -16,6 +16,20 @@ use crate::extractors::auth::AuthUser;
 use crate::extractors::channel_member::ChannelMember;
 use crate::state::AppState;
 
+/// Doc-only schema describing the multipart upload body.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub struct FileUploadBody {
+    /// The encrypted file bytes.
+    file: Vec<u8>,
+    /// Original filename.
+    file_name: String,
+    /// MIME type (e.g. "application/octet-stream").
+    mime_type: String,
+    /// Encrypted blob key for client-side decryption.
+    encrypted_blob_key: String,
+}
+
 const MAX_FILE_NAME_LEN: usize = 255;
 const MAX_MIME_TYPE_LEN: usize = 127;
 const MAX_ENCRYPTED_BLOB_KEY_LEN: usize = 4096;
@@ -205,10 +219,7 @@ async fn store_and_insert(
 }
 
 /// Pre-check Content-Length header to reject obviously oversized uploads early.
-fn check_content_length(
-    headers: &axum::http::HeaderMap,
-    max_size: u64,
-) -> Result<(), ServerError> {
+fn check_content_length(headers: &axum::http::HeaderMap, max_size: u64) -> Result<(), ServerError> {
     if let Some(content_length) = headers.get(header::CONTENT_LENGTH) {
         if let Ok(len_str) = content_length.to_str() {
             if let Ok(len) = len_str.parse::<u64>() {
@@ -231,6 +242,7 @@ fn payload_too_large(max_size: u64) -> ServerError {
 
 // ─── Upload ─────────────────────────────────────────────────
 
+#[utoipa::path(post, path = "/api/channels/{channel_id}/files", tag = "Files", security(("bearer_auth" = [])), params(("channel_id" = openconv_shared::ids::ChannelId, Path, description = "Channel ID")), request_body(content = crate::handlers::files::FileUploadBody, content_type = "multipart/form-data"), responses((status = 201, body = openconv_shared::api::file::FileResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse), (status = 413, body = crate::error::ErrorResponse)))]
 /// POST /api/channels/:channel_id/files
 /// Upload an encrypted file to a guild channel.
 pub async fn upload(
@@ -257,6 +269,7 @@ pub async fn upload(
     store_and_insert(&state, channel_member.user_id, &storage_path, parsed).await
 }
 
+#[utoipa::path(post, path = "/api/dm-channels/{dm_channel_id}/files", tag = "Files", security(("bearer_auth" = [])), params(("dm_channel_id" = openconv_shared::ids::DmChannelId, Path, description = "DM channel ID")), request_body(content = crate::handlers::files::FileUploadBody, content_type = "multipart/form-data"), responses((status = 201, body = openconv_shared::api::file::FileResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse), (status = 413, body = crate::error::ErrorResponse)))]
 /// POST /api/dm-channels/:dm_channel_id/files
 /// Upload an encrypted file to a DM channel.
 pub async fn upload_dm(
@@ -295,6 +308,7 @@ pub async fn upload_dm(
 
 // ─── Download ───────────────────────────────────────────────
 
+#[utoipa::path(get, path = "/api/files/{file_id}", tag = "Files", security(("bearer_auth" = [])), params(("file_id" = openconv_shared::ids::FileId, Path, description = "File ID")), responses((status = 200, description = "File bytes", content_type = "application/octet-stream"), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// GET /api/files/:file_id
 /// Download an encrypted file.
 pub async fn download(
@@ -343,6 +357,7 @@ pub async fn download(
 
 // ─── Metadata ───────────────────────────────────────────────
 
+#[utoipa::path(get, path = "/api/files/{file_id}/meta", tag = "Files", security(("bearer_auth" = [])), params(("file_id" = openconv_shared::ids::FileId, Path, description = "File ID")), responses((status = 200, body = openconv_shared::api::file::FileMetaResponse), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// GET /api/files/:file_id/meta
 /// Get file metadata without downloading.
 pub async fn meta(

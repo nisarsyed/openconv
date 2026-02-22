@@ -12,12 +12,12 @@ use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 use crate::ws::connection::handle_connection;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 pub struct WsQueryParams {
     pub ticket: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TicketResponse {
     pub ticket: String,
 }
@@ -28,6 +28,7 @@ struct TicketData {
     device_id: DeviceId,
 }
 
+#[utoipa::path(post, path = "/api/ws/ticket", tag = "WebSocket", security(("bearer_auth" = [])), responses((status = 200, body = TicketResponse), (status = 401, body = crate::error::ErrorResponse)))]
 /// POST /api/ws/ticket -- Issue a single-use WebSocket ticket.
 pub async fn create_ws_ticket(
     auth: AuthUser,
@@ -46,13 +47,7 @@ pub async fn create_ws_ticket(
 
     state
         .redis
-        .set::<(), _, _>(
-            &key,
-            value.as_str(),
-            Some(Expiration::EX(30)),
-            None,
-            false,
-        )
+        .set::<(), _, _>(&key, value.as_str(), Some(Expiration::EX(30)), None, false)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to store ws ticket in redis");
@@ -62,6 +57,7 @@ pub async fn create_ws_ticket(
     Ok(Json(TicketResponse { ticket: ticket_id }))
 }
 
+#[utoipa::path(get, path = "/ws", tag = "WebSocket", params(WsQueryParams), responses((status = 101, description = "WebSocket upgrade"), (status = 401, body = crate::error::ErrorResponse)))]
 /// GET /ws?ticket=<uuid> -- Upgrade to WebSocket.
 pub async fn ws_upgrade(
     State(state): State<AppState>,

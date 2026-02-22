@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 
 /// Request to create a new guild.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateGuildRequest {
     pub name: String,
 }
 
 /// Request to update guild properties.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct UpdateGuildRequest {
     pub name: Option<String>,
     pub icon_url: Option<String>,
@@ -16,6 +18,7 @@ pub struct UpdateGuildRequest {
 
 /// Guild details response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct GuildResponse {
     pub id: GuildId,
     pub name: String,
@@ -28,12 +31,14 @@ pub struct GuildResponse {
 
 /// List of guilds response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct GuildListResponse {
     pub guilds: Vec<GuildResponse>,
 }
 
 /// Response for a guild member with role information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct GuildMemberResponse {
     pub user_id: UserId,
     pub display_name: String,
@@ -43,6 +48,7 @@ pub struct GuildMemberResponse {
 
 /// Minimal role info included in member listings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RoleSummary {
     pub id: RoleId,
     pub name: String,

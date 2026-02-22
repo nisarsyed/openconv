@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Response returned after a successful file upload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct FileResponse {
     pub id: FileId,
     pub file_name: String,
@@ -13,6 +14,7 @@ pub struct FileResponse {
 
 /// Response for file metadata queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct FileMetaResponse {
     pub id: FileId,
     pub file_name: String,

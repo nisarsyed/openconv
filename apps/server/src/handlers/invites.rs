@@ -26,6 +26,7 @@ fn generate_invite_code() -> String {
         .collect()
 }
 
+#[utoipa::path(post, path = "/api/guilds/{guild_id}/invites", tag = "Invites", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), request_body = openconv_shared::api::invite::CreateInviteRequest, responses((status = 201, body = openconv_shared::api::invite::InviteResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// POST /api/guilds/:guild_id/invites
 /// Requires MANAGE_INVITES permission.
 pub async fn create_invite(
@@ -72,6 +73,7 @@ pub async fn create_invite(
     )))
 }
 
+#[utoipa::path(get, path = "/api/guilds/{guild_id}/invites", tag = "Invites", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 200, body = Vec<openconv_shared::api::invite::InviteResponse>), (status = 403, body = crate::error::ErrorResponse)))]
 /// GET /api/guilds/:guild_id/invites
 /// Requires MANAGE_INVITES permission.
 pub async fn list_invites(
@@ -93,6 +95,7 @@ pub async fn list_invites(
     Ok(Json(rows.into_iter().map(|r| r.into_response()).collect()))
 }
 
+#[utoipa::path(delete, path = "/api/guilds/{guild_id}/invites/{code}", tag = "Invites", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID"), ("code" = String, Path, description = "Invite code")), responses((status = 204), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// DELETE /api/guilds/:guild_id/invites/:code
 /// Requires MANAGE_INVITES permission.
 pub async fn revoke_invite(
@@ -102,14 +105,12 @@ pub async fn revoke_invite(
 ) -> Result<StatusCode, ServerError> {
     guild_member.require(Permissions::MANAGE_INVITES)?;
 
-    let result = sqlx::query(
-        "DELETE FROM guild_invites WHERE code = $1 AND guild_id = $2",
-    )
-    .bind(&code)
-    .bind(guild_id)
-    .execute(&state.db)
-    .await
-    .map_err(db_err)?;
+    let result = sqlx::query("DELETE FROM guild_invites WHERE code = $1 AND guild_id = $2")
+        .bind(&code)
+        .bind(guild_id)
+        .execute(&state.db)
+        .await
+        .map_err(db_err)?;
 
     if result.rows_affected() == 0 {
         return Err(ServerError(OpenConvError::NotFound));
@@ -118,6 +119,7 @@ pub async fn revoke_invite(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/api/invites/{code}", tag = "Invites", security(("bearer_auth" = [])), params(("code" = String, Path, description = "Invite code")), responses((status = 200, body = openconv_shared::api::invite::InviteInfoResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// GET /api/invites/:code
 /// Auth only -- any authenticated user can look up an invite.
 pub async fn get_invite_info(
@@ -154,6 +156,7 @@ pub async fn get_invite_info(
     }))
 }
 
+#[utoipa::path(post, path = "/api/invites/{code}/accept", tag = "Invites", security(("bearer_auth" = [])), params(("code" = String, Path, description = "Invite code")), responses((status = 200), (status = 400, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse), (status = 409, body = crate::error::ErrorResponse)))]
 /// POST /api/invites/:code/accept
 /// Auth only -- any authenticated user can accept an invite.
 pub async fn accept_invite(
@@ -181,13 +184,12 @@ pub async fn accept_invite(
         Some(inv) => inv,
         None => {
             // Distinguish: does the invite exist at all?
-            let exists: Option<bool> = sqlx::query_scalar(
-                "SELECT true FROM guild_invites WHERE code = $1",
-            )
-            .bind(&code)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?;
+            let exists: Option<bool> =
+                sqlx::query_scalar("SELECT true FROM guild_invites WHERE code = $1")
+                    .bind(&code)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
 
             return if exists.is_some() {
                 Err(ServerError(OpenConvError::Validation(
@@ -200,24 +202,21 @@ pub async fn accept_invite(
     };
 
     // Step 2: Verify guild is not soft-deleted
-    sqlx::query_scalar::<_, GuildId>(
-        "SELECT id FROM guilds WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(invite.guild_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(db_err)?
-    .ok_or(ServerError(OpenConvError::NotFound))?;
+    sqlx::query_scalar::<_, GuildId>("SELECT id FROM guilds WHERE id = $1 AND deleted_at IS NULL")
+        .bind(invite.guild_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .ok_or(ServerError(OpenConvError::NotFound))?;
 
     // Step 3: Check existing membership
-    let existing: Option<bool> = sqlx::query_scalar(
-        "SELECT true FROM guild_members WHERE user_id = $1 AND guild_id = $2",
-    )
-    .bind(auth.user_id)
-    .bind(invite.guild_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    let existing: Option<bool> =
+        sqlx::query_scalar("SELECT true FROM guild_members WHERE user_id = $1 AND guild_id = $2")
+            .bind(auth.user_id)
+            .bind(invite.guild_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
 
     if existing.is_some() {
         return Err(ServerError(OpenConvError::Conflict(
@@ -226,33 +225,28 @@ pub async fn accept_invite(
     }
 
     // Step 4a: Add user to guild_members
-    sqlx::query(
-        "INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)",
-    )
-    .bind(auth.user_id)
-    .bind(invite.guild_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
+        .bind(auth.user_id)
+        .bind(invite.guild_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
 
     // Step 4b: Find the default 'member' role and assign it
-    let member_role_id: openconv_shared::ids::RoleId = sqlx::query_scalar(
-        "SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'",
-    )
-    .bind(invite.guild_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    let member_role_id: openconv_shared::ids::RoleId =
+        sqlx::query_scalar("SELECT id FROM roles WHERE guild_id = $1 AND role_type = 'member'")
+            .bind(invite.guild_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
 
-    sqlx::query(
-        "INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)",
-    )
-    .bind(auth.user_id)
-    .bind(invite.guild_id)
-    .bind(member_role_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
+        .bind(auth.user_id)
+        .bind(invite.guild_id)
+        .bind(member_role_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
 
     tx.commit().await.map_err(db_err)?;
 

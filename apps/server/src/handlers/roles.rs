@@ -48,12 +48,11 @@ async fn is_guild_owner(
     user_id: UserId,
     guild_id: GuildId,
 ) -> Result<bool, ServerError> {
-    let owner_id: Option<UserId> =
-        sqlx::query_scalar("SELECT owner_id FROM guilds WHERE id = $1")
-            .bind(guild_id)
-            .fetch_optional(db)
-            .await
-            .map_err(db_err)?;
+    let owner_id: Option<UserId> = sqlx::query_scalar("SELECT owner_id FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .fetch_optional(db)
+        .await
+        .map_err(db_err)?;
     Ok(owner_id == Some(user_id))
 }
 
@@ -88,6 +87,7 @@ fn check_privilege_escalation(
     Ok(())
 }
 
+#[utoipa::path(post, path = "/api/guilds/{guild_id}/roles", tag = "Roles", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), request_body = openconv_shared::api::role::CreateRoleRequest, responses((status = 201, body = openconv_shared::api::role::RoleResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Create a new custom role in the guild.
 pub async fn create_role(
     State(state): State<AppState>,
@@ -162,6 +162,7 @@ pub async fn create_role(
     Ok((StatusCode::CREATED, Json(row.into_response())))
 }
 
+#[utoipa::path(get, path = "/api/guilds/{guild_id}/roles", tag = "Roles", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID")), responses((status = 200, body = Vec<openconv_shared::api::role::RoleResponse>)))]
 /// List all roles in the guild, ordered by position ascending.
 pub async fn list_roles(
     State(state): State<AppState>,
@@ -180,6 +181,7 @@ pub async fn list_roles(
     Ok(Json(rows.into_iter().map(|r| r.into_response()).collect()))
 }
 
+#[utoipa::path(patch, path = "/api/guilds/{guild_id}/roles/{role_id}", tag = "Roles", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID"), ("role_id" = openconv_shared::ids::RoleId, Path, description = "Role ID")), request_body = openconv_shared::api::role::UpdateRoleRequest, responses((status = 200, body = openconv_shared::api::role::RoleResponse), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Update a role's name, permissions, and/or position.
 pub async fn update_role(
     State(state): State<AppState>,
@@ -288,6 +290,7 @@ pub async fn update_role(
     Ok(Json(row.into_response()))
 }
 
+#[utoipa::path(delete, path = "/api/guilds/{guild_id}/roles/{role_id}", tag = "Roles", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID"), ("role_id" = openconv_shared::ids::RoleId, Path, description = "Role ID")), responses((status = 204), (status = 400, body = crate::error::ErrorResponse), (status = 403, body = crate::error::ErrorResponse)))]
 /// Delete a custom role. Built-in roles cannot be deleted.
 pub async fn delete_role(
     State(state): State<AppState>,
@@ -329,6 +332,7 @@ pub async fn delete_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(put, path = "/api/guilds/{guild_id}/members/{user_id}/roles/{role_id}", tag = "Roles", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID"), ("user_id" = openconv_shared::ids::UserId, Path, description = "User ID"), ("role_id" = openconv_shared::ids::RoleId, Path, description = "Role ID")), responses((status = 204), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// Assign a role to a guild member.
 pub async fn assign_role(
     State(state): State<AppState>,
@@ -382,6 +386,7 @@ pub async fn assign_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(delete, path = "/api/guilds/{guild_id}/members/{user_id}/roles/{role_id}", tag = "Roles", security(("bearer_auth" = [])), params(("guild_id" = openconv_shared::ids::GuildId, Path, description = "Guild ID"), ("user_id" = openconv_shared::ids::UserId, Path, description = "User ID"), ("role_id" = openconv_shared::ids::RoleId, Path, description = "Role ID")), responses((status = 204), (status = 403, body = crate::error::ErrorResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// Remove a role from a guild member.
 pub async fn remove_role(
     State(state): State<AppState>,
