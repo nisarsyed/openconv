@@ -4019,6 +4019,7 @@ dependencies = [
  "tauri-plugin-decorum",
  "tauri-plugin-os",
  "tauri-specta",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

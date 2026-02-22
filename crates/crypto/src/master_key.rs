@@ -129,9 +129,20 @@ pub fn generate_salt() -> [u8; 16] {
 
 /// Derive a database encryption key from a master key via HKDF-SHA256.
 pub fn derive_db_encryption_key(master_key: &MasterKey) -> Result<DbEncryptionKey, CryptoError> {
+    derive_db_encryption_key_with_info(master_key, DB_KEY_INFO)
+}
+
+/// Derive a database encryption key with a custom HKDF info string.
+///
+/// This allows multiple databases to derive independent encryption keys from
+/// the same master key by using different info strings.
+pub fn derive_db_encryption_key_with_info(
+    master_key: &MasterKey,
+    info: &[u8],
+) -> Result<DbEncryptionKey, CryptoError> {
     let hk = Hkdf::<Sha256>::new(None, master_key.as_bytes());
     let mut okm = [0u8; 32];
-    hk.expand(DB_KEY_INFO, &mut okm)
+    hk.expand(info, &mut okm)
         .map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
 
     let mut hex_str = hex_encode(&okm);

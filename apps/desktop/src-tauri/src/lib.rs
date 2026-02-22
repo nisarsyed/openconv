@@ -1,4 +1,5 @@
 pub(crate) mod auth_service;
+pub(crate) mod cache;
 pub(crate) mod commands;
 pub(crate) mod db;
 
@@ -97,6 +98,23 @@ pub fn run() {
             let conn =
                 db::init_db(&db_path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(DbState::new(conn));
+
+            // Initialize the encrypted local cache database
+            let cache_db = cache::CacheDb::open(&app_data_dir)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+            // Migrate data from old unencrypted database if present
+            let old_db_path = app_data_dir.join("openconv.db");
+            if old_db_path.exists() {
+                let cache_conn = cache_db
+                    .lock()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+                if let Err(e) = cache::migrations::migrate_from_old_db(&cache_conn, &old_db_path) {
+                    tracing::warn!("Failed to migrate old database: {e}");
+                }
+            }
+
+            app.manage(cache_db);
 
             let crypto_db_path = app_data_dir.join("crypto.db");
             let api_base_url = std::env::var("OPENCONV_API_URL")
