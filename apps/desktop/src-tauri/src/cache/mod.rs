@@ -1,4 +1,5 @@
 pub mod dm_channels;
+pub mod files;
 pub mod messages;
 pub mod migrations;
 pub mod queue;

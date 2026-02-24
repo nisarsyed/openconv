@@ -84,6 +84,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::sync::redecrypt_message,
         commands::sync::retry_queued_message,
         commands::sync::discard_queued_message,
+        commands::files::send_file,
+        commands::files::send_dm_file,
+        commands::files::download_file,
+        commands::files::generate_thumbnail,
     ])
 }
 
@@ -106,12 +110,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_decorum::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
 
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
+            std::fs::create_dir_all(app_data_dir.join("attachments"))?;
+            std::fs::create_dir_all(app_data_dir.join("thumbnails"))?;
 
             let db_path = app_data_dir.join("openconv.db");
             let conn =

@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import type { FileAttachment as FileAttachmentType } from "../../types";
 import { useAppStore } from "../../store";
 
@@ -18,24 +19,35 @@ const IMAGE_TYPES = new Set([
   "image/webp",
 ]);
 
+function resolveImageSrc(attachment: FileAttachmentType): string {
+  if (attachment.thumbnailLocalPath) return convertFileSrc(attachment.thumbnailLocalPath);
+  if (attachment.localPath) return convertFileSrc(attachment.localPath);
+  return attachment.thumbnailUrl ?? attachment.url;
+}
+
+function resolveFullSrc(attachment: FileAttachmentType): string {
+  if (attachment.localPath) return convertFileSrc(attachment.localPath);
+  return attachment.url;
+}
+
 export function FileAttachment({ attachment }: FileAttachmentProps) {
   const openModal = useAppStore((s) => s.openModal);
   const isImage = IMAGE_TYPES.has(attachment.mimeType);
 
   if (isImage) {
+    const thumbSrc = resolveImageSrc(attachment);
+    const fullSrc = resolveFullSrc(attachment);
+
     return (
       <button
         className="mt-1.5 block max-w-[300px] cursor-pointer overflow-hidden rounded-lg border border-[var(--border-subtle)]"
-        onClick={() =>
-          openModal("imageViewer", {
-            imageUrl: attachment.thumbnailUrl ?? attachment.url,
-          })
-        }
+        onClick={() => openModal("imageViewer", { imageUrl: fullSrc })}
       >
         <img
-          src={attachment.thumbnailUrl ?? attachment.url}
+          src={thumbSrc}
           alt={attachment.fileName}
           className="max-h-[300px] w-auto rounded-lg object-cover"
+          loading="lazy"
         />
       </button>
     );
@@ -59,7 +71,7 @@ export function FileAttachment({ attachment }: FileAttachmentProps) {
         </div>
       </div>
       <a
-        href={attachment.url}
+        href={attachment.localPath ? convertFileSrc(attachment.localPath) : attachment.url}
         download={attachment.fileName}
         className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)]"
         aria-label={`Download ${attachment.fileName}`}

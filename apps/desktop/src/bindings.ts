@@ -262,6 +262,104 @@ async sendDmMessage(dmChannelId: string, plaintext: string) : Promise<Result<str
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Manually trigger sync for all inactive channels.
+ * Fetches events via REST for channels not currently subscribed via WebSocket.
+ */
+async syncInactiveChannels() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_inactive_channels") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Re-decrypt a single message on demand (e.g., when scrolled into view).
+ * Returns the decrypted plaintext on success, or an error on failure.
+ */
+async redecryptMessage(messageId: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("redecrypt_message", { messageId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Retry sending a failed queued message.
+ * Resets the message status back to pending so the queue processor will pick it up.
+ */
+async retryQueuedMessage(messageId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_queued_message", { messageId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a failed queued message (user chose to discard it).
+ * Removes from queue and marks the message as failed in the messages table.
+ */
+async discardQueuedMessage(messageId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("discard_queued_message", { messageId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send an encrypted file attachment to a channel.
+ */
+async sendFile(channelId: string, filePath: string) : Promise<Result<FileMetadata, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_file", { channelId, filePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send an encrypted file attachment to a DM channel.
+ */
+async sendDmFile(dmChannelId: string, filePath: string) : Promise<Result<FileMetadata, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_dm_file", { dmChannelId, filePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Download and decrypt a file attachment.
+ * 
+ * 1. Download encrypted blob from server
+ * 2. Decrypt blob with file key via CryptoService::decrypt_file
+ * 3. Store decrypted file in $APPDATA/attachments/
+ * 4. Generate thumbnail for images
+ * 5. Update cache and emit event
+ */
+async downloadFile(fileId: string, fileName: string, fileKeyBase64: string, mimeType: string) : Promise<Result<FileMetadata, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_file", { fileId, fileName, fileKeyBase64, mimeType }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Generate a JPEG thumbnail for an image file.
+ */
+async generateThumbnail(fileId: string, sourcePath: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_thumbnail", { fileId, sourcePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -282,6 +380,10 @@ export type AuthResult = { user_id: string; public_key: string; device_id: strin
  * DM channel info returned to the frontend.
  */
 export type DmChannelInfo = { id: string; participantIds: string[]; lastMessagePreview: string | null; lastMessageAt: string | null; unreadCount: number }
+/**
+ * File metadata returned to the frontend after a successful send or download.
+ */
+export type FileMetadata = { fileId: string; fileName: string; fileSize: number; mimeType: string; localPath: string | null; thumbnailPath: string | null }
 /**
  * All possible states of the WebSocket connection.
  * Stored in Arc<RwLock<WsConnectionState>> as Tauri managed state.

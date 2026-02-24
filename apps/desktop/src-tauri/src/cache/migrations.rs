@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
+const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
 
 const MIGRATION_001: &str = "
 CREATE TABLE messages (
@@ -125,6 +125,10 @@ CREATE TABLE dm_channel_cache (
 );
 
 CREATE INDEX idx_dm_channel_last_message ON dm_channel_cache (last_message_at DESC);
+";
+
+const MIGRATION_003: &str = "
+ALTER TABLE cached_files ADD COLUMN thumbnail_path TEXT;
 ";
 
 pub fn run_cache_migrations(conn: &Connection) -> Result<(), AppError> {

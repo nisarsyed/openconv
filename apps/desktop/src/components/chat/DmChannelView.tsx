@@ -13,13 +13,18 @@ export function DmChannelView() {
   const { typingNames, onKeyPress } = useTypingIndicator(dmChannelId ?? "");
 
   const handleSend = useCallback(
-    async (content: string, _files: File[]) => {
+    async (content: string, filePaths: string[]) => {
       if (!dmChannelId) return;
       try {
-        await invoke("send_dm_message", {
-          dmChannelId,
-          plaintext: content,
-        });
+        for (const filePath of filePaths) {
+          await invoke("send_dm_file", { dmChannelId, filePath });
+        }
+        if (content) {
+          await invoke("send_dm_message", {
+            dmChannelId,
+            plaintext: content,
+          });
+        }
       } catch {
         // Send failure - backend handles optimistic updates
       }

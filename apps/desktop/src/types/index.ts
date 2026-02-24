@@ -24,6 +24,8 @@ export interface FileAttachment {
   mimeType: string;
   url: string;
   thumbnailUrl: string | null;
+  localPath: string | null;
+  thumbnailLocalPath: string | null;
 }
 
 export interface Message {

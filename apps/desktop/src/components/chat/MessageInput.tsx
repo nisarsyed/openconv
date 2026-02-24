@@ -1,18 +1,23 @@
 import { useState, useRef } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 const MAX_MESSAGE_SIZE = 8192;
 const CHAR_WARN_THRESHOLD = MAX_MESSAGE_SIZE - 500;
 
+export interface SelectedFile {
+  name: string;
+  path: string;
+}
+
 interface MessageInputProps {
-  onSend: (content: string, files: File[]) => void;
+  onSend: (content: string, filePaths: string[]) => void;
   channelName: string;
   onKeyPress?: () => void;
 }
 
 export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputProps) {
   const [text, setText] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<SelectedFile[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const charCount = text.length;
@@ -22,7 +27,10 @@ export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputPr
 
   const handleSend = () => {
     if (!canSend) return;
-    onSend(text.trim(), files);
+    onSend(
+      text.trim(),
+      files.map((f) => f.path),
+    );
     setText("");
     setFiles([]);
     if (textareaRef.current) {
@@ -46,11 +54,17 @@ export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputPr
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
-    }
-    e.target.value = "";
+  const handleAttachClick = async () => {
+    const selected = await open({ multiple: true });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    setFiles((prev) => [
+      ...prev,
+      ...paths.map((p) => ({
+        name: p.split(/[/\\]/).pop() ?? p,
+        path: p,
+      })),
+    ]);
   };
 
   const removeFile = (index: number) => {
@@ -64,7 +78,7 @@ export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputPr
         <div className="mb-2 flex flex-wrap gap-2">
           {files.map((file, i) => (
             <div
-              key={`${file.name}-${i}`}
+              key={`${file.path}-${i}`}
               className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)]"
               data-testid="file-preview"
             >
@@ -92,7 +106,7 @@ export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputPr
       <div className="flex items-end gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-3 py-2 transition-all duration-200 focus-within:border-[var(--bg-accent)]/40 focus-within:shadow-[0_0_0_3px_var(--bg-accent-subtle)]">
         {/* Attachment button */}
         <button
-          onClick={() => fileInputRef.current?.click()}
+          onClick={handleAttachClick}
           aria-label="Attach file"
           className="mb-0.5 rounded-lg p-1 text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
         >
@@ -106,14 +120,6 @@ export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputPr
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={handleFileSelect}
-          data-testid="file-input"
-        />
 
         {/* Textarea */}
         <textarea

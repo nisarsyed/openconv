@@ -20,10 +20,15 @@ export function ChannelView() {
   const { typingNames, onKeyPress } = useTypingIndicator(channelId ?? "");
 
   const handleSend = useCallback(
-    async (content: string, _files: File[]) => {
+    async (content: string, filePaths: string[]) => {
       if (!channelId) return;
       try {
-        await invoke("send_message", { channelId, plaintext: content });
+        for (const filePath of filePaths) {
+          await invoke("send_file", { channelId, filePath });
+        }
+        if (content) {
+          await invoke("send_message", { channelId, plaintext: content });
+        }
       } catch {
         // Send failure - backend handles optimistic updates
       }

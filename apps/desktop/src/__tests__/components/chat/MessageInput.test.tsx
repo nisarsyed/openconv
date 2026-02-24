@@ -3,6 +3,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageInput } from "../../../components/chat/MessageInput";
 
+const mockOpen = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => mockOpen(...args),
+}));
+
 function renderInput(onSend = vi.fn()) {
   return {
     onSend,
@@ -54,28 +59,49 @@ describe("MessageInput", () => {
     expect(screen.getByLabelText("Send message")).not.toBeDisabled();
   });
 
-  it("shows preview chips for selected files", async () => {
+  it("opens native file dialog when attachment button clicked", async () => {
     const user = userEvent.setup();
+    mockOpen.mockResolvedValue(null);
     renderInput();
 
-    const fileInput = screen.getByTestId("file-input");
-    const file = new File(["content"], "test.txt", { type: "text/plain" });
-    await user.upload(fileInput, file);
+    await user.click(screen.getByLabelText("Attach file"));
+    expect(mockOpen).toHaveBeenCalledWith({ multiple: true });
+  });
 
+  it("shows file preview chip after selecting a file via dialog", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue(["/home/user/docs/test.txt"]);
+    renderInput();
+
+    await user.click(screen.getByLabelText("Attach file"));
     expect(screen.getByText("test.txt")).toBeInTheDocument();
   });
 
   it("removes file from queue when preview chip X is clicked", async () => {
     const user = userEvent.setup();
+    mockOpen.mockResolvedValue(["/home/user/docs/test.txt"]);
     renderInput();
 
-    const fileInput = screen.getByTestId("file-input");
-    const file = new File(["content"], "test.txt", { type: "text/plain" });
-    await user.upload(fileInput, file);
-
+    await user.click(screen.getByLabelText("Attach file"));
     expect(screen.getByText("test.txt")).toBeInTheDocument();
+
     await user.click(screen.getByLabelText("Remove test.txt"));
     expect(screen.queryByText("test.txt")).not.toBeInTheDocument();
+  });
+
+  it("sends file paths with message", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue(["/home/user/docs/test.txt"]);
+    const { onSend } = renderInput();
+
+    await user.click(screen.getByLabelText("Attach file"));
+    const textarea = screen.getByPlaceholderText("Message #general");
+    await user.type(textarea, "check this out");
+    await user.keyboard("{Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("check this out", [
+      "/home/user/docs/test.txt",
+    ]);
   });
 
   it("shows character count when near the 8192 limit", async () => {
@@ -85,10 +111,8 @@ describe("MessageInput", () => {
     const longText = "a".repeat(7700);
     const textarea = screen.getByPlaceholderText("Message #general");
     await user.click(textarea);
-    // Use fireEvent for efficiency with large text
     await user.clear(textarea);
 
-    // Use native fireEvent for perf with large strings
     const { fireEvent } = await import("@testing-library/react");
     fireEvent.change(textarea, { target: { value: longText } });
 
@@ -112,16 +136,5 @@ describe("MessageInput", () => {
 
     expect(screen.getByLabelText("Send message")).toBeDisabled();
     expect(screen.getByTestId("char-count")).toHaveTextContent("8193 / 8192");
-  });
-
-  it("opens file input when attachment button clicked", async () => {
-    const user = userEvent.setup();
-    renderInput();
-
-    const fileInput = screen.getByTestId("file-input") as HTMLInputElement;
-    const clickSpy = vi.spyOn(fileInput, "click");
-
-    await user.click(screen.getByLabelText("Attach file"));
-    expect(clickSpy).toHaveBeenCalled();
   });
 });
