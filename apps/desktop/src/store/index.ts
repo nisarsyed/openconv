@@ -9,6 +9,7 @@ import { createMembersSlice, type MembersSlice } from "./membersSlice";
 import { createPresenceSlice, type PresenceSlice } from "./presenceSlice";
 import { createUnreadSlice, type UnreadSlice } from "./unreadSlice";
 import { createUISlice, type UISlice } from "./uiSlice";
+import { createSearchSlice, type SearchSlice } from "./searchSlice";
 
 export type AppStore = AuthSlice &
   GuildsSlice &
@@ -17,7 +18,8 @@ export type AppStore = AuthSlice &
   MembersSlice &
   PresenceSlice &
   UnreadSlice &
-  UISlice;
+  UISlice &
+  SearchSlice;
 
 export type SliceCreator<T> = StateCreator<
   AppStore,
@@ -40,6 +42,7 @@ const storeSlices: StateCreator<
   ...createPresenceSlice(...args),
   ...createUnreadSlice(...args),
   ...createUISlice(...args),
+  ...createSearchSlice(...args),
 });
 
 export const useAppStore = create<AppStore>()(

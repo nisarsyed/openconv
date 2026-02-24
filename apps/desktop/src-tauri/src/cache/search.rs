@@ -1,12 +1,17 @@
 use crate::auth_service::AppError;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub enum SearchScope {
     AllMessages,
     Guild(String),
     Channel(String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub message_id: String,
     pub channel_id: Option<String>,
@@ -80,7 +85,7 @@ pub fn search_messages(
         return Ok(Vec::new());
     }
 
-    let limit = if limit == 0 { 50 } else { limit };
+    let limit = if limit == 0 { 50 } else { limit.min(50) };
 
     let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match scope {
         SearchScope::AllMessages => {
@@ -89,13 +94,13 @@ pub fn search_messages(
                  FROM messages_fts f
                  JOIN messages m ON m.id = f.message_id
                  WHERE messages_fts MATCH ?1
-                 ORDER BY bm25(messages_fts) - (1.0 / ((?2 - m.created_at) / 86400.0 + 1.0))
+                 ORDER BY bm25(messages_fts) - (1.0 / ((?2 - m.created_at) / 86400000.0 + 1.0))
                  LIMIT ?3"
             );
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| AppError::new(e.to_string()))?
-                .as_secs() as i64;
+                .as_millis() as i64;
             (
                 sql,
                 vec![
@@ -117,7 +122,7 @@ pub fn search_messages(
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| AppError::new(e.to_string()))?
-                .as_secs() as i64;
+                .as_millis() as i64;
             (
                 sql,
                 vec![
@@ -141,7 +146,7 @@ pub fn search_messages(
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| AppError::new(e.to_string()))?
-                .as_secs() as i64;
+                .as_millis() as i64;
             (
                 sql,
                 vec![
@@ -262,12 +267,12 @@ mod tests {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_millis() as i64;
 
-        // Old message
-        insert_and_index(&conn, "old", "ch1", "identical keyword here", now - 86400 * 30);
-        // Recent message
-        insert_and_index(&conn, "new", "ch1", "identical keyword here", now - 60);
+        // Old message (30 days ago in ms)
+        insert_and_index(&conn, "old", "ch1", "identical keyword here", now - 86400_000 * 30);
+        // Recent message (1 minute ago in ms)
+        insert_and_index(&conn, "new", "ch1", "identical keyword here", now - 60_000);
 
         let results = search_messages(&conn, "identical keyword", &SearchScope::AllMessages, 10).unwrap();
         assert_eq!(results.len(), 2);

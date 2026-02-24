@@ -361,6 +361,14 @@ async generateThumbnail(fileId: string, sourcePath: string) : Promise<Result<str
     else return { status: "error", error: e  as any };
 }
 },
+async searchMessages(query: string, scope: SearchScope, limit: number | null) : Promise<Result<SearchResult[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_messages", { query, scope, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Check if the app has notification permission from the OS.
  */
@@ -443,6 +451,8 @@ export type FileMetadata = { fileId: string; fileName: string; fileSize: number;
  * DTO for returning notification settings to the frontend.
  */
 export type NotificationSettingsDto = { notificationsEnabled: boolean; notificationPreviews: boolean; dndEnabled: boolean; mutedGuilds: string[]; mutedChannels: string[]; previewOverrides: Partial<{ [key in string]: boolean }> }
+export type SearchResult = { messageId: string; channelId: string | null; senderId: string; snippet: string; createdAt: number }
+export type SearchScope = "AllMessages" | { Guild: string } | { Channel: string }
 /**
  * All possible states of the WebSocket connection.
  * Stored in Arc<RwLock<WsConnectionState>> as Tauri managed state.

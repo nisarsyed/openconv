@@ -1,5 +1,6 @@
 import { useParams } from "react-router";
 import { useAppStore } from "../../store";
+import { SearchOverlay } from "./SearchOverlay";
 
 export function ChannelHeader() {
   const { channelId } = useParams<{ channelId: string }>();
@@ -8,15 +9,31 @@ export function ChannelHeader() {
   );
   const memberListVisible = useAppStore((s) => s.memberListVisible);
   const toggleMemberList = useAppStore((s) => s.toggleMemberList);
+  const searchOverlayVisible = useAppStore((s) => s.searchOverlayVisible);
+  const setSearchOverlayVisible = useAppStore(
+    (s) => s.setSearchOverlayVisible,
+  );
+  const setSearchScope = useAppStore((s) => s.setSearchScope);
 
   if (!channel) return null;
 
   const isVoice = channel.channelType === "voice";
 
+  const handleSearchClick = () => {
+    if (searchOverlayVisible) {
+      useAppStore.getState().clearSearch();
+    } else {
+      if (channelId) {
+        setSearchScope({ Channel: channelId });
+      }
+      setSearchOverlayVisible(true);
+    }
+  };
+
   return (
     <header
       data-tauri-drag-region
-      className="flex h-12 items-center justify-between border-b border-[var(--border-subtle)] px-4"
+      className="relative flex h-12 items-center justify-between border-b border-[var(--border-subtle)] px-4"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       <h2 className="flex items-center gap-1.5 text-sm font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
@@ -27,10 +44,14 @@ export function ChannelHeader() {
       </h2>
 
       <div className="flex items-center gap-0.5">
-        {/* Search placeholder */}
         <button
           aria-label="Search"
-          className="rounded-lg p-1.5 text-[var(--text-muted)] transition-all duration-150 hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)]"
+          onClick={handleSearchClick}
+          className={`rounded-lg p-1.5 transition-all duration-150 ${
+            searchOverlayVisible
+              ? "bg-[var(--interactive-active)] text-[var(--text-primary)]"
+              : "text-[var(--text-muted)] hover:bg-[var(--interactive-hover)] hover:text-[var(--text-secondary)]"
+          }`}
         >
           <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
             <path
@@ -67,6 +88,10 @@ export function ChannelHeader() {
           </svg>
         </button>
       </div>
+
+      {searchOverlayVisible && (
+        <SearchOverlay channelId={channelId} guildId={channel.guildId} />
+      )}
     </header>
   );
 }

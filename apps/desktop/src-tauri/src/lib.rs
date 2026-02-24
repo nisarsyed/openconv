@@ -89,6 +89,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::files::send_dm_file,
         commands::files::download_file,
         commands::files::generate_thumbnail,
+        commands::search::search_messages,
         notification_service::check_notification_permission,
         notification_service::request_notification_permission,
         notification_service::get_notification_settings,
