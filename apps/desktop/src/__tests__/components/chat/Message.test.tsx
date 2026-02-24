@@ -68,6 +68,8 @@ describe("Message", () => {
             mimeType: "application/pdf",
             url: "https://example.com/doc.pdf",
             thumbnailUrl: null,
+            localPath: null,
+            thumbnailLocalPath: null,
           },
         ],
       }),

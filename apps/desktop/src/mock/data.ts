@@ -498,6 +498,8 @@ function generateMessages(
         thumbnailUrl: isImage
           ? "https://placeholder.test/screenshot-thumb.png"
           : null,
+        localPath: null,
+        thumbnailLocalPath: null,
       });
     }
 

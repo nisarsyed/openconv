@@ -136,11 +136,11 @@ describe("GuildSidebar", () => {
     });
   });
 
-  it("home button is present but disabled", () => {
+  it("home button navigates to DMs", () => {
     renderSidebar();
 
     const homeButton = screen.getByLabelText("Home");
     expect(homeButton).toBeInTheDocument();
-    expect(homeButton).toBeDisabled();
+    expect(homeButton).toBeEnabled();
   });
 });

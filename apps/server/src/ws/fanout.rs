@@ -341,6 +341,7 @@ fn fan_out_message_created(
                 ciphertext: rp.ciphertext.clone(),
                 message_type: rp.message_type.clone(),
                 created_at,
+                client_nonce: None,
             };
             let _ = conn.sender.try_send(event);
         }

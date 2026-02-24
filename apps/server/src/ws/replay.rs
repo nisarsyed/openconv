@@ -113,6 +113,7 @@ pub async fn replay_missed_messages(
             ciphertext: row.ciphertext,
             message_type: row.message_type,
             created_at: row.created_at,
+            client_nonce: None,
         };
         if sender.send(event).await.is_err() {
             // Connection closed during replay

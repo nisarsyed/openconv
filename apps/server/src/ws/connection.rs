@@ -213,6 +213,7 @@ async fn handle_client_message(
             channel_id,
             dm_channel_id: _,
             recipients,
+            client_nonce: _,
         } => {
             // Resolve effective channel_id (DM support deferred to section-08)
             let effective_channel_id = match channel_id {

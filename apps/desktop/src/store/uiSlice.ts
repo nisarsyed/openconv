@@ -203,7 +203,7 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
 
   loadNotificationSettings: async () => {
     const result = await commands.getNotificationSettings();
-    if (result.status === "ok") {
+    if (result.status === "ok" && result.data) {
       set((draft) => {
         draft.notificationSettings = {
           notificationsEnabled: result.data.notificationsEnabled,
