@@ -48,6 +48,7 @@ export function ChannelList() {
           channels={channels}
           selectedChannelId={channelId}
           unreadChannelIds={unreadChannelIds}
+          unreadCountByChannel={unreadCountByChannel}
         />
       ))}
     </nav>

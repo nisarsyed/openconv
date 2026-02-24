@@ -6,6 +6,7 @@ import { seedStores } from "../mock/seed";
 import { AppShell } from "../components/layout/AppShell";
 import { ModalRoot } from "../components/modals/ModalRoot";
 import { commands } from "../bindings";
+import { useReadPositionSync } from "../hooks/useReadPositionSync";
 
 export function AppLayout() {
   const navigate = useNavigate();
@@ -26,6 +27,9 @@ export function AppLayout() {
   useEffect(() => {
     useAppStore.getState().loadNotificationSettings();
   }, []);
+
+  // Initialize and sync read positions
+  useReadPositionSync();
 
   // Track the visible channel for notification suppression
   useEffect(() => {

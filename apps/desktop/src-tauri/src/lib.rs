@@ -95,6 +95,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         notification_service::get_notification_settings,
         notification_service::update_notification_setting,
         notification_service::set_visible_channel,
+        commands::unread::get_read_positions,
+        commands::unread::mark_channel_read,
+        commands::unread::sync_read_positions,
+        commands::unread::fetch_and_merge_read_positions,
     ])
 }
 

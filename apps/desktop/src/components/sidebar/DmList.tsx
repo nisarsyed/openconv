@@ -128,7 +128,7 @@ export function DmList() {
               </div>
               {unread > 0 && (
                 <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[var(--bg-accent)] px-1 text-xs font-bold text-[var(--text-on-accent)]">
-                  {unread}
+                  {unread > 99 ? "99+" : unread}
                 </span>
               )}
             </button>

@@ -423,6 +423,59 @@ async setVisibleChannel(channelId: string | null) : Promise<Result<null, string>
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Get all read positions for initializing frontend state.
+ */
+async getReadPositions() : Promise<Result<ReadPositionInfo[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_read_positions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Mark a channel as read. Called when user views a channel.
+ */
+async markChannelRead(channelId: string, lastMessageId: string, lastMessageCreatedAt: number) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mark_channel_read", { channelId, lastMessageId, lastMessageCreatedAt }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Trigger a batch sync of unsynced read positions to the server.
+ * Called periodically (every 30s) and on app minimize/close.
+ * 
+ * Currently a no-op until the server REST endpoints are wired in.
+ * Positions remain marked as unsynced so they will be sent once the
+ * POST /api/users/me/read-state endpoint is implemented.
+ */
+async syncReadPositions() : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_read_positions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch read positions from server and merge with local state.
+ * Called on app launch.
+ * 
+ * Currently returns local positions only until the server REST
+ * endpoints are wired in.
+ */
+async fetchAndMergeReadPositions() : Promise<Result<ReadPositionInfo[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fetch_and_merge_read_positions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -451,6 +504,10 @@ export type FileMetadata = { fileId: string; fileName: string; fileSize: number;
  * DTO for returning notification settings to the frontend.
  */
 export type NotificationSettingsDto = { notificationsEnabled: boolean; notificationPreviews: boolean; dndEnabled: boolean; mutedGuilds: string[]; mutedChannels: string[]; previewOverrides: Partial<{ [key in string]: boolean }> }
+/**
+ * Serializable read position returned to the frontend via Tauri commands.
+ */
+export type ReadPositionInfo = { channelId: string; lastReadMessageId: string; lastReadCreatedAt: number; unreadCount: number }
 export type SearchResult = { messageId: string; channelId: string | null; senderId: string; snippet: string; createdAt: number }
 export type SearchScope = "AllMessages" | { Guild: string } | { Channel: string }
 /**

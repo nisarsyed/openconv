@@ -5,3 +5,4 @@ pub mod health;
 pub mod messaging;
 pub mod search;
 pub mod sync;
+pub mod unread;

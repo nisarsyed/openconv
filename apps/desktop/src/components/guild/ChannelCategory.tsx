@@ -9,6 +9,7 @@ interface ChannelCategoryProps {
   channels: Channel[];
   selectedChannelId: string | undefined;
   unreadChannelIds: Set<string>;
+  unreadCountByChannel: Record<string, number>;
 }
 
 export function ChannelCategory({
@@ -16,6 +17,7 @@ export function ChannelCategory({
   channels,
   selectedChannelId,
   unreadChannelIds,
+  unreadCountByChannel,
 }: ChannelCategoryProps) {
   const [collapsed, setCollapsed] = useState(false);
   const { guildId } = useParams<{ guildId: string }>();
@@ -63,6 +65,7 @@ export function ChannelCategory({
               channel={channel}
               isSelected={channel.id === selectedChannelId}
               isUnread={unreadChannelIds.has(channel.id)}
+              unreadCount={unreadCountByChannel[channel.id] ?? 0}
             />
           ))}
         </ul>

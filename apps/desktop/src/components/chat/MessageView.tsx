@@ -9,6 +9,7 @@ import { groupMessages, type DisplayItem } from "./groupMessages";
 import { DateSeparator } from "./DateSeparator";
 import { MessageGroup } from "./MessageGroup";
 import { NewMessagesBar } from "./NewMessagesBar";
+import { UnreadDivider } from "./UnreadDivider";
 import { Spinner } from "../ui/Spinner";
 
 const EMPTY_IDS: string[] = [];
@@ -46,9 +47,13 @@ export function MessageView({ channelKey }: MessageViewProps = {}) {
     channelId ? (s.hasMore[channelId] ?? false) : false,
   );
 
+  const lastReadMessageId = useAppStore((s) =>
+    channelId ? s.lastReadByChannel[channelId] : undefined,
+  );
+
   const displayItems = useMemo(
-    () => groupMessages(channelMessages),
-    [channelMessages],
+    () => groupMessages(channelMessages, lastReadMessageId),
+    [channelMessages, lastReadMessageId],
   );
 
   useEffect(() => {
@@ -100,9 +105,29 @@ export function MessageView({ channelKey }: MessageViewProps = {}) {
     setHasNewMessages(false);
   }, [displayItems.length]);
 
+  // Auto-mark-as-read when scrolled to bottom (debounced)
+  useEffect(() => {
+    if (!channelId || !isAtBottom) return;
+    const timer = setTimeout(() => {
+      const state = useAppStore.getState();
+      const ids = state.messageIdsByChannel[channelId] ?? [];
+      if (ids.length === 0) return;
+      const lastMsgId = ids[ids.length - 1];
+      const lastMsg = state.messagesById[lastMsgId];
+      if (lastMsg && lastMsgId !== state.lastReadByChannel[channelId]) {
+        const createdAtMs = new Date(lastMsg.createdAt).getTime();
+        state.markChannelRead(channelId, lastMsgId, createdAtMs);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [channelId, isAtBottom, messageIds.length]);
+
   const renderItem = useCallback((_index: number, item: DisplayItem) => {
     if (item.type === "date-separator") {
       return <DateSeparator date={item.date} />;
+    }
+    if (item.type === "unread-divider") {
+      return <UnreadDivider />;
     }
     return <MessageGroup senderId={item.senderId} messages={item.messages} />;
   }, []);

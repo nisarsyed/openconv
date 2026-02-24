@@ -6,12 +6,14 @@ interface ChannelItemProps {
   channel: Channel;
   isSelected: boolean;
   isUnread: boolean;
+  unreadCount?: number;
 }
 
 export function ChannelItem({
   channel,
   isSelected,
   isUnread,
+  unreadCount = 0,
 }: ChannelItemProps) {
   const navigate = useNavigate();
   const { guildId } = useParams<{ guildId: string }>();
@@ -70,9 +72,11 @@ export function ChannelItem({
       </span>
       {isUnread && !isSelected && (
         <span
-          data-testid="unread-dot"
-          className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--bg-accent)]"
-        />
+          data-testid="unread-badge"
+          className="ml-auto flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-[var(--bg-accent)] px-1 text-[10px] font-bold text-[var(--text-on-accent)]"
+        >
+          {unreadCount > 99 ? "99+" : unreadCount}
+        </span>
       )}
       {/* Gear icon on hover */}
       <button
