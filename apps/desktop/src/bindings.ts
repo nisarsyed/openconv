@@ -360,6 +360,61 @@ async generateThumbnail(fileId: string, sourcePath: string) : Promise<Result<str
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Check if the app has notification permission from the OS.
+ */
+async checkNotificationPermission() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_notification_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Request notification permission from the OS.
+ */
+async requestNotificationPermission() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("request_notification_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get all notification settings.
+ */
+async getNotificationSettings() : Promise<Result<NotificationSettingsDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_notification_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update a notification setting. Persists to the local settings table.
+ */
+async updateNotificationSetting(key: string, value: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_notification_setting", { key, value }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the currently visible channel (called by frontend on navigation).
+ */
+async setVisibleChannel(channelId: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_visible_channel", { channelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -384,6 +439,10 @@ export type DmChannelInfo = { id: string; participantIds: string[]; lastMessageP
  * File metadata returned to the frontend after a successful send or download.
  */
 export type FileMetadata = { fileId: string; fileName: string; fileSize: number; mimeType: string; localPath: string | null; thumbnailPath: string | null }
+/**
+ * DTO for returning notification settings to the frontend.
+ */
+export type NotificationSettingsDto = { notificationsEnabled: boolean; notificationPreviews: boolean; dndEnabled: boolean; mutedGuilds: string[]; mutedChannels: string[]; previewOverrides: Partial<{ [key in string]: boolean }> }
 /**
  * All possible states of the WebSocket connection.
  * Stored in Arc<RwLock<WsConnectionState>> as Tauri managed state.

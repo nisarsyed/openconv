@@ -3,6 +3,7 @@ pub(crate) mod cache;
 pub(crate) mod commands;
 pub(crate) mod crypto_service;
 pub(crate) mod db;
+pub(crate) mod notification_service;
 pub(crate) mod ws;
 
 pub struct DbState {
@@ -88,6 +89,11 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::files::send_dm_file,
         commands::files::download_file,
         commands::files::generate_thumbnail,
+        notification_service::check_notification_permission,
+        notification_service::request_notification_permission,
+        notification_service::get_notification_settings,
+        notification_service::update_notification_setting,
+        notification_service::set_visible_channel,
     ])
 }
 
@@ -112,6 +118,7 @@ pub fn run() {
         .plugin(tauri_plugin_decorum::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -166,6 +173,33 @@ pub fn run() {
             app.manage(std::sync::Mutex::new(
                 commands::messaging::MessageRateLimiter::new(5),
             ));
+
+            // Initialize notification settings from the cache database
+            let notif_settings = {
+                let cache_db = app.state::<crate::cache::CacheDb>();
+                let cache_conn = cache_db.lock()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+                notification_service::NotificationSettings::load_from_db(&cache_conn)
+            };
+            app.manage(notification_service::NotificationState {
+                settings: std::sync::Arc::new(tokio::sync::RwLock::new(notif_settings)),
+            });
+            app.manage(notification_service::VisibleChannelState {
+                channel_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            });
+            app.manage(notification_service::LastNotificationState {
+                target: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            });
+
+            // Listen for window focus events to detect notification clicks
+            if let Some(window) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(true) = event {
+                        notification_service::check_pending_notification_click(&app_handle);
+                    }
+                });
+            }
 
             setup_tray(app)?;
 

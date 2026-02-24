@@ -12,6 +12,7 @@ use crate::cache::messages::{self, CachedMessage};
 use crate::cache::read_positions;
 use crate::cache::search;
 use crate::crypto_service::CryptoState;
+use crate::notification_service::{self, NotificationState, VisibleChannelState};
 
 use super::events;
 use super::state::{WsConnectionState, WsState};
@@ -285,6 +286,71 @@ async fn handle_message_created(
         if !is_own_message {
             if let Err(e) = read_positions::increment_unread(&conn, &channel_id_str) {
                 tracing::warn!("failed to increment unread for channel {channel_id_str}: {e}");
+            }
+        }
+    }
+
+    // Send desktop notification for non-own messages with plaintext
+    if !is_own_message {
+        if let Some(ref pt) = plaintext {
+            let sender_display = {
+                if let Ok(conn) = app.state::<CacheDb>().lock() {
+                    conn.query_row(
+                        "SELECT display_name FROM user_cache WHERE id = ?1",
+                        [&sender_id.to_string()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap_or_else(|_| "Someone".to_string())
+                } else {
+                    "Someone".to_string()
+                }
+            };
+
+            // Look up guild_id from channel_cache for mute checks
+            let guild_id = {
+                if let Ok(conn) = app.state::<CacheDb>().lock() {
+                    conn.query_row(
+                        "SELECT guild_id FROM channel_cache WHERE id = ?1",
+                        [&channel_id_str],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok()
+                } else {
+                    None
+                }
+            };
+
+            let visible_channel = {
+                let vis_state = app.try_state::<VisibleChannelState>();
+                if let Some(vs) = vis_state {
+                    vs.channel_id.read().await.clone()
+                } else {
+                    None
+                }
+            };
+
+            let notif_settings = {
+                let notif_state = app.try_state::<NotificationState>();
+                if let Some(ns) = notif_state {
+                    Some(ns.settings.read().await.clone())
+                } else {
+                    None
+                }
+            };
+
+            if let Some(settings) = notif_settings {
+                if let Err(e) = notification_service::maybe_send_notification(
+                    app,
+                    &settings,
+                    Some(&channel_id_str),
+                    None, // channel messages don't have dm_channel_id
+                    guild_id.as_deref(),
+                    &sender_display,
+                    pt,
+                    visible_channel.as_deref(),
+                ) {
+                    tracing::warn!("failed to send notification: {e}");
+                }
             }
         }
     }

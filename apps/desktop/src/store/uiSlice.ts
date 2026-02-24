@@ -1,6 +1,15 @@
 import type { Notification } from "../types";
 import type { WsConnectionState } from "../types/ws";
 import type { SliceCreator } from "./index";
+import { commands } from "../bindings";
+
+export interface NotificationSettingsState {
+  notificationsEnabled: boolean;
+  notificationPreviews: boolean;
+  dndEnabled: boolean;
+  mutedGuilds: string[];
+  mutedChannels: string[];
+}
 
 export interface UISlice {
   theme: "dark" | "light";
@@ -11,6 +20,7 @@ export interface UISlice {
   notifications: Notification[];
   scrollPositionByChannel: Record<string, number>;
   connectionState: WsConnectionState;
+  notificationSettings: NotificationSettingsState;
   toggleTheme: () => void;
   toggleChannelSidebar: () => void;
   toggleMemberList: () => void;
@@ -23,6 +33,12 @@ export interface UISlice {
   saveScrollPosition: (channelId: string, position: number) => void;
   getScrollPosition: (channelId: string) => number;
   setConnectionState: (state: WsConnectionState) => void;
+  setNotificationsEnabled: (enabled: boolean) => void;
+  setNotificationPreviews: (enabled: boolean) => void;
+  setDndEnabled: (enabled: boolean) => void;
+  toggleGuildMute: (guildId: string) => void;
+  toggleChannelMute: (channelId: string) => void;
+  loadNotificationSettings: () => Promise<void>;
 }
 
 export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
@@ -34,6 +50,13 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
   notifications: [],
   scrollPositionByChannel: {},
   connectionState: { status: "Disconnected" },
+  notificationSettings: {
+    notificationsEnabled: true,
+    notificationPreviews: false,
+    dndEnabled: false,
+    mutedGuilds: [],
+    mutedChannels: [],
+  },
 
   toggleTheme: () =>
     set((draft) => {
@@ -92,4 +115,104 @@ export const createUISlice: SliceCreator<UISlice> = (set, get) => ({
     set((draft) => {
       draft.connectionState = state;
     }),
+
+  setNotificationsEnabled: (enabled) => {
+    set((draft) => {
+      draft.notificationSettings.notificationsEnabled = enabled;
+    });
+    commands
+      .updateNotificationSetting("notifications_enabled", String(enabled))
+      .then((result) => {
+        if (result.status === "error") {
+          set((draft) => {
+            draft.notificationSettings.notificationsEnabled = !enabled;
+          });
+        }
+      });
+  },
+
+  setNotificationPreviews: (enabled) => {
+    set((draft) => {
+      draft.notificationSettings.notificationPreviews = enabled;
+    });
+    commands
+      .updateNotificationSetting("notification_previews", String(enabled))
+      .then((result) => {
+        if (result.status === "error") {
+          set((draft) => {
+            draft.notificationSettings.notificationPreviews = !enabled;
+          });
+        }
+      });
+  },
+
+  setDndEnabled: (enabled) => {
+    set((draft) => {
+      draft.notificationSettings.dndEnabled = enabled;
+    });
+    commands
+      .updateNotificationSetting("dnd_enabled", String(enabled))
+      .then((result) => {
+        if (result.status === "error") {
+          set((draft) => {
+            draft.notificationSettings.dndEnabled = !enabled;
+          });
+        }
+      });
+  },
+
+  toggleGuildMute: (guildId) => {
+    const current = get().notificationSettings.mutedGuilds;
+    const isMuted = current.includes(guildId);
+    const updated = isMuted
+      ? current.filter((id) => id !== guildId)
+      : [...current, guildId];
+    set((draft) => {
+      draft.notificationSettings.mutedGuilds = updated;
+    });
+    commands
+      .updateNotificationSetting("muted_guilds", JSON.stringify(updated))
+      .then((result) => {
+        if (result.status === "error") {
+          set((draft) => {
+            draft.notificationSettings.mutedGuilds = current;
+          });
+        }
+      });
+  },
+
+  toggleChannelMute: (channelId) => {
+    const current = get().notificationSettings.mutedChannels;
+    const isMuted = current.includes(channelId);
+    const updated = isMuted
+      ? current.filter((id) => id !== channelId)
+      : [...current, channelId];
+    set((draft) => {
+      draft.notificationSettings.mutedChannels = updated;
+    });
+    commands
+      .updateNotificationSetting("muted_channels", JSON.stringify(updated))
+      .then((result) => {
+        if (result.status === "error") {
+          set((draft) => {
+            draft.notificationSettings.mutedChannels = current;
+          });
+        }
+      });
+  },
+
+  loadNotificationSettings: async () => {
+    const result = await commands.getNotificationSettings();
+    if (result.status === "ok") {
+      set((draft) => {
+        draft.notificationSettings = {
+          notificationsEnabled: result.data.notificationsEnabled,
+          notificationPreviews: result.data.notificationPreviews,
+          dndEnabled: result.data.dndEnabled,
+          mutedGuilds: result.data.mutedGuilds,
+          mutedChannels: result.data.mutedChannels,
+        };
+      });
+    }
+  },
 });
