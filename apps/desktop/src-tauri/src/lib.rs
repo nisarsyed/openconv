@@ -77,6 +77,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::messaging::edit_message,
         commands::messaging::delete_message,
         commands::messaging::retry_decrypt,
+        commands::dm::start_dm,
+        commands::dm::list_dms,
+        commands::dm::send_dm_message,
     ])
 }
 

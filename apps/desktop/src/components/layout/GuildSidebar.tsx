@@ -49,11 +49,11 @@ export function GuildSidebar() {
       }}
       aria-label="Guilds"
     >
-      {/* Home button */}
+      {/* Home / DM button */}
       <button
         aria-label="Home"
-        disabled
-        className="mb-2 flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-2xl bg-[var(--bg-secondary)] text-[var(--text-muted)] opacity-40 transition-all duration-200"
+        onClick={() => navigate("/app/dm")}
+        className="mb-2 flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--bg-secondary)] text-[var(--text-muted)] transition-all duration-200 hover:rounded-xl hover:bg-[var(--bg-accent)] hover:text-[var(--text-on-accent)]"
       >
         <svg
           className="h-5 w-5"

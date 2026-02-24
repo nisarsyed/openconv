@@ -218,6 +218,50 @@ async retryDecrypt(messageId: string) : Promise<Result<null, AppError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Start or retrieve a DM conversation with a user.
+ * 
+ * 1. Check local cache for existing DM channel with this user
+ * 2. If found locally, return its DmChannelId
+ * 3. If not found locally, call the server to create/find the DM
+ * 4. Cache the DM channel locally
+ * 5. Return the DmChannelId
+ */
+async startDm(userId: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_dm", { userId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List all DM conversations for the current user.
+ * 
+ * Returns DM channels sorted by most recent message, fetched from local cache.
+ * On first load or cache miss, fetches from server and populates cache.
+ */
+async listDms() : Promise<Result<DmChannelInfo[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_dms") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a message in a DM channel.
+ * 
+ * Inserts an optimistic local message with status="pending", then sends via WebSocket.
+ */
+async sendDmMessage(dmChannelId: string, plaintext: string) : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_dm_message", { dmChannelId, plaintext }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -234,6 +278,10 @@ async retryDecrypt(messageId: string) : Promise<Result<null, AppError>> {
 export type AppError = { message: string }
 export type AppHealth = { version: string; db_status: string }
 export type AuthResult = { user_id: string; public_key: string; device_id: string }
+/**
+ * DM channel info returned to the frontend.
+ */
+export type DmChannelInfo = { id: string; participantIds: string[]; lastMessagePreview: string | null; lastMessageAt: string | null; unreadCount: number }
 /**
  * All possible states of the WebSocket connection.
  * Stored in Arc<RwLock<WsConnectionState>> as Tauri managed state.

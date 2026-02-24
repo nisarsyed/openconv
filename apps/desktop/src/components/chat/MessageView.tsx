@@ -14,8 +14,13 @@ import { Spinner } from "../ui/Spinner";
 const EMPTY_IDS: string[] = [];
 const EMPTY_MESSAGES: Message[] = [];
 
-export function MessageView() {
-  const { channelId } = useParams<{ channelId: string }>();
+interface MessageViewProps {
+  channelKey?: string;
+}
+
+export function MessageView({ channelKey }: MessageViewProps = {}) {
+  const { channelId: routeChannelId } = useParams<{ channelId: string }>();
+  const channelId = channelKey ?? routeChannelId;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);

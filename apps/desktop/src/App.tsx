@@ -8,6 +8,8 @@ import { RecoverPage } from "./routes/RecoverPage";
 import { ProtectedRoute } from "./routes/ProtectedRoute";
 import { AppLayout } from "./routes/AppLayout";
 import { ChannelView } from "./components/chat/ChannelView";
+import { DmChannelView } from "./components/chat/DmChannelView";
+import { DmListView } from "./components/sidebar/DmListView";
 import { UserSettings } from "./components/settings/UserSettings";
 import { GuildSettings } from "./components/settings/GuildSettings";
 
@@ -58,6 +60,8 @@ function App() {
             path="guild/:guildId/channel/:channelId"
             element={<ChannelView />}
           />
+          <Route path="dm" element={<DmListView />} />
+          <Route path="dm/:dmChannelId" element={<DmChannelView />} />
           <Route path="settings" element={<UserSettings />} />
           <Route path="guild/:guildId/settings" element={<GuildSettings />} />
           <Route index element={<div>Welcome</div>} />

@@ -88,9 +88,18 @@ export interface Notification {
 
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 
+export interface DmChannel {
+  id: string;
+  participantIds: string[];
+  lastMessagePreview: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}
+
 export type ModalType =
   | { type: "createGuild" }
   | { type: "createChannel"; guildId: string }
   | { type: "invite"; guildId: string }
   | { type: "imageViewer"; imageUrl: string; allImages?: string[] }
-  | { type: "confirm"; title: string; message: string; onConfirm: () => void };
+  | { type: "confirm"; title: string; message: string; onConfirm: () => void }
+  | { type: "newDm" };
