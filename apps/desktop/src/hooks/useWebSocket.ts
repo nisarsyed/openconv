@@ -1,21 +1,26 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import type {
   WsConnectionState,
   WsMessagePayload,
+  WsMessageUpdatedPayload,
+  WsMessageDeletedPayload,
   WsTypingPayload,
   WsPresencePayload,
   WsMemberPayload,
+  WsReplayCompletePayload,
 } from "../types/ws";
 
 export function useWebSocket(): void {
   const setConnectionState = useAppStore((s) => s.setConnectionState);
   const setTypingUsers = useAppStore((s) => s.setTypingUsers);
+  const typingTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
+    const typingTimers = typingTimersRef.current;
 
     async function setup() {
       // Listen for connection state changes
@@ -27,8 +32,48 @@ export function useWebSocket(): void {
 
       // Listen for incoming messages
       unlisteners.push(
-        await listen<WsMessagePayload>("ws:message", (_event) => {
-          // Message dispatching will be handled by section-06 messaging pipeline
+        await listen<WsMessagePayload>("ws:message", (event) => {
+          const p = event.payload;
+          const store = useAppStore.getState();
+          store.addMessage(p.channel_id, {
+            id: p.message_id,
+            channelId: p.channel_id,
+            senderId: p.sender_id,
+            content: p.plaintext ?? "",
+            encryptedContent: "",
+            nonce: "",
+            createdAt: p.created_at,
+            editedAt: null,
+            attachments: [],
+            status: p.status as "delivered" | "decrypt_failed",
+            failureReason: p.failure_reason as
+              | "SessionNotFound"
+              | "SessionCorrupted"
+              | "DecryptionFailed"
+              | undefined,
+          });
+        }),
+      );
+
+      // Listen for message updates (edits)
+      unlisteners.push(
+        await listen<WsMessageUpdatedPayload>("ws:message_updated", (event) => {
+          const p = event.payload;
+          useAppStore.setState((draft) => {
+            const msg = draft.messagesById[p.message_id];
+            if (msg) {
+              msg.content = p.plaintext ?? msg.content;
+              msg.editedAt = p.edited_at;
+            }
+          });
+        }),
+      );
+
+      // Listen for message deletions
+      unlisteners.push(
+        await listen<WsMessageDeletedPayload>("ws:message_deleted", (event) => {
+          const p = event.payload;
+          useAppStore.getState().deleteMessage(p.message_id);
         }),
       );
 
@@ -40,15 +85,25 @@ export function useWebSocket(): void {
           if (!current.includes(user_id)) {
             setTypingUsers(channel_id, [...current, user_id]);
           }
+
+          // Clear existing timer for this user
+          const timerKey = `${channel_id}:${user_id}`;
+          const existing = typingTimers.get(timerKey);
+          if (existing) clearTimeout(existing);
+
           // Auto-expire typing indicator after 5 seconds
-          setTimeout(() => {
-            const updated =
-              useAppStore.getState().typingUsers[channel_id] ?? [];
-            setTypingUsers(
-              channel_id,
-              updated.filter((id) => id !== user_id),
-            );
-          }, 5000);
+          typingTimers.set(
+            timerKey,
+            setTimeout(() => {
+              typingTimers.delete(timerKey);
+              const updated =
+                useAppStore.getState().typingUsers[channel_id] ?? [];
+              setTypingUsers(
+                channel_id,
+                updated.filter((id) => id !== user_id),
+              );
+            }, 5000),
+          );
         }),
       );
 
@@ -66,6 +121,13 @@ export function useWebSocket(): void {
         }),
       );
 
+      // Listen for replay completion
+      unlisteners.push(
+        await listen<WsReplayCompletePayload>("ws:replay_complete", (_event) => {
+          // Replay complete - will be used for offline catchup in later sections
+        }),
+      );
+
       // Connect
       try {
         await invoke("ws_connect");
@@ -80,6 +142,11 @@ export function useWebSocket(): void {
       for (const unlisten of unlisteners) {
         unlisten();
       }
+      // Clean up typing timers
+      for (const timer of typingTimers.values()) {
+        clearTimeout(timer);
+      }
+      typingTimers.clear();
       invoke("ws_disconnect").catch(console.error);
     };
   }, [setConnectionState, setTypingUsers]);

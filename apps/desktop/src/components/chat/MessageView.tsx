@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useParams } from "react-router";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../store";
 import type { Message } from "../../types";
 import { groupMessages, type DisplayItem } from "./groupMessages";
@@ -9,7 +10,6 @@ import { DateSeparator } from "./DateSeparator";
 import { MessageGroup } from "./MessageGroup";
 import { NewMessagesBar } from "./NewMessagesBar";
 import { Spinner } from "../ui/Spinner";
-import { mockFetchMessages } from "../../mock/api";
 
 const EMPTY_IDS: string[] = [];
 const EMPTY_MESSAGES: Message[] = [];
@@ -69,10 +69,11 @@ export function MessageView() {
     }
 
     try {
-      const olderMessages = await mockFetchMessages(
+      const olderMessages = await invoke<Message[]>("fetch_message_history", {
         channelId,
-        oldest.createdAt,
-      );
+        before: oldest.createdAt,
+        limit: 20,
+      });
       if (olderMessages.length > 0) {
         useAppStore
           .getState()

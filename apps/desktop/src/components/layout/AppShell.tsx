@@ -7,8 +7,10 @@ import { MainContent } from "./MainContent";
 import { MemberList } from "./MemberList";
 import { DragRegion } from "./DragRegion";
 import { useResponsiveCollapse } from "../../hooks/useResponsiveCollapse";
+import { useWebSocket } from "../../hooks/useWebSocket";
 
 export function AppShell() {
+  useWebSocket();
   const channelSidebarVisible = useAppStore((s) => s.channelSidebarVisible);
   const memberListVisible = useAppStore((s) => s.memberListVisible);
 

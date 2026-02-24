@@ -1,10 +1,18 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
 import { Routes, Route } from "react-router";
 import { renderWithProviders } from "../../helpers/renderWithProviders";
 import { resetMockPlatform } from "../../helpers/mockTauri";
 import { AppShell } from "../../../components/layout/AppShell";
 import { mockGuilds, mockChannels } from "../../../mock/data";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
 
 beforeEach(() => {
   resetMockPlatform();

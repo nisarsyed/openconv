@@ -13,6 +13,7 @@ export interface WsMessagePayload {
   plaintext: string | null;
   /** "delivered", "pending", "decrypt_failed" */
   status: string;
+  failure_reason?: string;
   created_at: string;
 }
 

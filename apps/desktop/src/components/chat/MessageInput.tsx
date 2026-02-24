@@ -6,9 +6,10 @@ const CHAR_WARN_THRESHOLD = MAX_MESSAGE_SIZE - 500;
 interface MessageInputProps {
   onSend: (content: string, files: File[]) => void;
   channelName: string;
+  onKeyPress?: () => void;
 }
 
-export function MessageInput({ onSend, channelName }: MessageInputProps) {
+export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputProps) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -33,6 +34,8 @@ export function MessageInput({ onSend, channelName }: MessageInputProps) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    } else {
+      onKeyPress?.();
     }
   };
 

@@ -1,18 +1,24 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../store";
 
 interface MessageActionsProps {
   messageId: string;
+  channelId: string;
   isOwn: boolean;
   onEdit?: () => void;
 }
 
 export function MessageActions({
   messageId,
+  channelId,
   isOwn,
   onEdit,
 }: MessageActionsProps) {
-  const deleteMessage = useAppStore((s) => s.deleteMessage);
   const openModal = useAppStore((s) => s.openModal);
+
+  const handleDelete = () => {
+    invoke("delete_message", { channelId, messageId }).catch(console.error);
+  };
 
   return (
     <div
@@ -52,7 +58,7 @@ export function MessageActions({
               openModal("confirm", {
                 title: "Delete Message",
                 message: "Are you sure you want to delete this message?",
-                onConfirm: () => deleteMessage(messageId),
+                onConfirm: handleDelete,
               })
             }
             className="rounded-md p-1 text-red-400 transition-colors hover:bg-[var(--interactive-hover)] hover:text-red-300"

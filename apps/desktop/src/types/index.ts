@@ -36,6 +36,8 @@ export interface Message {
   createdAt: string;
   editedAt: string | null;
   attachments: FileAttachment[];
+  status?: "pending" | "delivered" | "failed" | "decrypt_failed";
+  failureReason?: "SessionNotFound" | "SessionCorrupted" | "DecryptionFailed";
 }
 
 export interface User {

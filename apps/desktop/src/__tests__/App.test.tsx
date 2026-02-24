@@ -1,7 +1,15 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import App from "../App";
 import { useAppStore } from "../store";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
 
 describe("App", () => {
   beforeEach(() => {

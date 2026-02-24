@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../store";
 import { Spinner } from "../ui/Spinner";
 
-export function ConnectionBanner(): JSX.Element | null {
+export function ConnectionBanner() {
   const connectionState = useAppStore((s) => s.connectionState);
 
   switch (connectionState.status) {
