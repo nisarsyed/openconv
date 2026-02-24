@@ -1,6 +1,12 @@
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 
+/// Default plaintext TTL: 24 hours.
+pub const DEFAULT_PLAINTEXT_TTL_SECS: i64 = 24 * 3600;
+
+/// Power-user TTL: 7 days (opt-in via settings).
+pub const EXTENDED_PLAINTEXT_TTL_SECS: i64 = 7 * 24 * 3600;
+
 pub struct CachedMessage {
     pub id: String,
     pub channel_id: Option<String>,
@@ -237,6 +243,81 @@ pub fn update_message_content(
     Ok(())
 }
 
+/// Update message content using last-write-wins: only update if the new edited_at
+/// is newer than the existing one. Returns true if the update was applied.
+pub fn update_message_content_lww(
+    conn: &Connection,
+    id: &str,
+    new_plaintext: &str,
+    edited_at: i64,
+    decrypted_at: i64,
+) -> Result<bool, AppError> {
+    let rows = conn.execute(
+        "UPDATE messages
+         SET plaintext = ?1, edited_at = ?2, decrypted_at = ?3
+         WHERE id = ?4 AND (edited_at IS NULL OR edited_at < ?2)",
+        rusqlite::params![new_plaintext, edited_at, decrypted_at, id],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Get messages that need re-decryption (plaintext is NULL but ciphertext exists).
+/// Returns messages created within the given window, ordered by most recent first.
+pub fn get_messages_needing_redecrypt(
+    conn: &Connection,
+    window_secs: i64,
+) -> Result<Vec<CachedMessage>, AppError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| AppError::new(e.to_string()))?
+        .as_secs() as i64;
+    let cutoff = (now - window_secs) * 1000; // convert to ms since created_at is in ms
+
+    let mut stmt = conn.prepare(
+        "SELECT id, channel_id, dm_channel_id, sender_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+         FROM messages
+         WHERE plaintext IS NULL
+           AND ciphertext IS NOT NULL
+           AND status = 'delivered'
+           AND created_at > ?1
+         ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([cutoff], |row| {
+        Ok(CachedMessage {
+            id: row.get(0)?,
+            channel_id: row.get(1)?,
+            dm_channel_id: row.get(2)?,
+            sender_id: row.get(3)?,
+            plaintext: row.get(4)?,
+            ciphertext: row.get(5)?,
+            message_type: row.get(6)?,
+            created_at: row.get(7)?,
+            edited_at: row.get(8)?,
+            decrypted_at: row.get(9)?,
+            status: row.get(10)?,
+        })
+    })?;
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row?);
+    }
+    Ok(messages)
+}
+
+/// Check if a message is soft-deleted.
+pub fn is_deleted(conn: &Connection, id: &str) -> Result<bool, AppError> {
+    let result = conn.query_row(
+        "SELECT status FROM messages WHERE id = ?1",
+        [id],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(status) => Ok(status == "deleted"),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +465,153 @@ mod tests {
 
         let m2 = get_message(&conn, "m2").unwrap().unwrap();
         assert!(m2.plaintext.is_some(), "recent plaintext should remain");
+    }
+
+    #[test]
+    fn test_default_ttl_is_24_hours() {
+        assert_eq!(DEFAULT_PLAINTEXT_TTL_SECS, 24 * 3600);
+    }
+
+    #[test]
+    fn test_extended_ttl_is_7_days() {
+        assert_eq!(EXTENDED_PLAINTEXT_TTL_SECS, 7 * 24 * 3600);
+    }
+
+    #[test]
+    fn test_ttl_cleanup_preserves_ciphertext() {
+        let conn = test_conn();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let mut msg = make_msg("m1", "ch1", "u1", 1000);
+        msg.plaintext = Some("secret text".to_string());
+        msg.ciphertext = Some(vec![1, 2, 3, 4]);
+        msg.decrypted_at = Some(now - 7200);
+        insert_message(&conn, &msg).unwrap();
+
+        clear_expired_plaintext(&conn, 3600).unwrap();
+
+        let m1 = get_message(&conn, "m1").unwrap().unwrap();
+        assert!(m1.plaintext.is_none(), "plaintext should be cleared");
+        assert_eq!(m1.ciphertext, Some(vec![1, 2, 3, 4]), "ciphertext should be preserved");
+        assert_eq!(m1.status, "delivered", "status should be unchanged");
+    }
+
+    #[test]
+    fn test_messages_needing_redecrypt() {
+        let conn = test_conn();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // Message with NULL plaintext but ciphertext present - should be returned
+        let msg1 = CachedMessage {
+            id: "m1".to_string(),
+            channel_id: Some("ch1".to_string()),
+            dm_channel_id: None,
+            sender_id: "u1".to_string(),
+            plaintext: None,
+            ciphertext: Some(vec![1, 2, 3]),
+            message_type: Some("signal".to_string()),
+            created_at: now_ms - 1000,
+            edited_at: None,
+            decrypted_at: None,
+            status: "delivered".to_string(),
+        };
+        insert_message(&conn, &msg1).unwrap();
+
+        // Message with plaintext present - should NOT be returned
+        let msg2 = CachedMessage {
+            id: "m2".to_string(),
+            channel_id: Some("ch1".to_string()),
+            dm_channel_id: None,
+            sender_id: "u1".to_string(),
+            plaintext: Some("already decrypted".to_string()),
+            ciphertext: None,
+            message_type: None,
+            created_at: now_ms - 2000,
+            edited_at: None,
+            decrypted_at: Some(now_ms),
+            status: "delivered".to_string(),
+        };
+        insert_message(&conn, &msg2).unwrap();
+
+        // Message that's too old - should NOT be returned
+        let msg3 = CachedMessage {
+            id: "m3".to_string(),
+            channel_id: Some("ch1".to_string()),
+            dm_channel_id: None,
+            sender_id: "u1".to_string(),
+            plaintext: None,
+            ciphertext: Some(vec![4, 5, 6]),
+            message_type: Some("signal".to_string()),
+            created_at: 1000, // very old
+            edited_at: None,
+            decrypted_at: None,
+            status: "delivered".to_string(),
+        };
+        insert_message(&conn, &msg3).unwrap();
+
+        let needing = get_messages_needing_redecrypt(&conn, 3600).unwrap();
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].id, "m1");
+    }
+
+    #[test]
+    fn test_lww_edit_newer_wins() {
+        let conn = test_conn();
+        let mut msg = make_msg("m1", "ch1", "u1", 1000);
+        msg.edited_at = Some(100);
+        insert_message(&conn, &msg).unwrap();
+
+        // Newer edit should be applied
+        let applied = update_message_content_lww(&conn, "m1", "new content", 200, 200).unwrap();
+        assert!(applied, "newer edit should be applied");
+
+        let retrieved = get_message(&conn, "m1").unwrap().unwrap();
+        assert_eq!(retrieved.plaintext.as_deref(), Some("new content"));
+        assert_eq!(retrieved.edited_at, Some(200));
+    }
+
+    #[test]
+    fn test_lww_edit_older_loses() {
+        let conn = test_conn();
+        let mut msg = make_msg("m1", "ch1", "u1", 1000);
+        msg.edited_at = Some(200);
+        msg.plaintext = Some("latest content".to_string());
+        insert_message(&conn, &msg).unwrap();
+
+        // Older edit should NOT be applied
+        let applied = update_message_content_lww(&conn, "m1", "old content", 100, 100).unwrap();
+        assert!(!applied, "older edit should not be applied");
+
+        let retrieved = get_message(&conn, "m1").unwrap().unwrap();
+        assert_eq!(retrieved.plaintext.as_deref(), Some("latest content"));
+        assert_eq!(retrieved.edited_at, Some(200));
+    }
+
+    #[test]
+    fn test_lww_edit_null_edited_at_always_accepts() {
+        let conn = test_conn();
+        let msg = make_msg("m1", "ch1", "u1", 1000);
+        insert_message(&conn, &msg).unwrap();
+
+        // Message with no edited_at should accept any edit
+        let applied = update_message_content_lww(&conn, "m1", "edited", 100, 100).unwrap();
+        assert!(applied, "first edit on unedited message should be applied");
+    }
+
+    #[test]
+    fn test_is_deleted() {
+        let conn = test_conn();
+        insert_message(&conn, &make_msg("m1", "ch1", "u1", 1000)).unwrap();
+
+        assert!(!is_deleted(&conn, "m1").unwrap());
+        soft_delete_message(&conn, "m1").unwrap();
+        assert!(is_deleted(&conn, "m1").unwrap());
     }
 
     #[test]

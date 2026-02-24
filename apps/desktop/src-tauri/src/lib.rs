@@ -80,6 +80,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::dm::start_dm,
         commands::dm::list_dms,
         commands::dm::send_dm_message,
+        commands::sync::sync_inactive_channels,
+        commands::sync::redecrypt_message,
+        commands::sync::retry_queued_message,
+        commands::sync::discard_queued_message,
     ])
 }
 

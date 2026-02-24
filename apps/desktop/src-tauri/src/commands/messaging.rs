@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::auth_service::AppError;
 use crate::cache::messages::{self, CachedMessage};
+use crate::cache::queue;
 use crate::cache::search;
 use crate::cache::CacheDb;
 use crate::crypto_service::CryptoState;
@@ -134,9 +135,10 @@ pub async fn send_message(
         })
         .map_err(|_| AppError::new("failed to send message: WebSocket channel closed"))?;
     } else {
-        // Not connected -- mark as queued for offline delivery (section-09)
+        // Not connected -- enqueue for offline delivery
         let conn = cache_db.lock()?;
         messages::update_message_status(&conn, &msg_id_str, MSG_STATUS_QUEUED)?;
+        queue::enqueue_message(&conn, &msg_id_str, Some(&channel_id), None, &plaintext, now_ms)?;
     }
 
     Ok(msg_id_str)

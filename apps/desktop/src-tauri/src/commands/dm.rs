@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::auth_service::{self, AppError};
 use crate::cache::dm_channels::{self, CachedDmChannel};
 use crate::cache::messages::{self, CachedMessage};
+use crate::cache::queue;
 use crate::cache::search;
 use crate::cache::CacheDb;
 use crate::ws::handlers::{MSG_STATUS_PENDING, MSG_STATUS_QUEUED};
@@ -275,8 +276,10 @@ pub async fn send_dm_message(
         })
         .map_err(|_| AppError::new("failed to send DM: WebSocket channel closed"))?;
     } else {
+        // Not connected -- enqueue for offline delivery
         let conn = cache_db.lock()?;
         messages::update_message_status(&conn, &msg_id_str, MSG_STATUS_QUEUED)?;
+        queue::enqueue_message(&conn, &msg_id_str, None, Some(&dm_channel_id), &plaintext, now_ms)?;
     }
 
     Ok(msg_id_str)
