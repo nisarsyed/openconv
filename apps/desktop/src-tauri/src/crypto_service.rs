@@ -135,6 +135,22 @@ impl CryptoService {
             .map_err(|e| AppError::new(format!("crypto DB lock poisoned: {e}")))
     }
 
+    /// Whether a Signal session already exists for a specific remote device.
+    ///
+    /// Callers use this to avoid fetching a pre-key bundle they do not need:
+    /// every bundle fetch permanently consumes a one-time pre-key on the
+    /// server, and the supply is finite.
+    pub fn has_session(&self, user_id: &str, device_id: u32) -> Result<bool, AppError> {
+        let conn = self.lock_crypto()?;
+        Ok(conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM crypto_sessions WHERE address = ?1 AND device_id = ?2",
+                rusqlite::params![user_id, device_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false))
+    }
+
     /// Establish a Signal session with a remote device if one does not already exist.
     ///
     /// Checks the local session store. If no session is found, uses the provided
@@ -334,6 +350,55 @@ mod tests {
     }
 
     // --- multi-device ---
+
+    /// `has_session` is what lets the send path skip fetching a pre-key bundle
+    /// it does not need. Each fetch permanently consumes a one-time pre-key on
+    /// the server, so a wrong answer here exhausts a recipient's supply.
+    #[test]
+    fn has_session_is_per_device_and_reflects_establishment() {
+        let alice = test_service();
+        let bob_d1 = test_service();
+        let bob_d2 = test_service();
+
+        assert!(!alice.has_session("bob-user-id", 1).unwrap());
+        assert!(!alice.has_session("bob-user-id", 2).unwrap());
+
+        let bundle_d1 = generate_bundle(&bob_d1, "bob-user-id");
+        alice
+            .ensure_session("bob-user-id", 1, Some(&bundle_d1))
+            .unwrap();
+
+        assert!(alice.has_session("bob-user-id", 1).unwrap());
+        assert!(
+            !alice.has_session("bob-user-id", 2).unwrap(),
+            "device 2 must still report no session, or its bundle fetch is skipped"
+        );
+
+        let bundle_d2 = generate_bundle(&bob_d2, "bob-user-id");
+        alice
+            .ensure_session("bob-user-id", 2, Some(&bundle_d2))
+            .unwrap();
+        assert!(alice.has_session("bob-user-id", 2).unwrap());
+    }
+
+    /// Once a session exists, `ensure_session` must succeed without a bundle —
+    /// this is the path the send pipeline relies on to avoid burning pre-keys.
+    #[test]
+    fn ensure_session_without_bundle_succeeds_when_session_exists() {
+        let alice = test_service();
+        let bob = test_service();
+
+        let bundle = generate_bundle(&bob, "bob-user-id");
+        alice
+            .ensure_session("bob-user-id", 1, Some(&bundle))
+            .unwrap();
+
+        assert!(alice.ensure_session("bob-user-id", 1, None).is_ok());
+        assert!(
+            alice.ensure_session("bob-user-id", 2, None).is_err(),
+            "a device with no session must still demand a bundle"
+        );
+    }
 
     /// Regression test for the session-existence check.
     ///

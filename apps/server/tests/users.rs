@@ -330,6 +330,97 @@ async fn get_prekeys_returns_one_bundle(pool: sqlx::PgPool) {
     assert!(json["key_data"].is_array());
 }
 
+/// A bundle belonging to the wrong device of the right user produces a session
+/// that can never decrypt anything the intended device sends, so the
+/// device-scoped endpoint must never return another device's bundle.
+#[sqlx::test]
+async fn get_device_prekeys_returns_only_the_requested_devices_bundle(pool: sqlx::PgPool) {
+    let (app, jwt, _) = build_test_app(pool.clone()).await;
+    let (target_id, device_1, _) =
+        seed_user(&pool, &jwt, "Target", "scoped_target@example.com").await;
+    let (_, _, requester_token) =
+        seed_user(&pool, &jwt, "Requester", "scoped_requester@example.com").await;
+
+    // A second device for the same user, with a distinguishable bundle.
+    let device_2 = openconv_shared::ids::DeviceId::new();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 2, NOW(), NOW())",
+    )
+    .bind(device_2.0)
+    .bind(target_id.0)
+    .bind("Second Device")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    for (device_id, marker) in [(device_1, 0xAAu8), (device_2, 0xBBu8)] {
+        sqlx::query("INSERT INTO pre_key_bundles (id, user_id, device_id, key_data, is_used) VALUES ($1, $2, $3, $4, false)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(target_id.0)
+            .bind(device_id.0)
+            .bind(vec![marker; 32])
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let req = authed_get(
+        &format!("/api/users/{}/devices/{}/prekeys", target_id.0, device_2.0),
+        &requester_token,
+    );
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), 200);
+
+    let json = response_json(response).await;
+    let key_data: Vec<u8> = serde_json::from_value(json["key_data"].clone()).unwrap();
+    assert_eq!(
+        key_data,
+        vec![0xBBu8; 32],
+        "must return device_2's bundle, not device_1's"
+    );
+}
+
+#[sqlx::test]
+async fn get_device_prekeys_returns_404_when_device_has_none(pool: sqlx::PgPool) {
+    let (app, jwt, _) = build_test_app(pool.clone()).await;
+    let (target_id, device_1, _) =
+        seed_user(&pool, &jwt, "Target", "scoped_empty_target@example.com").await;
+    let (_, _, requester_token) =
+        seed_user(&pool, &jwt, "Requester", "scoped_empty_req@example.com").await;
+
+    // A bundle exists for the user, but belongs to a different device.
+    let device_2 = openconv_shared::ids::DeviceId::new();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 2, NOW(), NOW())",
+    )
+    .bind(device_2.0)
+    .bind(target_id.0)
+    .bind("Second Device")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO pre_key_bundles (id, user_id, device_id, key_data, is_used) VALUES ($1, $2, $3, $4, false)")
+        .bind(uuid::Uuid::now_v7())
+        .bind(target_id.0)
+        .bind(device_2.0)
+        .bind(vec![1u8; 32])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let req = authed_get(
+        &format!("/api/users/{}/devices/{}/prekeys", target_id.0, device_1.0),
+        &requester_token,
+    );
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        404,
+        "must not fall back to another device's bundle"
+    );
+}
+
 #[sqlx::test]
 async fn get_prekeys_marks_bundle_as_used(pool: sqlx::PgPool) {
     let (app, jwt, _) = build_test_app(pool.clone()).await;

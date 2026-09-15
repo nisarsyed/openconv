@@ -77,6 +77,10 @@ pub fn build_router(state: AppState) -> axum::Router {
         .route("/{user_id}", get(handlers::users::get_user))
         .route("/{user_id}/prekeys", get(handlers::users::get_prekeys))
         .route("/{user_id}/devices", get(handlers::users::get_user_devices))
+        .route(
+            "/{user_id}/devices/{device_id}/prekeys",
+            get(handlers::users::get_device_prekeys),
+        )
         .layer(crate::middleware::rate_limit::RateLimitLayer::new(
             state.redis.clone(),
             state.config.rate_limit.auth_per_ip_per_minute,

@@ -269,7 +269,7 @@ pub async fn retry_decrypt(
     cache_db: State<'_, CacheDb>,
 ) -> Result<(), AppError> {
     // Load the failed message from cache
-    let (sender_id, sender_signal_did_opt, ciphertext, message_type) = {
+    let (sender_id, sender_device_id_opt, sender_signal_did_opt, ciphertext, message_type) = {
         let conn = cache_db.lock()?;
         let msg = messages::get_message(&conn, &message_id)?
             .ok_or_else(|| AppError::new("message not found"))?;
@@ -283,7 +283,13 @@ pub async fn retry_decrypt(
             .ok_or_else(|| AppError::new("no ciphertext retained for retry"))?;
         let mt = msg.message_type.unwrap_or_else(|| "signal".to_string());
 
-        (msg.sender_id, msg.sender_signal_device_id, ct, mt)
+        (
+            msg.sender_id,
+            msg.sender_device_id,
+            msg.sender_signal_device_id,
+            ct,
+            mt,
+        )
     };
 
     // Re-fetch pre-key bundle and establish new session before retrying.
@@ -294,11 +300,17 @@ pub async fn retry_decrypt(
             .map_err(|_| AppError::new(format!("invalid sender user_id: {sender_id}")))?;
         let (http_client, api_base_url, access_token) =
             device_directory::prepare_http_context().await?;
+        let sender_device_id: openconv_shared::ids::DeviceId = sender_device_id_opt
+            .as_deref()
+            .ok_or_else(|| AppError::new("cannot retry: sender device unknown for this message"))?
+            .parse()
+            .map_err(|_| AppError::new("cannot retry: malformed sender device id"))?;
         let bundle = device_directory::fetch_prekey_bundle(
             &http_client,
             &api_base_url,
             &access_token,
             &sender_user_id,
+            &sender_device_id,
         )
         .await?;
 

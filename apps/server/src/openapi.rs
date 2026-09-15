@@ -32,6 +32,8 @@ use utoipa::{Modify, OpenApi};
         crate::handlers::users::get_user,
         crate::handlers::users::search_users,
         crate::handlers::users::get_prekeys,
+        crate::handlers::users::get_device_prekeys,
+        crate::handlers::users::get_user_devices,
         crate::handlers::users::upload_prekeys,
         // Guilds
         crate::handlers::guilds::create_guild,

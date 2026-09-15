@@ -250,6 +250,52 @@ pub async fn get_prekeys(
     Ok(Json(PreKeyBundleResponse { key_data }))
 }
 
+#[utoipa::path(get, path = "/api/users/{user_id}/devices/{device_id}/prekeys", tag = "Users", security(("bearer_auth" = [])), params(("user_id" = uuid::Uuid, Path, description = "User ID"), ("device_id" = uuid::Uuid, Path, description = "Device ID")), responses((status = 200, body = PreKeyBundleResponse), (status = 404, body = crate::error::ErrorResponse)))]
+/// GET /api/users/:user_id/devices/:device_id/prekeys — fetch one unused
+/// pre-key bundle belonging to a specific device.
+///
+/// Sessions are per-device, so a bundle from the wrong device of the right user
+/// produces a session that can never decrypt anything that device sends. The
+/// unscoped `get_prekeys` above cannot distinguish them.
+pub async fn get_device_prekeys(
+    State(state): State<AppState>,
+    _auth_user: AuthUser,
+    Path((user_id, device_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<Json<PreKeyBundleResponse>, ServerError> {
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    let row = sqlx::query(
+        "SELECT id, key_data FROM pre_key_bundles \
+         WHERE user_id = $1 AND device_id = $2 AND is_used = false \
+         LIMIT 1 FOR UPDATE SKIP LOCKED",
+    )
+    .bind(user_id)
+    .bind(device_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?
+    .ok_or(ServerError(OpenConvError::NotFound))?;
+
+    let bundle_id: uuid::Uuid = row.get("id");
+    let key_data: Vec<u8> = row.get("key_data");
+
+    sqlx::query("UPDATE pre_key_bundles SET is_used = true WHERE id = $1")
+        .bind(bundle_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    Ok(Json(PreKeyBundleResponse { key_data }))
+}
+
 #[utoipa::path(get, path = "/api/users/{user_id}/devices", tag = "Users", security(("bearer_auth" = [])), params(("user_id" = uuid::Uuid, Path, description = "User ID")), responses((status = 200, body = DevicesListResponse), (status = 404, body = crate::error::ErrorResponse)))]
 /// GET /api/users/:user_id/devices — list active devices for a user.
 pub async fn get_user_devices(

@@ -126,15 +126,20 @@ async fn fetch_user_devices(
     Ok(resp.devices)
 }
 
-/// Fetch a pre-key bundle for a user from the server.
+/// Fetch a pre-key bundle for one specific device from the server.
 ///
-/// Returns the raw bundle bytes suitable for passing to
-/// `CryptoService::ensure_session`.
+/// Scoped to the device because Signal sessions are per-device: a bundle from
+/// another device of the same user yields a session that can never decrypt
+/// anything the intended device sends.
+///
+/// Each call permanently consumes a one-time pre-key on the server, so only
+/// call it for devices that do not already have a session.
 pub async fn fetch_prekey_bundle(
     http_client: &reqwest::Client,
     api_base_url: &str,
     access_token: &str,
     user_id: &UserId,
+    device_id: &openconv_shared::ids::DeviceId,
 ) -> Result<Vec<u8>, AppError> {
     #[derive(serde::Deserialize)]
     struct PreKeyBundleResponse {
@@ -142,12 +147,19 @@ pub async fn fetch_prekey_bundle(
     }
 
     let resp: PreKeyBundleResponse = http_client
-        .get(format!("{api_base_url}/api/users/{}/prekeys", user_id.0))
+        .get(format!(
+            "{api_base_url}/api/users/{}/devices/{}/prekeys",
+            user_id.0, device_id.0
+        ))
         .bearer_auth(access_token)
         .send()
         .await?
         .error_for_status()
-        .map_err(|e| AppError::new(format!("failed to fetch prekey bundle for {user_id}: {e}")))?
+        .map_err(|e| {
+            AppError::new(format!(
+                "failed to fetch prekey bundle for {user_id}/{device_id}: {e}"
+            ))
+        })?
         .json()
         .await?;
 
@@ -261,19 +273,50 @@ async fn establish_sessions_and_encrypt(
         .cloned()
         .collect();
 
-    // Fetch pre-key bundles for each unique target
-    let mut bundles = Vec::with_capacity(unique_devices.len());
-    for md in &unique_devices {
-        let bundle =
-            fetch_prekey_bundle(http_client, api_base_url, access_token, &md.user_id).await?;
-        bundles.push(bundle);
-    }
-
-    // Establish sessions and encrypt (blocking crypto operations)
     let crypto_devices: Vec<_> = unique_devices
         .iter()
         .map(|md| md.to_crypto_device_info())
         .collect();
+
+    // Find out which devices still need a session *before* fetching anything.
+    // Every bundle fetch permanently consumes a one-time pre-key on the server,
+    // so fetching unconditionally would exhaust a recipient's supply after a
+    // handful of messages and then fail every send with a 404.
+    let devices_to_check = crypto_devices.clone();
+    let app_clone = app.clone();
+    let has_session: Vec<bool> = tokio::task::spawn_blocking(move || {
+        let crypto_state = app_clone.state::<CryptoState>();
+        devices_to_check
+            .iter()
+            .map(|d| {
+                crypto_state
+                    .crypto_service
+                    .has_session(&d.user_id, d.device_id)
+            })
+            .collect::<Result<Vec<_>, AppError>>()
+    })
+    .await
+    .map_err(|e| AppError::new(format!("internal error: {e}")))??;
+
+    let mut bundles: Vec<Option<Vec<u8>>> = Vec::with_capacity(unique_devices.len());
+    for (md, established) in unique_devices.iter().zip(&has_session) {
+        if *established {
+            bundles.push(None);
+        } else {
+            bundles.push(Some(
+                fetch_prekey_bundle(
+                    http_client,
+                    api_base_url,
+                    access_token,
+                    &md.user_id,
+                    &md.device_id,
+                )
+                .await?,
+            ));
+        }
+    }
+
+    // Establish sessions and encrypt (blocking crypto operations)
     let plaintext_owned = plaintext.to_vec();
     let app_clone = app.clone();
 
@@ -283,7 +326,7 @@ async fn establish_sessions_and_encrypt(
             crypto_state.crypto_service.ensure_session(
                 &device.user_id,
                 device.device_id,
-                Some(&bundles[i]),
+                bundles[i].as_deref(),
             )?;
         }
         crypto_state
