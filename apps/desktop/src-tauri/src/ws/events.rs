@@ -1,5 +1,5 @@
 use openconv_shared::api::ws::{PresenceStatus, ServerMessage};
-use openconv_shared::ids::{ChannelId, GuildId, MessageId, UserId};
+use openconv_shared::ids::{ChannelId, DmChannelId, GuildId, MessageId, UserId};
 use tauri::{AppHandle, Emitter};
 
 use super::state::WsConnectionState;
@@ -26,6 +26,18 @@ pub struct WsMessageUpdatedPayload {
     /// "delivered", "decrypt_failed"
     pub status: String,
     pub edited_at: String,
+}
+
+/// Payload emitted for ws:dm_message events (new incoming DM).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsDmMessagePayload {
+    pub dm_channel_id: DmChannelId,
+    pub message_id: MessageId,
+    pub sender_id: UserId,
+    pub plaintext: Option<String>,
+    /// "delivered" or "decrypt_failed"
+    pub status: String,
+    pub created_at: String,
 }
 
 /// Payload emitted for ws:typing events.
@@ -89,6 +101,7 @@ pub struct ChannelPayload {
 pub const EVENT_READY_DATA: &str = "ws:ready_data";
 pub const EVENT_STATE: &str = "ws:state";
 pub const EVENT_MESSAGE: &str = "ws:message";
+pub const EVENT_DM_MESSAGE: &str = "ws:dm_message";
 pub const EVENT_MESSAGE_UPDATED: &str = "ws:message_updated";
 pub const EVENT_MESSAGE_DELETED: &str = "ws:message_deleted";
 pub const EVENT_TYPING: &str = "ws:typing";
@@ -110,6 +123,11 @@ pub fn emit_state(app: &AppHandle, state: &WsConnectionState) {
 /// Emit a ws:message event for a new incoming message.
 pub fn emit_message(app: &AppHandle, payload: &WsMessagePayload) {
     let _ = app.emit(EVENT_MESSAGE, payload);
+}
+
+/// Emit a ws:dm_message event for a new incoming DM.
+pub fn emit_dm_message(app: &AppHandle, payload: &WsDmMessagePayload) {
+    let _ = app.emit(EVENT_DM_MESSAGE, payload);
 }
 
 /// Emit a ws:message_updated event.
@@ -203,7 +221,8 @@ pub fn dispatch_server_message(app: &AppHandle, msg: &ServerMessage) -> bool {
         // pipeline in handlers.rs -- they should not reach here.
         ServerMessage::MessageCreated { .. }
         | ServerMessage::MessageUpdated { .. }
-        | ServerMessage::MessageDeleted { .. } => {
+        | ServerMessage::MessageDeleted { .. }
+        | ServerMessage::DmMessageCreated { .. } => {
             tracing::warn!(
                 "dispatch_server_message: message variant should be handled by pipeline"
             );

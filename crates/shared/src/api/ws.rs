@@ -118,6 +118,25 @@ pub enum ServerMessage {
         message_type: String,
         edited_at: chrono::DateTime<chrono::Utc>,
     },
+    /// A new DM message, addressed to this specific device.
+    ///
+    /// Separate from `MessageCreated` because DMs are keyed by `DmChannelId`
+    /// and carry no guild channel; collapsing them would make `channel_id`
+    /// optional on the far more common guild path.
+    DmMessageCreated {
+        dm_channel_id: DmChannelId,
+        message_id: MessageId,
+        sender_id: UserId,
+        /// UUID of the sending device — identifies the device (e.g. for UI).
+        sender_device_id: DeviceId,
+        /// Signal protocol device id of the sender. See `MessageCreated`.
+        sender_signal_device_id: u32,
+        #[serde(with = "base64_serde")]
+        #[cfg_attr(feature = "utoipa", schema(value_type = String))]
+        ciphertext: Vec<u8>,
+        message_type: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+    },
     MessageDeleted {
         channel_id: ChannelId,
         message_id: MessageId,

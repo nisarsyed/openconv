@@ -211,26 +211,40 @@ async fn handle_client_message(
         }
         ClientMessage::SendMessage {
             channel_id,
-            dm_channel_id: _,
+            dm_channel_id,
             recipients,
             client_nonce: _,
         } => {
-            // Resolve effective channel_id (DM support deferred to section-08)
-            let effective_channel_id = match channel_id {
-                Some(cid) => cid,
-                None => {
-                    send_error(state, user_id, device_id, 4004, "channel_id required");
-                    return;
+            // Exactly one of the two targets must be set — the wire type allows
+            // both to be Some, the storage schema does not.
+            match (channel_id, dm_channel_id) {
+                (Some(cid), None) => {
+                    super::fanout::handle_send_message(state, user_id, device_id, cid, recipients)
+                        .await;
                 }
-            };
-            super::fanout::handle_send_message(
-                state,
-                user_id,
-                device_id,
-                effective_channel_id,
-                recipients,
-            )
-            .await;
+                (None, Some(dm_id)) => {
+                    super::fanout::handle_send_dm(state, user_id, device_id, dm_id, recipients)
+                        .await;
+                }
+                (Some(_), Some(_)) => {
+                    send_error(
+                        state,
+                        user_id,
+                        device_id,
+                        4004,
+                        "exactly one of channel_id or dm_channel_id must be set",
+                    );
+                }
+                (None, None) => {
+                    send_error(
+                        state,
+                        user_id,
+                        device_id,
+                        4004,
+                        "channel_id or dm_channel_id required",
+                    );
+                }
+            }
         }
         ClientMessage::EditMessage {
             channel_id,

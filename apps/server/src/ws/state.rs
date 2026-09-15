@@ -228,9 +228,13 @@ impl PermissionCache {
 // ─── Rate Limiter ────────────────────────────────────────────
 
 /// In-memory sliding-window rate limiter for WebSocket message sends.
-/// Tracks timestamps per (user, channel) pair.
+///
+/// Tracks timestamps per (user, conversation) pair, where a conversation is
+/// either a guild channel or a DM channel. The key is the raw UUID so both id
+/// types share one limiter — a sender should not get a fresh budget simply by
+/// switching between a channel and a DM.
 pub struct WsRateLimiter {
-    windows: DashMap<(UserId, ChannelId), VecDeque<Instant>>,
+    windows: DashMap<(UserId, uuid::Uuid), VecDeque<Instant>>,
     max_per_second: usize,
 }
 
@@ -244,10 +248,10 @@ impl WsRateLimiter {
 
     /// Check if a message send is allowed. Returns true if within limit.
     /// Automatically records the attempt if allowed.
-    pub fn check_and_record(&self, user_id: UserId, channel_id: ChannelId) -> bool {
+    pub fn check_and_record(&self, user_id: UserId, conversation_id: uuid::Uuid) -> bool {
         let now = Instant::now();
         let window = Duration::from_secs(1);
-        let mut entry = self.windows.entry((user_id, channel_id)).or_default();
+        let mut entry = self.windows.entry((user_id, conversation_id)).or_default();
 
         // Evict timestamps outside the 1-second window
         while entry
@@ -542,7 +546,7 @@ mod tests {
         let uid = UserId::new();
         let cid = ChannelId::new();
         for _ in 0..5 {
-            assert!(limiter.check_and_record(uid, cid));
+            assert!(limiter.check_and_record(uid, cid.0));
         }
     }
 
@@ -552,9 +556,9 @@ mod tests {
         let uid = UserId::new();
         let cid = ChannelId::new();
         for _ in 0..5 {
-            limiter.check_and_record(uid, cid);
+            limiter.check_and_record(uid, cid.0);
         }
-        assert!(!limiter.check_and_record(uid, cid));
+        assert!(!limiter.check_and_record(uid, cid.0));
     }
 
     #[test]
@@ -564,12 +568,12 @@ mod tests {
         let cid1 = ChannelId::new();
         let cid2 = ChannelId::new();
 
-        assert!(limiter.check_and_record(uid, cid1));
-        assert!(limiter.check_and_record(uid, cid1));
-        assert!(!limiter.check_and_record(uid, cid1));
+        assert!(limiter.check_and_record(uid, cid1.0));
+        assert!(limiter.check_and_record(uid, cid1.0));
+        assert!(!limiter.check_and_record(uid, cid1.0));
 
         // Different channel still has capacity
-        assert!(limiter.check_and_record(uid, cid2));
+        assert!(limiter.check_and_record(uid, cid2.0));
     }
 
     // ─── TypingManager tests ─────────────────────────────────

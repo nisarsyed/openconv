@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use futures_util::StreamExt;
 use openconv_shared::api::ws::{ClientMessage, ServerMessage};
-use openconv_shared::ids::{ChannelId, DeviceId, MessageId, UserId};
+use openconv_shared::ids::{ChannelId, DeviceId, DmChannelId, MessageId, UserId};
 use tauri::{AppHandle, Manager};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -194,6 +194,31 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             )
             .await;
         }
+        ServerMessage::DmMessageCreated {
+            dm_channel_id,
+            message_id,
+            sender_id,
+            sender_device_id,
+            sender_signal_device_id,
+            ciphertext,
+            message_type,
+            created_at,
+        } => {
+            handle_dm_message_created(
+                app,
+                IncomingDmMessage {
+                    dm_channel_id: *dm_channel_id,
+                    message_id: *message_id,
+                    sender_id: *sender_id,
+                    sender_device_id: *sender_device_id,
+                    sender_signal_device_id: *sender_signal_device_id,
+                    ciphertext,
+                    message_type,
+                    created_at,
+                },
+            )
+            .await;
+        }
         ServerMessage::MessageDeleted {
             channel_id,
             message_id,
@@ -334,6 +359,180 @@ struct IncomingMessage<'a> {
     timestamp: &'a chrono::DateTime<chrono::Utc>,
 }
 
+/// Decrypt one incoming ciphertext on the blocking pool.
+///
+/// Returns the plaintext and the status to record. A decrypt failure is not an
+/// error here: the message is still stored so the user sees a placeholder and
+/// `retry_decrypt` can rebuild the session and try again.
+async fn decrypt_incoming(
+    app: &AppHandle,
+    sender_id: &str,
+    signal_device_id: u32,
+    ciphertext: Vec<u8>,
+    message_type: String,
+    msg_id_for_log: &str,
+) -> (Option<String>, &'static str) {
+    let sender_id_owned = sender_id.to_string();
+    let app_clone = app.clone();
+    let decrypt_result = tokio::task::spawn_blocking(move || {
+        let crypto_state = app_clone.state::<CryptoState>();
+        crypto_state.crypto_service.decrypt_message(
+            &sender_id_owned,
+            signal_device_id,
+            &ciphertext,
+            &message_type,
+        )
+    })
+    .await;
+
+    match decrypt_result {
+        Ok(Ok(plaintext_bytes)) => {
+            let pt = String::from_utf8_lossy(&plaintext_bytes).to_string();
+            (Some(pt), MSG_STATUS_DELIVERED)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("decrypt failed for message {msg_id_for_log}: {e}");
+            (None, MSG_STATUS_DECRYPT_FAILED)
+        }
+        Err(e) => {
+            tracing::error!("spawn_blocking failed for message {msg_id_for_log}: {e}");
+            (None, MSG_STATUS_DECRYPT_FAILED)
+        }
+    }
+}
+
+/// The fields carried by a `DmMessageCreated` server frame.
+///
+/// Grouped for the same reason as [`IncomingMessage`]: they travel and are
+/// consumed together, and passing them positionally puts the function over
+/// clippy's argument limit.
+struct IncomingDmMessage<'a> {
+    dm_channel_id: DmChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    sender_device_id: DeviceId,
+    sender_signal_device_id: u32,
+    ciphertext: &'a [u8],
+    message_type: &'a str,
+    created_at: &'a chrono::DateTime<chrono::Utc>,
+}
+
+/// Decrypt an incoming DM, store it against its DM channel, and emit.
+///
+/// Mirrors `handle_message_created` but writes `dm_channel_id` instead of
+/// `channel_id`. DMs carry no guild, so there is no guild lookup and no
+/// per-channel unread counter — unread for DMs is tracked by the DM list.
+async fn handle_dm_message_created(app: &AppHandle, msg: IncomingDmMessage<'_>) {
+    let IncomingDmMessage {
+        dm_channel_id,
+        message_id,
+        sender_id,
+        sender_device_id,
+        sender_signal_device_id,
+        ciphertext,
+        message_type,
+        created_at,
+    } = msg;
+
+    let msg_id_str = message_id.to_string();
+    let dm_channel_id_str = dm_channel_id.to_string();
+
+    let (plaintext, status) = decrypt_incoming(
+        app,
+        &sender_id.to_string(),
+        sender_signal_device_id,
+        ciphertext.to_vec(),
+        message_type.to_string(),
+        &msg_id_str,
+    )
+    .await;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cached = CachedMessage {
+        id: msg_id_str.clone(),
+        channel_id: None,
+        dm_channel_id: Some(dm_channel_id_str.clone()),
+        sender_id: sender_id.to_string(),
+        sender_device_id: Some(sender_device_id.to_string()),
+        sender_signal_device_id: Some(sender_signal_device_id),
+        plaintext: plaintext.clone(),
+        ciphertext: if status == MSG_STATUS_DECRYPT_FAILED {
+            Some(ciphertext.to_vec())
+        } else {
+            None
+        },
+        message_type: Some(message_type.to_string()),
+        created_at: created_at.timestamp_millis(),
+        edited_at: None,
+        decrypted_at: if plaintext.is_some() {
+            Some(now_ms)
+        } else {
+            None
+        },
+        status: status.into(),
+    };
+
+    if let Ok(conn) = app.state::<CacheDb>().lock() {
+        if let Err(e) = messages::insert_message(&conn, &cached) {
+            tracing::warn!("failed to cache DM message {msg_id_str}: {e}");
+        }
+        if let Some(ref pt) = plaintext {
+            if let Err(e) = search::index_message(&conn, &msg_id_str, pt) {
+                tracing::warn!("failed to index DM message {msg_id_str}: {e}");
+            }
+        }
+    }
+
+    // Notify unless this DM is the channel currently on screen.
+    if let Some(ref pt) = plaintext {
+        let visible = match app.try_state::<VisibleChannelState>() {
+            Some(vs) => vs.channel_id.read().await.clone(),
+            None => None,
+        };
+        if let Some(notif_state) = app.try_state::<NotificationState>() {
+            let settings = notif_state.settings.read().await.clone();
+            let sender_display = {
+                app.state::<CacheDb>()
+                    .lock()
+                    .ok()
+                    .and_then(|conn| {
+                        conn.query_row(
+                            "SELECT display_name FROM user_cache WHERE id = ?1",
+                            [&sender_id.to_string()],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .ok()
+                    })
+                    .unwrap_or_else(|| "Someone".to_string())
+            };
+            if let Err(e) = notification_service::maybe_send_notification(
+                app,
+                &settings,
+                None,
+                Some(&dm_channel_id_str),
+                None,
+                &sender_display,
+                pt,
+                visible.as_deref(),
+            ) {
+                tracing::warn!("failed to send DM notification: {e}");
+            }
+        }
+    }
+
+    events::emit_dm_message(
+        app,
+        &events::WsDmMessagePayload {
+            dm_channel_id,
+            message_id,
+            sender_id,
+            plaintext,
+            status: status.to_string(),
+            created_at: created_at.to_rfc3339(),
+        },
+    );
+}
+
 /// Decrypt an incoming message via spawn_blocking, store in cache, index in FTS, emit event.
 async fn handle_message_created(
     app: &AppHandle,
@@ -390,34 +589,15 @@ async fn handle_message_created(
         }
     }
 
-    // Attempt decryption via spawn_blocking
-    let signal_device_id = sender_signal_device_id;
-    let app_clone = app.clone();
-    let decrypt_result = tokio::task::spawn_blocking(move || {
-        let crypto_state = app_clone.state::<CryptoState>();
-        crypto_state.crypto_service.decrypt_message(
-            &sender_id_str,
-            signal_device_id,
-            &ciphertext_owned,
-            &message_type_owned,
-        )
-    })
+    let (plaintext, status) = decrypt_incoming(
+        app,
+        &sender_id_str,
+        sender_signal_device_id,
+        ciphertext_owned,
+        message_type_owned,
+        &msg_id_str,
+    )
     .await;
-
-    let (plaintext, status) = match decrypt_result {
-        Ok(Ok(plaintext_bytes)) => {
-            let pt = String::from_utf8_lossy(&plaintext_bytes).to_string();
-            (Some(pt), MSG_STATUS_DELIVERED)
-        }
-        Ok(Err(e)) => {
-            tracing::warn!("decrypt failed for message {msg_id_str}: {e}");
-            (None, MSG_STATUS_DECRYPT_FAILED)
-        }
-        Err(e) => {
-            tracing::error!("spawn_blocking failed for message {msg_id_str}: {e}");
-            (None, MSG_STATUS_DECRYPT_FAILED)
-        }
-    };
 
     // Store in local cache
     let now_ms = chrono::Utc::now().timestamp_millis();

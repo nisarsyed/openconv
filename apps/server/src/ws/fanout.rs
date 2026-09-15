@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use openconv_shared::api::ws::RecipientPayload;
-use openconv_shared::ids::{ChannelId, DeviceId, GuildId, MessageId, UserId};
+use openconv_shared::ids::{ChannelId, DeviceId, DmChannelId, GuildId, MessageId, UserId};
 use openconv_shared::permissions::Permissions;
 use tokio::sync::broadcast;
 
@@ -247,7 +248,11 @@ pub async fn handle_send_message(
     }
 
     // Rate limit check
-    if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
+    if !state
+        .ws
+        .rate_limiter
+        .check_and_record(user_id, channel_id.0)
+    {
         send_error(state, user_id, sender_device_id, 4003, "rate limited");
         return;
     }
@@ -405,6 +410,219 @@ fn fan_out_message_created(
     }
 }
 
+// ─── Send DM ─────────────────────────────────────────────────
+
+/// Handle a `SendMessage` frame carrying a `dm_channel_id`.
+///
+/// DMs have no subscription step — there is no `Subscribe` frame for a DM
+/// channel — so delivery is driven entirely by the recipient payloads, gated on
+/// DM membership. Both the sender and every addressed user must be members;
+/// otherwise a client could use the recipients list to push envelopes at
+/// arbitrary users and learn who is online from delivery behaviour.
+pub async fn handle_send_dm(
+    state: &AppState,
+    user_id: UserId,
+    sender_device_id: DeviceId,
+    dm_channel_id: DmChannelId,
+    recipients: Vec<RecipientPayload>,
+) {
+    if recipients.is_empty() {
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4004,
+            "recipients must not be empty",
+        );
+        return;
+    }
+    if recipients.len() > MAX_RECIPIENTS {
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4004,
+            "too many recipients",
+        );
+        return;
+    }
+
+    if !state
+        .ws
+        .rate_limiter
+        .check_and_record(user_id, dm_channel_id.0)
+    {
+        send_error(state, user_id, sender_device_id, 4003, "rate limited");
+        return;
+    }
+
+    // Membership is the only authorization for a DM: there are no roles here.
+    let members = match dm_channel_members(&state.db, dm_channel_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load DM members");
+            send_error(state, user_id, sender_device_id, 4004, "internal error");
+            return;
+        }
+    };
+
+    if !members.contains(&user_id) {
+        send_error(state, user_id, sender_device_id, 4001, "permission denied");
+        return;
+    }
+    if let Some(outsider) = recipients.iter().find(|rp| !members.contains(&rp.user_id)) {
+        tracing::warn!(
+            sender = %user_id,
+            outsider = %outsider.user_id,
+            "rejected DM addressed to a non-member"
+        );
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4001,
+            "recipient is not a member of this DM channel",
+        );
+        return;
+    }
+
+    let (message_id, created_at, sender_signal_device_id) = match persist_dm_message(
+        &state.db,
+        dm_channel_id,
+        user_id,
+        sender_device_id,
+        &recipients,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to persist DM message");
+            send_error(
+                state,
+                user_id,
+                sender_device_id,
+                4004,
+                "failed to send message",
+            );
+            return;
+        }
+    };
+
+    fan_out_dm_message(
+        state,
+        dm_channel_id,
+        message_id,
+        user_id,
+        sender_device_id,
+        sender_signal_device_id,
+        &recipients,
+        created_at,
+    );
+}
+
+/// All user IDs belonging to a DM channel.
+async fn dm_channel_members(
+    db: &sqlx::PgPool,
+    dm_channel_id: DmChannelId,
+) -> Result<HashSet<UserId>, sqlx::Error> {
+    let rows: Vec<(UserId,)> =
+        sqlx::query_as("SELECT user_id FROM dm_channel_members WHERE dm_channel_id = $1")
+            .bind(dm_channel_id)
+            .fetch_all(db)
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Persist a DM message, its per-device payloads, and a sync event atomically.
+async fn persist_dm_message(
+    db: &sqlx::PgPool,
+    dm_channel_id: DmChannelId,
+    sender_id: UserId,
+    sender_device_id: DeviceId,
+    recipients: &[RecipientPayload],
+) -> Result<(MessageId, chrono::DateTime<chrono::Utc>, u32), sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    let (message_id, created_at): (MessageId, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "INSERT INTO messages (dm_channel_id, sender_id, sender_device_id, encrypted_content, nonce) \
+         VALUES ($1, $2, $3, NULL, NULL) RETURNING id, created_at",
+    )
+    .bind(dm_channel_id)
+    .bind(sender_id)
+    .bind(sender_device_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let (sender_signal_device_id,): (i32,) =
+        sqlx::query_as("SELECT signal_device_id FROM devices WHERE id = $1")
+            .bind(sender_device_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+    for rp in recipients {
+        sqlx::query(
+            "INSERT INTO message_recipients (message_id, user_id, device_id, ciphertext, message_type) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(message_id)
+        .bind(rp.user_id)
+        .bind(rp.device_id)
+        .bind(&rp.ciphertext)
+        .bind(&rp.message_type)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query(
+        "INSERT INTO channel_events (dm_channel_id, event_type, message_id) VALUES ($1, 'message_created', $2)",
+    )
+    .bind(dm_channel_id)
+    .bind(message_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok((message_id, created_at, sender_signal_device_id as u32))
+}
+
+/// Deliver a DM to every connected device that has a recipient payload.
+///
+/// Unlike guild channels there is no `subscribed_channels` filter — membership
+/// was already verified, and the payload list names the exact target devices.
+#[allow(clippy::too_many_arguments)]
+fn fan_out_dm_message(
+    state: &AppState,
+    dm_channel_id: DmChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    sender_device_id: DeviceId,
+    sender_signal_device_id: u32,
+    recipients: &[RecipientPayload],
+    created_at: chrono::DateTime<chrono::Utc>,
+) {
+    for conn_ref in state.ws.connections.iter() {
+        let ((uid, did), conn) = conn_ref.pair();
+        if let Some(rp) = recipients
+            .iter()
+            .find(|rp| rp.user_id == *uid && rp.device_id == *did)
+        {
+            let event = ServerMessage::DmMessageCreated {
+                dm_channel_id,
+                message_id,
+                sender_id,
+                sender_device_id,
+                sender_signal_device_id,
+                ciphertext: rp.ciphertext.clone(),
+                message_type: rp.message_type.clone(),
+                created_at,
+            };
+            let _ = conn.sender.try_send(event);
+        }
+    }
+}
+
 // ─── Edit Message ────────────────────────────────────────────
 
 pub async fn handle_edit_message(
@@ -438,7 +656,11 @@ pub async fn handle_edit_message(
     }
 
     // Rate limit check
-    if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
+    if !state
+        .ws
+        .rate_limiter
+        .check_and_record(user_id, channel_id.0)
+    {
         send_error(state, user_id, sender_device_id, 4003, "rate limited");
         return;
     }
@@ -621,7 +843,11 @@ pub async fn handle_delete_message(
     message_id: MessageId,
 ) {
     // Rate limit check
-    if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
+    if !state
+        .ws
+        .rate_limiter
+        .check_and_record(user_id, channel_id.0)
+    {
         send_error(state, user_id, device_id, 4003, "rate limited");
         return;
     }
@@ -785,16 +1011,125 @@ pub fn spawn_periodic_cleanup(ws: Arc<WsState>, mut shutdown: broadcast::Receive
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn error_code_constants() {
-        // Document expected error codes for WS protocol
-        assert_eq!(4001_u32, 4001); // permission denied
-        assert_eq!(4003_u32, 4003); // rate limited
-        assert_eq!(4004_u32, 4004); // internal error
-        assert_eq!(4006_u32, 4006); // lagged
-        assert_eq!(4007_u32, 4007); // not found
+    use super::*;
+
+    /// Insert a user with one device and return both ids.
+    async fn seed_user_with_device(pool: &sqlx::PgPool) -> (UserId, DeviceId) {
+        let user_id = UserId::new();
+        let device_id = DeviceId::new();
+        sqlx::query(
+            "INSERT INTO users (id, public_key, email, display_name) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(user_id.0)
+        .bind(format!("pk_{}", uuid::Uuid::new_v4()))
+        .bind(format!("{}@example.com", uuid::Uuid::new_v4()))
+        .bind("DM Test User")
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+        )
+        .bind(device_id.0)
+        .bind(user_id.0)
+        .bind("Test Device")
+        .execute(pool)
+        .await
+        .unwrap();
+        (user_id, device_id)
     }
 
-    // Integration tests for subscribe/unsubscribe/send/edit/delete
-    // require database and Redis — placed in apps/server/tests/ directory.
+    async fn seed_dm_channel(pool: &sqlx::PgPool, members: &[UserId]) -> DmChannelId {
+        let dm_channel_id = DmChannelId::new();
+        sqlx::query("INSERT INTO dm_channels (id) VALUES ($1)")
+            .bind(dm_channel_id.0)
+            .execute(pool)
+            .await
+            .unwrap();
+        for m in members {
+            sqlx::query("INSERT INTO dm_channel_members (dm_channel_id, user_id) VALUES ($1, $2)")
+                .bind(dm_channel_id.0)
+                .bind(m.0)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        dm_channel_id
+    }
+
+    /// Membership is the only authorization for a DM, so `handle_send_dm`
+    /// rejecting outsiders depends entirely on this returning the exact set.
+    #[sqlx::test]
+    async fn dm_channel_members_returns_exactly_the_members(pool: sqlx::PgPool) {
+        let (alice, _) = seed_user_with_device(&pool).await;
+        let (bob, _) = seed_user_with_device(&pool).await;
+        let (mallory, _) = seed_user_with_device(&pool).await;
+
+        let dm = seed_dm_channel(&pool, &[alice, bob]).await;
+        let members = dm_channel_members(&pool, dm).await.unwrap();
+
+        assert!(members.contains(&alice));
+        assert!(members.contains(&bob));
+        assert!(
+            !members.contains(&mallory),
+            "a non-member must not appear, or handle_send_dm would accept them"
+        );
+        assert_eq!(members.len(), 2);
+    }
+
+    #[sqlx::test]
+    async fn persist_dm_message_writes_message_recipients_and_sync_event(pool: sqlx::PgPool) {
+        let (alice, alice_device) = seed_user_with_device(&pool).await;
+        let (bob, bob_device) = seed_user_with_device(&pool).await;
+        let dm = seed_dm_channel(&pool, &[alice, bob]).await;
+
+        let recipients = vec![RecipientPayload {
+            user_id: bob,
+            device_id: bob_device,
+            ciphertext: b"ciphertext-for-bob".to_vec(),
+            message_type: "prekey".to_string(),
+        }];
+
+        let (message_id, _created_at, signal_device_id) =
+            persist_dm_message(&pool, dm, alice, alice_device, &recipients)
+                .await
+                .unwrap();
+
+        assert_eq!(signal_device_id, 1, "sender's signal device id is resolved");
+
+        // The message belongs to the DM channel, not a guild channel — the
+        // messages table has an XOR constraint that would reject both.
+        let (channel_id, dm_channel_id): (Option<uuid::Uuid>, Option<uuid::Uuid>) =
+            sqlx::query_as("SELECT channel_id, dm_channel_id FROM messages WHERE id = $1")
+                .bind(message_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(channel_id.is_none());
+        assert_eq!(dm_channel_id, Some(dm.0));
+
+        let (ciphertext,): (Vec<u8>,) = sqlx::query_as(
+            "SELECT ciphertext FROM message_recipients WHERE message_id = $1 AND user_id = $2 AND device_id = $3",
+        )
+        .bind(message_id)
+        .bind(bob.0)
+        .bind(bob_device.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(ciphertext, b"ciphertext-for-bob");
+
+        // Sync events previously could not reference a DM at all.
+        let (event_dm,): (Option<uuid::Uuid>,) = sqlx::query_as(
+            "SELECT dm_channel_id FROM channel_events WHERE message_id = $1 AND event_type = 'message_created'",
+        )
+        .bind(message_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(event_dm, Some(dm.0));
+    }
+
+    // Full subscribe/send/edit/delete coverage needs a live WebSocket harness,
+    // which does not exist yet — see apps/server/tests/.
 }
