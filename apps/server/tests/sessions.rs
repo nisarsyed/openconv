@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::Request;
-use base64::Engine;
 use tower::ServiceExt;
 
 use openconv_server::config::{JwtConfig, ServerConfig};
@@ -379,7 +378,7 @@ async fn logout_invalidates_current_device_tokens_only(pool: sqlx::PgPool) {
     .unwrap();
 
     let family2 = uuid::Uuid::now_v7().to_string();
-    let (rt2, jti2_str) = jwt
+    let (_rt2, jti2_str) = jwt
         .issue_refresh_token(&user_id, &device_id2, &family2)
         .unwrap();
     let jti2: uuid::Uuid = jti2_str.parse().unwrap();

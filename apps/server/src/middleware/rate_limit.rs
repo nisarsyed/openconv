@@ -341,7 +341,9 @@ mod tests {
         use fred::interfaces::ClientLike;
         let config = fred::types::config::Config::from_url("redis://localhost:6379").ok()?;
         let pool = fred::clients::Pool::new(config, None, None, None, 1).ok()?;
-        let _ = pool.init().await.ok()?;
+        // The connect handle owns the background connection task; this test
+        // helper deliberately detaches it for the lifetime of the process.
+        std::mem::drop(pool.init().await.ok()?);
         pool.wait_for_connect().await.ok()?;
         Some(pool)
     }

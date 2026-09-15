@@ -366,7 +366,7 @@ mod tests {
                     [table],
                     |row| row.get(0),
                 )
-                .expect(&format!("should query for table {table}"));
+                .unwrap_or_else(|e| panic!("should query for table {table}: {e}"));
             assert!(exists, "table {table} should exist");
         }
     }

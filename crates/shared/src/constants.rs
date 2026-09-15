@@ -9,6 +9,15 @@ pub const MAX_GUILD_NAME_LENGTH: usize = 100;
 /// Maximum size for a single message in bytes.
 pub const MAX_MESSAGE_SIZE_BYTES: usize = 8 * 1024;
 
+// These hold at compile time, so assert them at compile time rather than in a
+// `#[test]` — a runtime assertion over a `const` can never fail at runtime, and
+// clippy rightly flags it as a constant-valued assertion.
+const _: () = assert!(MAX_FILE_SIZE_BYTES > 0);
+const _: () = assert!(MAX_DISPLAY_NAME_LENGTH > 0);
+const _: () = assert!(MAX_CHANNEL_NAME_LENGTH > 0);
+const _: () = assert!(MAX_GUILD_NAME_LENGTH > 0);
+const _: () = assert!(MAX_MESSAGE_SIZE_BYTES > 0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -16,14 +25,5 @@ mod tests {
     #[test]
     fn max_file_size_is_25mb() {
         assert_eq!(MAX_FILE_SIZE_BYTES, 25 * 1024 * 1024);
-    }
-
-    #[test]
-    fn all_length_constants_positive() {
-        assert!(MAX_FILE_SIZE_BYTES > 0);
-        assert!(MAX_DISPLAY_NAME_LENGTH > 0);
-        assert!(MAX_CHANNEL_NAME_LENGTH > 0);
-        assert!(MAX_GUILD_NAME_LENGTH > 0);
-        assert!(MAX_MESSAGE_SIZE_BYTES > 0);
     }
 }

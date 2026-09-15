@@ -340,7 +340,6 @@ pub fn is_deleted(conn: &Connection, id: &str) -> Result<bool, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CacheDb;
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();

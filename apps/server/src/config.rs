@@ -327,7 +327,12 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// `from_toml_str` applies environment overrides by design, so this test
+    /// must control the environment rather than assume it is empty — CI runs
+    /// the server suite with `DATABASE_URL` set, which silently overrode the
+    /// TOML value and failed the assertion below.
     #[test]
+    #[serial]
     fn test_config_loads_from_valid_toml_string() {
         let toml = r#"
             host = "0.0.0.0"
@@ -337,7 +342,13 @@ mod tests {
             cors_origins = ["http://localhost:3000"]
             log_level = "debug"
         "#;
-        let config = ServerConfig::from_toml_str(toml).unwrap();
+        let restore = std::env::var("DATABASE_URL").ok();
+        std::env::remove_var("DATABASE_URL");
+        let config = ServerConfig::from_toml_str(toml);
+        if let Some(val) = restore {
+            std::env::set_var("DATABASE_URL", val);
+        }
+        let config = config.unwrap();
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_url, "postgresql://user:pass@localhost/db");

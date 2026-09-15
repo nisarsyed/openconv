@@ -113,7 +113,7 @@ mod tests {
         let store = CryptoStore::new(&conn);
         let reg_bytes = store.get_config("registration_id").unwrap().unwrap();
         let reg_id = u32::from_be_bytes([reg_bytes[0], reg_bytes[1], reg_bytes[2], reg_bytes[3]]);
-        assert!(reg_id >= 1 && reg_id <= 16380);
+        assert!((1..=16380).contains(&reg_id));
     }
 
     #[test]

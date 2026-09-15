@@ -290,7 +290,7 @@ mod tests {
             "old",
             "ch1",
             "identical keyword here",
-            now - 86400_000 * 30,
+            now - 86_400_000 * 30,
         );
         // Recent message (1 minute ago in ms)
         insert_and_index(&conn, "new", "ch1", "identical keyword here", now - 60_000);

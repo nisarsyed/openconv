@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn from_keyring_platform_failure_converts_to_unavailable() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let io_err = std::io::Error::other("test");
         let keyring_err = keyring::Error::PlatformFailure(Box::new(io_err));
         let crypto_err: CryptoError = keyring_err.into();
         match crypto_err {
