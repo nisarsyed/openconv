@@ -62,18 +62,11 @@ pub struct CryptoState {
     pub crypto_service: CryptoService,
 }
 
-/// Map a sender's UUID device_id to the Signal protocol device_id (u32).
-///
-/// Signal sessions are keyed by `(user_id, signal_device_id)`. Currently all
-/// sessions are established with signal_device_id = 1 (single-device).
-/// When multi-device support is added, this function should look up the
-/// mapping from a `device_signal_ids` table populated during session creation.
-pub fn resolve_signal_device_id(_sender_device_id: Option<&str>) -> u32 {
-    // All existing sessions use signal device_id = 1.
-    // TODO: Once multi-device directory is implemented, look up the mapping:
-    //   SELECT signal_device_id FROM device_signal_ids WHERE device_uuid = ?
-    1
-}
+// Signal device ids are assigned by the server (see the `devices` table) and
+// travel with every device listing and every incoming message, so there is no
+// client-side UUID → u32 mapping to maintain. A client-local mapping would be
+// wrong: the id is half of the `ProtocolAddress`, so two peers inventing their
+// own numbering would address the same physical device differently.
 
 /// High-level wrapper around the `openconv_crypto` crate.
 ///
@@ -158,12 +151,15 @@ impl CryptoService {
     ) -> Result<(), AppError> {
         let conn = self.lock_crypto()?;
 
-        // Check session by address only (user_id). Multi-device support will
-        // need to include device_id in this query for per-device sessions.
+        // Sessions are keyed by (address, device_id) — matching the primary key
+        // of `crypto_sessions`. Checking the address alone would report a
+        // session for *any* of the user's devices, so the first device to
+        // establish one would suppress session creation for all the others and
+        // every subsequent encrypt to them would fail with SessionNotFound.
         let exists: bool = conn
             .query_row(
-                "SELECT COUNT(*) > 0 FROM crypto_sessions WHERE address = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) > 0 FROM crypto_sessions WHERE address = ?1 AND device_id = ?2",
+                rusqlite::params![user_id, device_id],
                 |row| row.get(0),
             )
             .unwrap_or(false);
@@ -335,6 +331,94 @@ mod tests {
             .unwrap();
 
         (alice, bob)
+    }
+
+    // --- multi-device ---
+
+    /// Regression test for the session-existence check.
+    ///
+    /// `crypto_sessions` is keyed by `(address, device_id)`. A check that
+    /// matched on address alone reported "session exists" for *any* of a user's
+    /// devices, so the first device to establish one suppressed session
+    /// creation for every other device of that user.
+    #[test]
+    fn ensure_session_creates_a_separate_session_per_device() {
+        let alice = test_service();
+        let bob_d1 = test_service();
+        let bob_d2 = test_service();
+
+        let bundle_d1 = generate_bundle(&bob_d1, "bob-user-id");
+        let bundle_d2 = generate_bundle(&bob_d2, "bob-user-id");
+
+        alice
+            .ensure_session("bob-user-id", 1, Some(&bundle_d1))
+            .unwrap();
+        alice
+            .ensure_session("bob-user-id", 2, Some(&bundle_d2))
+            .unwrap();
+
+        let conn = alice.lock_crypto().unwrap();
+        let device_ids: Vec<u32> = conn
+            .prepare("SELECT device_id FROM crypto_sessions WHERE address = 'bob-user-id' ORDER BY device_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(
+            device_ids,
+            vec![1, 2],
+            "each device must get its own session"
+        );
+    }
+
+    /// A second device of the same user must receive its own ciphertext, and
+    /// must be able to decrypt it. Before the fix this produced one recipient
+    /// instead of two, and encrypting to device 2 failed with SessionNotFound.
+    #[test]
+    fn encrypt_for_channel_reaches_every_device_of_a_user() {
+        let alice = test_service();
+        let bob_d1 = test_service();
+        let bob_d2 = test_service();
+
+        for (service, signal_device_id) in [(&bob_d1, 1u32), (&bob_d2, 2u32)] {
+            let bundle = generate_bundle(service, "bob-user-id");
+            alice
+                .ensure_session("bob-user-id", signal_device_id, Some(&bundle))
+                .unwrap();
+        }
+
+        let devices = vec![
+            DeviceInfo {
+                user_id: "bob-user-id".into(),
+                device_id: 1,
+            },
+            DeviceInfo {
+                user_id: "bob-user-id".into(),
+                device_id: 2,
+            },
+        ];
+
+        let payloads = alice.encrypt_for_channel(&devices, b"hello both").unwrap();
+        assert_eq!(payloads.len(), 2, "one ciphertext per device");
+        assert_ne!(
+            payloads[0].ciphertext, payloads[1].ciphertext,
+            "each device must get its own ciphertext, not a shared one"
+        );
+
+        // Each device decrypts only its own payload.
+        for (service, payload) in [(&bob_d1, &payloads[0]), (&bob_d2, &payloads[1])] {
+            let plaintext = service
+                .decrypt_message(
+                    "alice-user-id",
+                    1,
+                    &payload.ciphertext,
+                    &payload.message_type,
+                )
+                .unwrap();
+            assert_eq!(plaintext, b"hello both");
+        }
     }
 
     // --- ensure_session ---

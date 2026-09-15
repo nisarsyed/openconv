@@ -14,8 +14,11 @@ pub struct CachedMessage {
     pub channel_id: Option<String>,
     pub dm_channel_id: Option<String>,
     pub sender_id: String,
-    /// Sender's device ID (UUID string), needed for re-decryption attempts.
+    /// Sender's device ID (UUID string) — identifies the device.
     pub sender_device_id: Option<String>,
+    /// Sender's Signal protocol device id, needed to rebuild the decrypting
+    /// `ProtocolAddress` on a re-decryption attempt.
+    pub sender_signal_device_id: Option<u32>,
     pub plaintext: Option<String>,
     pub ciphertext: Option<Vec<u8>>,
     pub message_type: Option<String>,
@@ -27,8 +30,8 @@ pub struct CachedMessage {
 
 pub fn insert_message(conn: &Connection, msg: &CachedMessage) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO messages (id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO messages (id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             msg.id,
             msg.channel_id,
@@ -42,6 +45,7 @@ pub fn insert_message(conn: &Connection, msg: &CachedMessage) -> Result<(), AppE
             msg.edited_at,
             msg.decrypted_at,
             msg.status,
+            msg.sender_signal_device_id,
         ],
     )?;
     Ok(())
@@ -49,7 +53,7 @@ pub fn insert_message(conn: &Connection, msg: &CachedMessage) -> Result<(), AppE
 
 pub fn get_message(conn: &Connection, id: &str) -> Result<Option<CachedMessage>, AppError> {
     let result = conn.query_row(
-        "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+        "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id
          FROM messages WHERE id = ?1",
         [id],
         |row| {
@@ -59,6 +63,7 @@ pub fn get_message(conn: &Connection, id: &str) -> Result<Option<CachedMessage>,
                 dm_channel_id: row.get(2)?,
                 sender_id: row.get(3)?,
                 sender_device_id: row.get(4)?,
+                sender_signal_device_id: row.get(12)?,
                 plaintext: row.get(5)?,
                 ciphertext: row.get(6)?,
                 message_type: row.get(7)?,
@@ -85,7 +90,7 @@ pub fn get_messages_for_channel(
     let mut messages = Vec::new();
     if let Some(before_ts) = before {
         let mut stmt = conn.prepare(
-            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id
              FROM messages WHERE channel_id = ?1 AND created_at < ?2
              ORDER BY created_at ASC LIMIT ?3",
         )?;
@@ -96,6 +101,7 @@ pub fn get_messages_for_channel(
                 dm_channel_id: row.get(2)?,
                 sender_id: row.get(3)?,
                 sender_device_id: row.get(4)?,
+                sender_signal_device_id: row.get(12)?,
                 plaintext: row.get(5)?,
                 ciphertext: row.get(6)?,
                 message_type: row.get(7)?,
@@ -110,7 +116,7 @@ pub fn get_messages_for_channel(
         }
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id
              FROM messages WHERE channel_id = ?1
              ORDER BY created_at ASC LIMIT ?2",
         )?;
@@ -121,6 +127,7 @@ pub fn get_messages_for_channel(
                 dm_channel_id: row.get(2)?,
                 sender_id: row.get(3)?,
                 sender_device_id: row.get(4)?,
+                sender_signal_device_id: row.get(12)?,
                 plaintext: row.get(5)?,
                 ciphertext: row.get(6)?,
                 message_type: row.get(7)?,
@@ -146,7 +153,7 @@ pub fn get_messages_for_dm_channel(
     let mut messages = Vec::new();
     if let Some(before_ts) = before {
         let mut stmt = conn.prepare(
-            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id
              FROM messages WHERE dm_channel_id = ?1 AND created_at < ?2
              ORDER BY created_at ASC LIMIT ?3",
         )?;
@@ -157,6 +164,7 @@ pub fn get_messages_for_dm_channel(
                 dm_channel_id: row.get(2)?,
                 sender_id: row.get(3)?,
                 sender_device_id: row.get(4)?,
+                sender_signal_device_id: row.get(12)?,
                 plaintext: row.get(5)?,
                 ciphertext: row.get(6)?,
                 message_type: row.get(7)?,
@@ -171,7 +179,7 @@ pub fn get_messages_for_dm_channel(
         }
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+            "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id
              FROM messages WHERE dm_channel_id = ?1
              ORDER BY created_at ASC LIMIT ?2",
         )?;
@@ -182,6 +190,7 @@ pub fn get_messages_for_dm_channel(
                 dm_channel_id: row.get(2)?,
                 sender_id: row.get(3)?,
                 sender_device_id: row.get(4)?,
+                sender_signal_device_id: row.get(12)?,
                 plaintext: row.get(5)?,
                 ciphertext: row.get(6)?,
                 message_type: row.get(7)?,
@@ -284,7 +293,7 @@ pub fn get_messages_needing_redecrypt(
     let cutoff = (now - window_secs) * 1000; // convert to ms since created_at is in ms
 
     let mut stmt = conn.prepare(
-        "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status
+        "SELECT id, channel_id, dm_channel_id, sender_id, sender_device_id, plaintext, ciphertext, message_type, created_at, edited_at, decrypted_at, status, sender_signal_device_id
          FROM messages
          WHERE plaintext IS NULL
            AND ciphertext IS NOT NULL
@@ -299,6 +308,7 @@ pub fn get_messages_needing_redecrypt(
             dm_channel_id: row.get(2)?,
             sender_id: row.get(3)?,
             sender_device_id: row.get(4)?,
+            sender_signal_device_id: row.get(12)?,
             plaintext: row.get(5)?,
             ciphertext: row.get(6)?,
             message_type: row.get(7)?,
@@ -351,6 +361,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: sender_id.to_string(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("hello".to_string()),
             ciphertext: None,
             message_type: None,
@@ -370,6 +381,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "u1".to_string(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("hello world".to_string()),
             ciphertext: Some(vec![1, 2, 3]),
             message_type: Some("text".to_string()),
@@ -532,6 +544,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "u1".to_string(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: None,
             ciphertext: Some(vec![1, 2, 3]),
             message_type: Some("signal".to_string()),
@@ -549,6 +562,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "u1".to_string(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("already decrypted".to_string()),
             ciphertext: None,
             message_type: None,
@@ -566,6 +580,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "u1".to_string(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: None,
             ciphertext: Some(vec![4, 5, 6]),
             message_type: Some("signal".to_string()),

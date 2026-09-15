@@ -8,6 +8,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (2, MIGRATION_002),
     (3, MIGRATION_003),
     (4, MIGRATION_004),
+    (5, MIGRATION_005),
 ];
 
 const MIGRATION_001: &str = "
@@ -138,6 +139,13 @@ ALTER TABLE cached_files ADD COLUMN thumbnail_path TEXT;
 
 const MIGRATION_004: &str = "
 ALTER TABLE messages ADD COLUMN sender_device_id TEXT;
+";
+
+// The Signal device id of the sender, as assigned by the server. Needed to
+// rebuild the decrypting ProtocolAddress when retrying a failed decrypt; the
+// sender_device_id UUID above cannot serve that role.
+const MIGRATION_005: &str = "
+ALTER TABLE messages ADD COLUMN sender_signal_device_id INTEGER;
 ";
 
 pub fn run_cache_migrations(conn: &Connection) -> Result<(), AppError> {

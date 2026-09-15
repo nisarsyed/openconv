@@ -85,10 +85,11 @@ pub async fn replay_missed_messages(
 
     // Query messages with per-device ciphertext since last_seen (capped)
     let rows: Vec<ReplayRow> = sqlx::query_as(
-        "SELECT m.id, m.channel_id, m.sender_id, m.sender_device_id, m.created_at, \
-                mr.ciphertext, mr.message_type \
+        "SELECT m.id, m.channel_id, m.sender_id, m.sender_device_id, d.signal_device_id, \
+                m.created_at, mr.ciphertext, mr.message_type \
          FROM messages m \
          JOIN message_recipients mr ON mr.message_id = m.id \
+         LEFT JOIN devices d ON d.id = m.sender_device_id \
          WHERE m.channel_id = $1 AND m.created_at > $2 AND m.deleted = false \
            AND mr.user_id = $3 AND mr.device_id = $4 \
          ORDER BY m.created_at ASC \
@@ -107,11 +108,15 @@ pub async fn replay_missed_messages(
     // Send each as MessageCreated with inline ciphertext
     for row in rows {
         let sender_device_id = row.sender_device_id.unwrap_or_else(DeviceId::new);
+        // A deleted sending device leaves no signal id; fall back to the
+        // primary-device value so the receiver still attempts a decrypt.
+        let sender_signal_device_id = row.signal_device_id.unwrap_or(1) as u32;
         let event = ServerMessage::MessageCreated {
             channel_id: row.channel_id,
             message_id: row.id,
             sender_id: row.sender_id,
             sender_device_id,
+            sender_signal_device_id,
             ciphertext: row.ciphertext,
             message_type: row.message_type,
             created_at: row.created_at,
@@ -140,6 +145,8 @@ struct ReplayRow {
     channel_id: ChannelId,
     sender_id: UserId,
     sender_device_id: Option<DeviceId>,
+    /// NULL only for rows whose sending device has since been deleted.
+    signal_device_id: Option<i32>,
     created_at: chrono::DateTime<chrono::Utc>,
     ciphertext: Vec<u8>,
     message_type: String,

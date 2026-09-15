@@ -607,8 +607,8 @@ async fn verify_upserts_existing_device(pool: sqlx::PgPool) {
 
     // Create device first
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) \
-         VALUES ($1, $2, $3, '2020-01-01'::timestamptz, NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) \
+         VALUES ($1, $2, $3, 1, '2020-01-01'::timestamptz, NOW())",
     )
     .bind(device_id)
     .bind(user_id.0)

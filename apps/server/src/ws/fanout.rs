@@ -268,7 +268,7 @@ pub async fn handle_send_message(
     }
 
     // Persist message + recipients + channel event in a single transaction
-    let (message_id, created_at) = match persist_message(
+    let (message_id, created_at, sender_signal_device_id) = match persist_message(
         &state.db,
         channel_id,
         user_id,
@@ -298,19 +298,24 @@ pub async fn handle_send_message(
         message_id,
         user_id,
         sender_device_id,
+        sender_signal_device_id,
         &recipients,
         created_at,
     );
 }
 
 /// Persist message metadata, per-device recipient payloads, and channel event in one transaction.
+///
+/// Also resolves the sender's Signal device id, which receivers need to address
+/// the decrypting `ProtocolAddress`. It is read inside this transaction so the
+/// hot send path costs no extra round trip.
 async fn persist_message(
     db: &sqlx::PgPool,
     channel_id: ChannelId,
     sender_id: UserId,
     sender_device_id: DeviceId,
     recipients: &[RecipientPayload],
-) -> Result<(MessageId, chrono::DateTime<chrono::Utc>), sqlx::Error> {
+) -> Result<(MessageId, chrono::DateTime<chrono::Utc>, u32), sqlx::Error> {
     let mut tx = db.begin().await?;
 
     // Insert message row (encrypted_content/nonce NULL; content lives in message_recipients)
@@ -325,6 +330,12 @@ async fn persist_message(
     .await?;
 
     let (message_id, created_at) = row;
+
+    let (sender_signal_device_id,): (i32,) =
+        sqlx::query_as("SELECT signal_device_id FROM devices WHERE id = $1")
+            .bind(sender_device_id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     // Batch-insert recipient payloads
     for rp in recipients {
@@ -352,17 +363,19 @@ async fn persist_message(
 
     tx.commit().await?;
 
-    Ok((message_id, created_at))
+    Ok((message_id, created_at, sender_signal_device_id as u32))
 }
 
 /// Send a personalized MessageCreated to each subscribed connection
 /// that has a matching RecipientPayload.
+#[allow(clippy::too_many_arguments)]
 fn fan_out_message_created(
     state: &AppState,
     channel_id: ChannelId,
     message_id: MessageId,
     sender_id: UserId,
     sender_device_id: DeviceId,
+    sender_signal_device_id: u32,
     recipients: &[RecipientPayload],
     created_at: chrono::DateTime<chrono::Utc>,
 ) {
@@ -381,6 +394,7 @@ fn fan_out_message_created(
                 message_id,
                 sender_id,
                 sender_device_id,
+                sender_signal_device_id,
                 ciphertext: rp.ciphertext.clone(),
                 message_type: rp.message_type.clone(),
                 created_at,
@@ -444,8 +458,17 @@ pub async fn handle_edit_message(
     }
 
     // Atomic update with ownership check, replace recipients, log event
-    match persist_edit(&state.db, user_id, channel_id, message_id, &recipients).await {
-        Ok(Some(edited_at)) => {
+    match persist_edit(
+        &state.db,
+        user_id,
+        sender_device_id,
+        channel_id,
+        message_id,
+        &recipients,
+    )
+    .await
+    {
+        Ok(Some((edited_at, sender_signal_device_id))) => {
             // Per-device fan-out for edit
             fan_out_message_updated(
                 state,
@@ -453,6 +476,7 @@ pub async fn handle_edit_message(
                 message_id,
                 user_id,
                 sender_device_id,
+                sender_signal_device_id,
                 &recipients,
                 edited_at,
             );
@@ -480,14 +504,18 @@ pub async fn handle_edit_message(
 }
 
 /// Atomic edit: UPDATE message, replace recipient rows, log channel event.
-/// Returns Some(edited_at) if a row was updated, None if no matching message found.
+///
+/// Returns `Some((edited_at, sender_signal_device_id))` if a row was updated,
+/// `None` if no matching message was found. The Signal device id is read in the
+/// same transaction so receivers can address the decrypting `ProtocolAddress`.
 async fn persist_edit(
     db: &sqlx::PgPool,
     user_id: UserId,
+    sender_device_id: DeviceId,
     channel_id: ChannelId,
     message_id: MessageId,
     recipients: &[RecipientPayload],
-) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+) -> Result<Option<(chrono::DateTime<chrono::Utc>, u32)>, sqlx::Error> {
     let mut tx = db.begin().await?;
 
     // Update message metadata with ownership check
@@ -506,6 +534,12 @@ async fn persist_edit(
         Some((ts,)) => ts,
         None => return Ok(None),
     };
+
+    let (sender_signal_device_id,): (i32,) =
+        sqlx::query_as("SELECT signal_device_id FROM devices WHERE id = $1")
+            .bind(sender_device_id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     // Replace recipient rows: delete old, insert new
     sqlx::query("DELETE FROM message_recipients WHERE message_id = $1")
@@ -538,16 +572,18 @@ async fn persist_edit(
 
     tx.commit().await?;
 
-    Ok(Some(edited_at))
+    Ok(Some((edited_at, sender_signal_device_id as u32)))
 }
 
 /// Send personalized MessageUpdated to each subscribed connection.
+#[allow(clippy::too_many_arguments)]
 fn fan_out_message_updated(
     state: &AppState,
     channel_id: ChannelId,
     message_id: MessageId,
     sender_id: UserId,
     sender_device_id: DeviceId,
+    sender_signal_device_id: u32,
     recipients: &[RecipientPayload],
     edited_at: chrono::DateTime<chrono::Utc>,
 ) {
@@ -565,6 +601,7 @@ fn fan_out_message_updated(
                 message_id,
                 sender_id,
                 sender_device_id,
+                sender_signal_device_id,
                 ciphertext: rp.ciphertext.clone(),
                 message_type: rp.message_type.clone(),
                 edited_at,

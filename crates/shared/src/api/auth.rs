@@ -192,6 +192,13 @@ pub struct RecoverCompleteResponse {
 pub struct DeviceInfo {
     pub id: DeviceId,
     pub device_name: String,
+    /// Server-assigned Signal protocol device id, stable for the life of the
+    /// device and unique within the owning user (primary device is 1).
+    ///
+    /// This is the `device_id` half of the Signal `ProtocolAddress`, so it must
+    /// come from the server rather than being invented per-client: peers would
+    /// otherwise address the same physical device by different numbers.
+    pub signal_device_id: u32,
     pub last_active: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -405,6 +412,7 @@ mod tests {
         let info = DeviceInfo {
             id: DeviceId::new(),
             device_name: "iPhone".into(),
+            signal_device_id: 1,
             last_active: Some(now),
             created_at: now,
         };

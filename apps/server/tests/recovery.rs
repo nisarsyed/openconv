@@ -109,12 +109,14 @@ async fn seed_user_with_devices(
 
     for i in 0..num_devices {
         let device_id = uuid::Uuid::now_v7();
+        // Signal device ids are unique per user, so number them 1..=num_devices.
         sqlx::query(
-            "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+            "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, $4, NOW(), NOW())",
         )
         .bind(device_id)
         .bind(user_id)
         .bind(format!("Device {i}"))
+        .bind(i as i32 + 1)
         .execute(pool)
         .await
         .unwrap();

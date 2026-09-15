@@ -93,6 +93,7 @@ pub async fn send_message(
         dm_channel_id: None,
         sender_id: sender_id.clone(),
         sender_device_id: None,
+        sender_signal_device_id: None,
         plaintext: Some(plaintext.clone()),
         ciphertext: None,
         message_type: None,
@@ -268,7 +269,7 @@ pub async fn retry_decrypt(
     cache_db: State<'_, CacheDb>,
 ) -> Result<(), AppError> {
     // Load the failed message from cache
-    let (sender_id, sender_device_id_opt, ciphertext, message_type) = {
+    let (sender_id, sender_signal_did_opt, ciphertext, message_type) = {
         let conn = cache_db.lock()?;
         let msg = messages::get_message(&conn, &message_id)?
             .ok_or_else(|| AppError::new("message not found"))?;
@@ -282,7 +283,7 @@ pub async fn retry_decrypt(
             .ok_or_else(|| AppError::new("no ciphertext retained for retry"))?;
         let mt = msg.message_type.unwrap_or_else(|| "signal".to_string());
 
-        (msg.sender_id, msg.sender_device_id, ct, mt)
+        (msg.sender_id, msg.sender_signal_device_id, ct, mt)
     };
 
     // Re-fetch pre-key bundle and establish new session before retrying.
@@ -302,8 +303,7 @@ pub async fn retry_decrypt(
         .await?;
 
         let sid = sender_id.clone();
-        let signal_did =
-            crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
+        let signal_did = sender_signal_did_opt.unwrap_or(1);
         let app_clone = app.clone();
         tokio::task::spawn_blocking(move || {
             let crypto_state = app_clone.state::<CryptoState>();
@@ -317,8 +317,7 @@ pub async fn retry_decrypt(
     }
 
     // Attempt decryption with the (re)established session
-    let signal_device_id =
-        crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
+    let signal_device_id = sender_signal_did_opt.unwrap_or(1);
     let msg_id = message_id.clone();
     let app_clone = app.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
@@ -402,6 +401,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "user-001".into(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("hello world".into()),
             ciphertext: None,
             message_type: Some("signal".into()),
@@ -428,6 +428,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "user-001".into(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("pending message".into()),
             ciphertext: None,
             message_type: None,
@@ -455,6 +456,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "user-001".into(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("to be deleted".into()),
             ciphertext: None,
             message_type: None,
@@ -479,6 +481,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "user-001".into(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some(plaintext.into()),
             ciphertext: None,
             message_type: None,
@@ -543,6 +546,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "user-001".into(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some("original".into()),
             ciphertext: None,
             message_type: None,
@@ -572,6 +576,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "user-001".into(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: None,
             ciphertext: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
             message_type: Some("prekey".into()),

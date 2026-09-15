@@ -62,7 +62,7 @@ async fn seed_user(
         .unwrap();
 
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 1, NOW(), NOW())",
     )
     .bind(device_id.0)
     .bind(user_id.0)

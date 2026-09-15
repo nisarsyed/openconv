@@ -87,8 +87,12 @@ pub enum ServerMessage {
         channel_id: ChannelId,
         message_id: MessageId,
         sender_id: UserId,
-        /// Device ID of the sender (needed for Signal protocol decryption)
+        /// UUID of the sending device — identifies the device (e.g. for UI).
         sender_device_id: DeviceId,
+        /// Signal protocol device id of the sender. This is the `device_id`
+        /// half of the `ProtocolAddress` the receiver must decrypt against;
+        /// the UUID above cannot serve that role.
+        sender_signal_device_id: u32,
         /// The ciphertext encrypted specifically for this receiving device
         #[serde(with = "base64_serde")]
         #[cfg_attr(feature = "utoipa", schema(value_type = String))]
@@ -104,8 +108,10 @@ pub enum ServerMessage {
         channel_id: ChannelId,
         message_id: MessageId,
         sender_id: UserId,
-        /// Device ID of the sender (needed for Signal protocol decryption)
+        /// UUID of the sending device — identifies the device (e.g. for UI).
         sender_device_id: DeviceId,
+        /// Signal protocol device id of the sender. See `MessageCreated`.
+        sender_signal_device_id: u32,
         #[serde(with = "base64_serde")]
         #[cfg_attr(feature = "utoipa", schema(value_type = String))]
         ciphertext: Vec<u8>,
@@ -415,6 +421,7 @@ mod tests {
             message_id: MessageId::new(),
             sender_id: sender,
             sender_device_id: DeviceId::new(),
+            sender_signal_device_id: 1,
             ciphertext: b"device_specific_ct".to_vec(),
             message_type: "prekey".to_string(),
             created_at: now,
@@ -447,6 +454,7 @@ mod tests {
             message_id: MessageId::new(),
             sender_id: UserId::new(),
             sender_device_id: DeviceId::new(),
+            sender_signal_device_id: 1,
             ciphertext: b"ct".to_vec(),
             message_type: "signal".to_string(),
             created_at: chrono::Utc::now(),
@@ -498,6 +506,7 @@ mod tests {
             message_id: MessageId::new(),
             sender_id: sender,
             sender_device_id: DeviceId::new(),
+            sender_signal_device_id: 1,
             ciphertext: b"updated_ct".to_vec(),
             message_type: "signal".to_string(),
             edited_at: now,

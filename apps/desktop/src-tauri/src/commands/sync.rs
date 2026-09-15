@@ -151,7 +151,7 @@ pub async fn redecrypt_message(
     cache_db: State<'_, CacheDb>,
 ) -> Result<Option<String>, String> {
     // Load the message from cache
-    let (sender_id, sender_device_id_opt, ciphertext, message_type) = {
+    let (sender_id, sender_signal_did_opt, ciphertext, message_type) = {
         let conn = cache_db.lock().map_err(|e| e.to_string())?;
         let msg = messages::get_message(&conn, &message_id)
             .map_err(|e| e.to_string())?
@@ -165,12 +165,11 @@ pub async fn redecrypt_message(
             .ciphertext
             .ok_or_else(|| "no ciphertext available for re-decryption".to_string())?;
         let mt = msg.message_type.unwrap_or_else(|| "signal".to_string());
-        (msg.sender_id, msg.sender_device_id, ct, mt)
+        (msg.sender_id, msg.sender_signal_device_id, ct, mt)
     };
 
     // Attempt decryption
-    let signal_device_id =
-        crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
+    let signal_device_id = sender_signal_did_opt.unwrap_or(1);
     let msg_id = message_id.clone();
     let app_clone = app.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
@@ -538,15 +537,15 @@ pub async fn proactive_redecrypt(app: &AppHandle, window_secs: i64) -> Result<us
             None => continue,
         };
         let sender_id = msg.sender_id.clone();
-        let sender_device_id_opt = msg.sender_device_id.clone();
         let message_type = msg
             .message_type
             .clone()
             .unwrap_or_else(|| "signal".to_string());
         let msg_id = msg.id.clone();
 
-        let signal_device_id =
-            crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
+        // Messages cached before the server assigned Signal device ids carry no
+        // stored value; 1 matches the historic single-device behaviour.
+        let signal_device_id = msg.sender_signal_device_id.unwrap_or(1);
         let app_clone = app.clone();
         let decrypt_result = tokio::task::spawn_blocking(move || {
             let crypto_state = app_clone.state::<CryptoState>();

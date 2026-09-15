@@ -539,13 +539,15 @@ async fn devices_table_accepts_uuid_v7_pk(pool: PgPool) {
 
     // UUID v7 (time-sortable) -- simulate with now_v7
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("MacBook Pro")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("MacBook Pro")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let row: (uuid::Uuid, String) =
         sqlx::query_as("SELECT id, device_name FROM devices WHERE id = $1")
@@ -564,13 +566,15 @@ async fn devices_fk_rejects_nonexistent_user(pool: PgPool) {
     let fake_user = uuid::Uuid::new_v4();
     let device_id = uuid::Uuid::now_v7();
 
-    let err = sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(fake_user)
-        .bind("Ghost Device")
-        .execute(&pool)
-        .await
-        .unwrap_err();
+    let err = sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(fake_user)
+    .bind("Ghost Device")
+    .execute(&pool)
+    .await
+    .unwrap_err();
 
     assert_eq!(pg_error_code(&err).as_deref(), Some(PG_FK_VIOLATION));
 }
@@ -589,13 +593,15 @@ async fn devices_cascade_delete_on_user_removal(pool: PgPool) {
         .unwrap();
 
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("iPhone 15")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("iPhone 15")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
@@ -626,22 +632,26 @@ async fn devices_unique_constraint_user_id_device_id(pool: PgPool) {
         .unwrap();
 
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("Device A")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("Device A")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Same PK should fail (PK violation, which is also a unique violation)
-    let err = sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("Device B")
-        .execute(&pool)
-        .await
-        .unwrap_err();
+    let err = sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("Device B")
+    .execute(&pool)
+    .await
+    .unwrap_err();
 
     assert_eq!(pg_error_code(&err).as_deref(), Some(PG_UNIQUE_VIOLATION));
 }
@@ -704,13 +714,15 @@ async fn refresh_tokens_cascade_delete_on_user_removal(pool: PgPool) {
         .unwrap();
 
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("Test Device")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("Test Device")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let jti = uuid::Uuid::new_v4();
     sqlx::query(
@@ -848,13 +860,15 @@ async fn prekey_bundles_query_matches_device_or_null(pool: PgPool) {
         .unwrap();
 
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("Query Device")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("Query Device")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Bundle with device_id
     sqlx::query("INSERT INTO pre_key_bundles (user_id, key_data, device_id) VALUES ($1, $2, $3)")
@@ -906,13 +920,15 @@ async fn cleanup_deletes_expired_tokens(pool: PgPool) {
         .unwrap();
 
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("Cleanup Device")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("Cleanup Device")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Insert an expired refresh token (expires_at in the past)
     let jti = uuid::Uuid::new_v4();
@@ -956,13 +972,15 @@ async fn cleanup_preserves_non_expired_tokens(pool: PgPool) {
         .unwrap();
 
     let device_id = uuid::Uuid::now_v7();
-    sqlx::query("INSERT INTO devices (id, user_id, device_name) VALUES ($1, $2, $3)")
-        .bind(device_id)
-        .bind(user_id)
-        .bind("Preserve Device")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(device_id)
+    .bind(user_id)
+    .bind("Preserve Device")
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Insert a non-expired refresh token (expires_at in the future)
     let jti = uuid::Uuid::new_v4();

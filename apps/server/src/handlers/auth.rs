@@ -258,9 +258,13 @@ pub async fn register_complete(
         return Err(OpenConvError::Internal(format!("database error: {e}")).into());
     }
 
-    // Insert device
+    // Insert device. signal_device_id is the next free per-user slot; for a
+    // brand-new user that is always 1 (Signal's primary-device convention).
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) \
+         VALUES ($1, $2, $3, \
+                 (SELECT COALESCE(MAX(signal_device_id), 0) + 1 FROM devices WHERE user_id = $2), \
+                 NOW(), NOW())",
     )
     .bind(req.device_id.0)
     .bind(user_id.0)
@@ -489,10 +493,14 @@ pub async fn login_verify(
         .await
         .map_err(|e| OpenConvError::Internal(format!("transaction start failed: {e}")))?;
 
-    // Upsert device record — scoped to current user via WHERE clause
+    // Upsert device record — scoped to current user via WHERE clause.
+    // On conflict the existing signal_device_id is deliberately left untouched:
+    // reassigning it would orphan every Signal session already addressed to it.
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) \
-         VALUES ($1, $2, $3, NOW(), NOW()) \
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) \
+         VALUES ($1, $2, $3, \
+                 (SELECT COALESCE(MAX(signal_device_id), 0) + 1 FROM devices WHERE user_id = $2), \
+                 NOW(), NOW()) \
          ON CONFLICT (id) DO UPDATE SET last_active = NOW(), device_name = EXCLUDED.device_name \
          WHERE devices.user_id = $2",
     )
@@ -695,12 +703,13 @@ pub async fn list_devices(
     type DeviceRow = (
         uuid::Uuid,
         String,
+        i32,
         Option<chrono::DateTime<chrono::Utc>>,
         chrono::DateTime<chrono::Utc>,
     );
     let rows: Vec<DeviceRow> =
         sqlx::query_as(
-            "SELECT id, device_name, last_active, created_at FROM devices WHERE user_id = $1 ORDER BY last_active DESC",
+            "SELECT id, device_name, signal_device_id, last_active, created_at FROM devices WHERE user_id = $1 ORDER BY last_active DESC",
         )
         .bind(auth.user_id.0)
         .fetch_all(&state.db)
@@ -709,12 +718,15 @@ pub async fn list_devices(
 
     let devices = rows
         .into_iter()
-        .map(|(id, device_name, last_active, created_at)| DeviceInfo {
-            id: DeviceId(id),
-            device_name,
-            last_active,
-            created_at,
-        })
+        .map(
+            |(id, device_name, signal_device_id, last_active, created_at)| DeviceInfo {
+                id: DeviceId(id),
+                device_name,
+                signal_device_id: signal_device_id as u32,
+                last_active,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(DevicesListResponse { devices }))
@@ -1024,9 +1036,13 @@ pub async fn recover_complete(
         .await
         .map_err(|e| OpenConvError::Internal(format!("database error: {e}")))?;
 
-    // e. Create new device
+    // e. Create new device. All prior devices were just deleted, so this
+    //    restarts the per-user numbering at 1.
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) \
+         VALUES ($1, $2, $3, \
+                 (SELECT COALESCE(MAX(signal_device_id), 0) + 1 FROM devices WHERE user_id = $2), \
+                 NOW(), NOW())",
     )
     .bind(req.device_id.0)
     .bind(user_id.0)

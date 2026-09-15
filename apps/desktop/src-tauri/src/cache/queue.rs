@@ -376,6 +376,7 @@ mod tests {
                 dm_channel_id: None,
                 sender_id: "u1".into(),
                 sender_device_id: None,
+                sender_signal_device_id: None,
                 plaintext: Some("hello".into()),
                 ciphertext: None,
                 message_type: None,

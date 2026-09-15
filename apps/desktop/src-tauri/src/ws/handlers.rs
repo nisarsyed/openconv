@@ -146,6 +146,7 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             message_id,
             sender_id,
             sender_device_id,
+            sender_signal_device_id,
             ciphertext,
             message_type,
             created_at,
@@ -159,6 +160,7 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
                     message_id: *message_id,
                     sender_id: *sender_id,
                     sender_device_id: *sender_device_id,
+                    sender_signal_device_id: *sender_signal_device_id,
                     ciphertext,
                     message_type,
                     timestamp: created_at,
@@ -172,6 +174,7 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             message_id,
             sender_id,
             sender_device_id,
+            sender_signal_device_id,
             ciphertext,
             message_type,
             edited_at,
@@ -183,6 +186,7 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
                     message_id: *message_id,
                     sender_id: *sender_id,
                     sender_device_id: *sender_device_id,
+                    sender_signal_device_id: *sender_signal_device_id,
                     ciphertext,
                     message_type,
                     timestamp: edited_at,
@@ -322,6 +326,9 @@ struct IncomingMessage<'a> {
     message_id: MessageId,
     sender_id: UserId,
     sender_device_id: DeviceId,
+    /// Signal protocol device id of the sender — the `device_id` half of the
+    /// `ProtocolAddress` this message must be decrypted against.
+    sender_signal_device_id: u32,
     ciphertext: &'a [u8],
     message_type: &'a str,
     timestamp: &'a chrono::DateTime<chrono::Utc>,
@@ -339,6 +346,7 @@ async fn handle_message_created(
         message_id,
         sender_id,
         sender_device_id,
+        sender_signal_device_id,
         ciphertext,
         message_type,
         timestamp: created_at,
@@ -383,9 +391,7 @@ async fn handle_message_created(
     }
 
     // Attempt decryption via spawn_blocking
-    let sender_device_id_str = sender_device_id.to_string();
-    let signal_device_id =
-        crate::crypto_service::resolve_signal_device_id(Some(&sender_device_id_str));
+    let signal_device_id = sender_signal_device_id;
     let app_clone = app.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
         let crypto_state = app_clone.state::<CryptoState>();
@@ -420,7 +426,8 @@ async fn handle_message_created(
         channel_id: Some(channel_id_str.clone()),
         dm_channel_id: None,
         sender_id: sender_id.to_string(),
-        sender_device_id: Some(sender_device_id_str),
+        sender_device_id: Some(sender_device_id.to_string()),
+        sender_signal_device_id: Some(sender_signal_device_id),
         plaintext: plaintext.clone(),
         ciphertext: if status == MSG_STATUS_DECRYPT_FAILED {
             Some(ciphertext.to_vec())
@@ -548,7 +555,8 @@ async fn handle_message_updated(app: &AppHandle, msg: IncomingMessage<'_>) {
         channel_id,
         message_id,
         sender_id,
-        sender_device_id,
+        sender_device_id: _,
+        sender_signal_device_id,
         ciphertext,
         message_type,
         timestamp: edited_at,
@@ -556,9 +564,7 @@ async fn handle_message_updated(app: &AppHandle, msg: IncomingMessage<'_>) {
 
     let msg_id_str = message_id.to_string();
     let sender_id_str = sender_id.to_string();
-    let sender_device_id_str = sender_device_id.to_string();
-    let signal_device_id =
-        crate::crypto_service::resolve_signal_device_id(Some(&sender_device_id_str));
+    let signal_device_id = sender_signal_device_id;
     let edited_at_ms = edited_at.timestamp_millis();
     let edited_at_rfc3339 = edited_at.to_rfc3339();
     let ciphertext_owned = ciphertext.to_vec();

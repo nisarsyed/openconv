@@ -126,7 +126,7 @@ async fn seed_user_with_session(
 
     // Create device
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 1, NOW(), NOW())",
     )
     .bind(device_id.0)
     .bind(user_id.0)
@@ -369,7 +369,7 @@ async fn logout_invalidates_current_device_tokens_only(pool: sqlx::PgPool) {
     // Create second device with its own refresh token
     let device_id2 = openconv_shared::ids::DeviceId::new();
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 2, NOW(), NOW())",
     )
     .bind(device_id2.0)
     .bind(user_id.0)
@@ -440,14 +440,17 @@ async fn logout_all_invalidates_all_user_tokens(pool: sqlx::PgPool) {
     let (user_id, _, access_token, _, _) = seed_user_with_session(&pool, &jwt).await;
 
     // Add 2 more devices with tokens
-    for i in 0..2 {
+    for i in 0i32..2 {
         let did = openconv_shared::ids::DeviceId::new();
+        // The seeded session already holds signal device id 1 for this user,
+        // which is unique per user — so these extras start at 2.
         sqlx::query(
-            "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+            "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, $4, NOW(), NOW())",
         )
         .bind(did.0)
         .bind(user_id.0)
         .bind(format!("Extra Device {i}"))
+        .bind(i + 2)
         .execute(&pool)
         .await
         .unwrap();
@@ -516,7 +519,7 @@ async fn get_devices_returns_all_user_devices(pool: sqlx::PgPool) {
     // Add a second device
     let did2 = openconv_shared::ids::DeviceId::new();
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 2, NOW(), NOW())",
     )
     .bind(did2.0)
     .bind(user_id.0)
@@ -558,7 +561,7 @@ async fn delete_device_removes_device_and_tokens(pool: sqlx::PgPool) {
     // Add second device with its own token (access_token is from device_id1)
     let device_id2 = openconv_shared::ids::DeviceId::new();
     sqlx::query(
-        "INSERT INTO devices (id, user_id, device_name, last_active, created_at) VALUES ($1, $2, $3, NOW(), NOW())",
+        "INSERT INTO devices (id, user_id, device_name, signal_device_id, last_active, created_at) VALUES ($1, $2, $3, 2, NOW(), NOW())",
     )
     .bind(device_id2.0)
     .bind(user_id.0)

@@ -204,6 +204,7 @@ mod tests {
             dm_channel_id: None,
             sender_id: "u1".to_string(),
             sender_device_id: None,
+            sender_signal_device_id: None,
             plaintext: Some(text.to_string()),
             ciphertext: None,
             message_type: None,

@@ -271,11 +271,12 @@ pub async fn get_user_devices(
     type DeviceRow = (
         uuid::Uuid,
         String,
+        i32,
         Option<chrono::DateTime<chrono::Utc>>,
         chrono::DateTime<chrono::Utc>,
     );
     let rows: Vec<DeviceRow> = sqlx::query_as(
-        "SELECT id, device_name, last_active, created_at FROM devices \
+        "SELECT id, device_name, signal_device_id, last_active, created_at FROM devices \
          WHERE user_id = $1 ORDER BY last_active DESC",
     )
     .bind(user_id)
@@ -285,12 +286,15 @@ pub async fn get_user_devices(
 
     let devices = rows
         .into_iter()
-        .map(|(id, device_name, last_active, created_at)| DeviceInfo {
-            id: DeviceId(id),
-            device_name,
-            last_active,
-            created_at,
-        })
+        .map(
+            |(id, device_name, signal_device_id, last_active, created_at)| DeviceInfo {
+                id: DeviceId(id),
+                device_name,
+                signal_device_id: signal_device_id as u32,
+                last_active,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(DevicesListResponse { devices }))

@@ -62,11 +62,10 @@ pub async fn fetch_channel_member_devices(
             fetch_user_devices(http_client, api_base_url, access_token, &member.user_id).await?;
 
         for device in &devices {
-            let signal_did = crypto_service::resolve_signal_device_id(Some(&device.id.to_string()));
             result.push(MemberDevice {
                 user_id: member.user_id,
                 device_id: device.id,
-                signal_device_id: signal_did,
+                signal_device_id: device.signal_device_id,
             });
         }
     }
@@ -96,11 +95,10 @@ pub async fn fetch_dm_recipient_devices(
         let devices = fetch_user_devices(http_client, api_base_url, access_token, &user_id).await?;
 
         for device in &devices {
-            let signal_did = crypto_service::resolve_signal_device_id(Some(&device.id.to_string()));
             result.push(MemberDevice {
                 user_id,
                 device_id: device.id,
-                signal_device_id: signal_did,
+                signal_device_id: device.signal_device_id,
             });
         }
     }

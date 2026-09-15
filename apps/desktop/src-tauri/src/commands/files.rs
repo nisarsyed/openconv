@@ -314,6 +314,7 @@ async fn upload_and_send_file(
         dm_channel_id: dm_channel_id.map(String::from),
         sender_id: sender_id.clone(),
         sender_device_id: None,
+        sender_signal_device_id: None,
         plaintext: Some(plaintext.clone()),
         ciphertext: None,
         message_type: Some("file".into()),
