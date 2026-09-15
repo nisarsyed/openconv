@@ -41,6 +41,7 @@ pub async fn fetch_channel_member_devices(
     access_token: &str,
     guild_id: &str,
     self_user_id: &str,
+    self_device_id: Option<&openconv_shared::ids::DeviceId>,
 ) -> Result<Vec<MemberDevice>, AppError> {
     let members: Vec<GuildMemberResponse> = http_client
         .get(format!("{api_base_url}/api/guilds/{guild_id}/members"))
@@ -54,14 +55,17 @@ pub async fn fetch_channel_member_devices(
 
     let mut result = Vec::new();
     for member in &members {
-        if member.user_id.to_string() == self_user_id {
-            continue;
-        }
-
         let devices =
             fetch_user_devices(http_client, api_base_url, access_token, &member.user_id).await?;
 
+        let is_self = member.user_id.to_string() == self_user_id;
         for device in &devices {
+            // The sender's *other* devices are recipients — that is what lets
+            // you read your own messages on a second device. Only the device
+            // doing the sending is skipped; it already has the plaintext.
+            if is_self && self_device_id.is_some_and(|d| *d == device.id) {
+                continue;
+            }
             result.push(MemberDevice {
                 user_id: member.user_id,
                 device_id: device.id,
@@ -80,21 +84,23 @@ pub async fn fetch_dm_recipient_devices(
     access_token: &str,
     participant_ids: &[String],
     self_user_id: &str,
+    self_device_id: Option<&openconv_shared::ids::DeviceId>,
 ) -> Result<Vec<MemberDevice>, AppError> {
     let mut result = Vec::new();
 
     for participant_id in participant_ids {
-        if participant_id == self_user_id {
-            continue;
-        }
-
         let user_id: UserId = participant_id
             .parse()
             .map_err(|_| AppError::new(format!("invalid participant user_id: {participant_id}")))?;
 
         let devices = fetch_user_devices(http_client, api_base_url, access_token, &user_id).await?;
 
+        let is_self = participant_id == self_user_id;
         for device in &devices {
+            // See fetch_channel_member_devices: own other devices are included.
+            if is_self && self_device_id.is_some_and(|d| *d == device.id) {
+                continue;
+            }
             result.push(MemberDevice {
                 user_id,
                 device_id: device.id,
@@ -176,6 +182,7 @@ pub async fn encrypt_for_channel(
     app: &AppHandle,
     guild_id: &str,
     sender_id: &str,
+    sender_device_id: Option<&openconv_shared::ids::DeviceId>,
     plaintext: &[u8],
 ) -> Result<Vec<SharedRecipientPayload>, AppError> {
     let (http_client, api_base_url, access_token) = prepare_http_context().await?;
@@ -186,14 +193,9 @@ pub async fn encrypt_for_channel(
         &access_token,
         guild_id,
         sender_id,
+        sender_device_id,
     )
     .await?;
-
-    if member_devices.is_empty() {
-        return Err(AppError::new(
-            "no recipients: channel has no other members with devices",
-        ));
-    }
 
     establish_sessions_and_encrypt(
         app,
@@ -211,6 +213,7 @@ pub async fn encrypt_for_dm(
     app: &AppHandle,
     participant_ids: &[String],
     sender_id: &str,
+    sender_device_id: Option<&openconv_shared::ids::DeviceId>,
     plaintext: &[u8],
 ) -> Result<Vec<SharedRecipientPayload>, AppError> {
     let (http_client, api_base_url, access_token) = prepare_http_context().await?;
@@ -221,14 +224,9 @@ pub async fn encrypt_for_dm(
         &access_token,
         participant_ids,
         sender_id,
+        sender_device_id,
     )
     .await?;
-
-    if member_devices.is_empty() {
-        return Err(AppError::new(
-            "no recipients: DM channel has no other participants with devices",
-        ));
-    }
 
     establish_sessions_and_encrypt(
         app,

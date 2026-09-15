@@ -300,6 +300,9 @@ async fn upload_and_send_file(
         let uid = ws_state.current_user_id.read().await;
         uid.map(|id| id.to_string()).unwrap_or_default()
     };
+    // The sending device is excluded from its own recipient list;
+    // every other device of ours still needs a copy.
+    let sender_device_id = *ws_state.current_device_id.read().await;
 
     // 9. Generate message ID and client nonce
     let message_id = MessageId::new();
@@ -367,8 +370,14 @@ async fn upload_and_send_file(
                 )
                 .map_err(|_| AppError::new("channel not found in cache — cannot resolve guild"))?
             };
-            device_directory::encrypt_for_channel(app, &guild_id, &sender_id, plaintext.as_bytes())
-                .await?
+            device_directory::encrypt_for_channel(
+                app,
+                &guild_id,
+                &sender_id,
+                sender_device_id.as_ref(),
+                plaintext.as_bytes(),
+            )
+            .await?
         } else if let Some(dm_id) = dm_channel_id {
             // For DM files: look up participant_ids from dm_channel_cache
             let participant_ids = {
@@ -381,6 +390,7 @@ async fn upload_and_send_file(
                 app,
                 &participant_ids,
                 &sender_id,
+                sender_device_id.as_ref(),
                 plaintext.as_bytes(),
             )
             .await?

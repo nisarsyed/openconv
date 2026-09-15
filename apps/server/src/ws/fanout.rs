@@ -226,16 +226,8 @@ pub async fn handle_send_message(
     recipients: Vec<RecipientPayload>,
 ) {
     // Validate recipients
-    if recipients.is_empty() {
-        send_error(
-            state,
-            user_id,
-            sender_device_id,
-            4004,
-            "recipients must not be empty",
-        );
-        return;
-    }
+    // An empty recipient list is legitimate: a solo conversation on a single
+    // device has nobody else to encrypt for. The message is still recorded.
     if recipients.len() > MAX_RECIPIENTS {
         send_error(
             state,
@@ -426,16 +418,8 @@ pub async fn handle_send_dm(
     dm_channel_id: DmChannelId,
     recipients: Vec<RecipientPayload>,
 ) {
-    if recipients.is_empty() {
-        send_error(
-            state,
-            user_id,
-            sender_device_id,
-            4004,
-            "recipients must not be empty",
-        );
-        return;
-    }
+    // An empty recipient list is legitimate: a solo conversation on a single
+    // device has nobody else to encrypt for. The message is still recorded.
     if recipients.len() > MAX_RECIPIENTS {
         send_error(
             state,
@@ -634,16 +618,8 @@ pub async fn handle_edit_message(
     recipients: Vec<RecipientPayload>,
 ) {
     // Validate recipients
-    if recipients.is_empty() {
-        send_error(
-            state,
-            user_id,
-            sender_device_id,
-            4004,
-            "recipients must not be empty",
-        );
-        return;
-    }
+    // An empty recipient list is legitimate: a solo conversation on a single
+    // device has nobody else to encrypt for. The message is still recorded.
     if recipients.len() > MAX_RECIPIENTS {
         send_error(
             state,

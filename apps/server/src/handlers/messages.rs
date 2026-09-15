@@ -64,12 +64,14 @@ pub async fn guild_messages(
     let rows = if let Some(ref cursor) = params.cursor {
         let decoded = decode_cursor(cursor)?;
         sqlx::query_as::<_, MessageRow>(
-            "SELECT m.id, m.channel_id, m.sender_id, m.encrypted_content, m.nonce, \
+            "SELECT m.id, m.channel_id, m.sender_id, m.sender_device_id, \
+                    d.signal_device_id, m.encrypted_content, m.nonce, \
                     m.edited_at, m.created_at, \
                     mr.ciphertext, mr.message_type \
              FROM messages m \
              LEFT JOIN message_recipients mr \
                ON mr.message_id = m.id AND mr.user_id = $2 AND mr.device_id = $3 \
+             LEFT JOIN devices d ON d.id = m.sender_device_id \
              WHERE m.channel_id = $1 AND m.deleted = false \
                AND (m.created_at, m.id) < ($4, $5) \
              ORDER BY m.created_at DESC, m.id DESC \
@@ -86,12 +88,14 @@ pub async fn guild_messages(
         .map_err(db_err)?
     } else {
         sqlx::query_as::<_, MessageRow>(
-            "SELECT m.id, m.channel_id, m.sender_id, m.encrypted_content, m.nonce, \
+            "SELECT m.id, m.channel_id, m.sender_id, m.sender_device_id, \
+                    d.signal_device_id, m.encrypted_content, m.nonce, \
                     m.edited_at, m.created_at, \
                     mr.ciphertext, mr.message_type \
              FROM messages m \
              LEFT JOIN message_recipients mr \
                ON mr.message_id = m.id AND mr.user_id = $2 AND mr.device_id = $3 \
+             LEFT JOIN devices d ON d.id = m.sender_device_id \
              WHERE m.channel_id = $1 AND m.deleted = false \
              ORDER BY m.created_at DESC, m.id DESC \
              LIMIT $4",
@@ -232,6 +236,8 @@ struct MessageRow {
     id: MessageId,
     channel_id: ChannelId,
     sender_id: UserId,
+    sender_device_id: Option<openconv_shared::ids::DeviceId>,
+    signal_device_id: Option<i32>,
     encrypted_content: Option<Vec<u8>>,
     nonce: Option<Vec<u8>>,
     edited_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -247,6 +253,8 @@ impl MessageRow {
             channel_id: self.channel_id,
             dm_channel_id: None,
             sender_id: self.sender_id,
+            sender_device_id: self.sender_device_id,
+            sender_signal_device_id: self.signal_device_id.map(|v| v as u32),
             encrypted_content: self.encrypted_content,
             nonce: self.nonce,
             ciphertext: self.ciphertext,

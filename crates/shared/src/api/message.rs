@@ -1,4 +1,4 @@
-use crate::ids::{ChannelId, DmChannelId, MessageId, UserId};
+use crate::ids::{ChannelId, DeviceId, DmChannelId, MessageId, UserId};
 use serde::{Deserialize, Serialize};
 
 /// Serde module for serializing `Vec<u8>` as base64 strings in JSON.
@@ -67,6 +67,14 @@ pub struct MessageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dm_channel_id: Option<DmChannelId>,
     pub sender_id: UserId,
+    /// UUID of the sending device. Absent for rows written before per-device
+    /// encryption, or whose device has since been deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_device_id: Option<DeviceId>,
+    /// Signal protocol device id of the sender — required to rebuild the
+    /// decrypting `ProtocolAddress` when reading history over REST.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_signal_device_id: Option<u32>,
     /// Legacy single-blob encrypted content (nullable for per-recipient messages).
     #[serde(
         with = "option_base64_serde",
@@ -126,6 +134,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(b"encrypted_data".to_vec()),
             nonce: Some(b"nonce_bytes".to_vec()),
             ciphertext: None,
@@ -150,6 +160,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(b"data".to_vec()),
             nonce: Some(b"nonce".to_vec()),
             ciphertext: None,
@@ -169,6 +181,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(b"data".to_vec()),
             nonce: Some(b"nonce".to_vec()),
             ciphertext: None,
@@ -189,6 +203,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(content.clone()),
             nonce: Some(nonce.clone()),
             ciphertext: None,
@@ -215,6 +231,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(content.clone()),
             nonce: Some(nonce.clone()),
             ciphertext: None,
@@ -238,6 +256,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: None,
             nonce: None,
             ciphertext: Some(ct.clone()),
@@ -262,6 +282,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: None,
             nonce: None,
             ciphertext: None,
@@ -326,6 +348,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: None,
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(b"data".to_vec()),
             nonce: Some(b"nonce".to_vec()),
             ciphertext: None,
@@ -345,6 +369,8 @@ mod tests {
             channel_id: ChannelId::new(),
             dm_channel_id: Some(dm_id),
             sender_id: UserId::new(),
+            sender_device_id: None,
+            sender_signal_device_id: None,
             encrypted_content: Some(b"data".to_vec()),
             nonce: Some(b"nonce".to_vec()),
             ciphertext: None,

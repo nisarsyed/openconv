@@ -310,6 +310,9 @@ pub async fn process_queue(app: AppHandle) {
                 }
             }
         };
+        // The sending device is excluded from its own recipient list; every
+        // other device of ours still needs a copy.
+        let sender_device_id = *ws_state.current_device_id.read().await;
 
         // Encrypt plaintext per-device for the appropriate recipient set
         let encrypt_result = if let Some(ref ch_id) = queued_msg.channel_id {
@@ -332,6 +335,7 @@ pub async fn process_queue(app: AppHandle) {
                         &app,
                         &gid,
                         &sender_id,
+                        sender_device_id.as_ref(),
                         queued_msg.plaintext.as_bytes(),
                     )
                     .await
@@ -363,6 +367,7 @@ pub async fn process_queue(app: AppHandle) {
                         &app,
                         &pids,
                         &sender_id,
+                        sender_device_id.as_ref(),
                         queued_msg.plaintext.as_bytes(),
                     )
                     .await

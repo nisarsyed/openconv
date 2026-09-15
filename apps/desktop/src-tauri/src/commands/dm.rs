@@ -209,6 +209,9 @@ pub async fn send_dm_message(
         let uid = ws_state.current_user_id.read().await;
         uid.map(|id| id.to_string()).unwrap_or_default()
     };
+    // The sending device is excluded from its own recipient list;
+    // every other device of ours still needs a copy.
+    let sender_device_id = *ws_state.current_device_id.read().await;
 
     // 3. Generate message ID and client nonce
     let message_id = MessageId::new();
@@ -275,6 +278,7 @@ pub async fn send_dm_message(
             &app,
             &participant_ids,
             &sender_id,
+            sender_device_id.as_ref(),
             plaintext.as_bytes(),
         )
         .await?;

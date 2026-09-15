@@ -78,6 +78,9 @@ pub async fn send_message(
         let uid = ws_state.current_user_id.read().await;
         uid.map(|id| id.to_string()).unwrap_or_default()
     };
+    // The sending device is excluded from its own recipient list;
+    // every other device of ours still needs a copy.
+    let sender_device_id = *ws_state.current_device_id.read().await;
 
     // 3. Generate message ID and client nonce
     let message_id = MessageId::new();
@@ -129,6 +132,7 @@ pub async fn send_message(
             &app,
             &guild_id,
             &sender_id,
+            sender_device_id.as_ref(),
             plaintext.as_bytes(),
         )
         .await?;
@@ -185,12 +189,16 @@ pub async fn edit_message(
         let uid = ws_state.current_user_id.read().await;
         uid.map(|id| id.to_string()).unwrap_or_default()
     };
+    // The sending device is excluded from its own recipient list;
+    // every other device of ours still needs a copy.
+    let sender_device_id = *ws_state.current_device_id.read().await;
 
     // Re-encrypt new plaintext per-device with current ratchet state
     let recipients = device_directory::encrypt_for_channel(
         &app,
         &guild_id,
         &sender_id,
+        sender_device_id.as_ref(),
         new_plaintext.as_bytes(),
     )
     .await?;
