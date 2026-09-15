@@ -6,6 +6,7 @@ import { FileAttachment } from "./FileAttachment";
 import { MessageActions } from "./MessageActions";
 import { DecryptFailedMessage } from "./DecryptFailedMessage";
 import { useState, useRef, useEffect } from "react";
+import { useParams } from "react-router";
 
 interface MessageProps {
   message: MessageType;
@@ -13,6 +14,7 @@ interface MessageProps {
 }
 
 export function Message({ message, isOwn }: MessageProps) {
+  const { guildId } = useParams<{ guildId: string }>();
   const [hovered, setHovered] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
@@ -37,6 +39,7 @@ export function Message({ message, isOwn }: MessageProps) {
       try {
         await invoke("edit_message", {
           channelId: message.channelId,
+          guildId,
           messageId: message.id,
           newPlaintext: trimmed,
         });

@@ -170,12 +170,13 @@ async wsSendTyping(channelId: string) : Promise<Result<null, AppError>> {
 /**
  * Send an encrypted message to a channel.
  * 
- * Inserts an optimistic local message with status="pending", then sends via WebSocket.
- * Encryption per-device will be wired in once the member/device directory is available.
+ * Inserts an optimistic local message with status="pending", encrypts the
+ * plaintext per-device for all channel members, then sends via WebSocket.
+ * If the WebSocket is disconnected, queues the plaintext for later retry.
  */
-async sendMessage(channelId: string, plaintext: string) : Promise<Result<string, AppError>> {
+async sendMessage(channelId: string, guildId: string, plaintext: string) : Promise<Result<string, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("send_message", { channelId, plaintext }) };
+    return { status: "ok", data: await TAURI_INVOKE("send_message", { channelId, guildId, plaintext }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -184,11 +185,11 @@ async sendMessage(channelId: string, plaintext: string) : Promise<Result<string,
 /**
  * Edit a previously sent message.
  * 
- * Updates local cache and FTS, then sends the edit via WebSocket.
+ * Updates local cache and FTS, re-encrypts per-device, then sends via WebSocket.
  */
-async editMessage(channelId: string, messageId: string, newPlaintext: string) : Promise<Result<null, AppError>> {
+async editMessage(channelId: string, guildId: string, messageId: string, newPlaintext: string) : Promise<Result<null, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("edit_message", { channelId, messageId, newPlaintext }) };
+    return { status: "ok", data: await TAURI_INVOKE("edit_message", { channelId, guildId, messageId, newPlaintext }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -450,9 +451,9 @@ async markChannelRead(channelId: string, lastMessageId: string, lastMessageCreat
  * Trigger a batch sync of unsynced read positions to the server.
  * Called periodically (every 30s) and on app minimize/close.
  * 
- * Currently a no-op until the server REST endpoints are wired in.
- * Positions remain marked as unsynced so they will be sent once the
- * POST /api/users/me/read-state endpoint is implemented.
+ * 1. Collects unsynced positions from local cache
+ * 2. POSTs them to the server
+ * 3. On success, marks them as synced locally
  */
 async syncReadPositions() : Promise<Result<null, AppError>> {
     try {
@@ -466,8 +467,9 @@ async syncReadPositions() : Promise<Result<null, AppError>> {
  * Fetch read positions from server and merge with local state.
  * Called on app launch.
  * 
- * Currently returns local positions only until the server REST
- * endpoints are wired in.
+ * 1. Fetches server-side read positions
+ * 2. Merges with local state (server wins if more recent)
+ * 3. Returns all positions for frontend initialization
  */
 async fetchAndMergeReadPositions() : Promise<Result<ReadPositionInfo[], AppError>> {
     try {

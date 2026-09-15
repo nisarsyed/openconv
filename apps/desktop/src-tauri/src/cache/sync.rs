@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -103,6 +105,7 @@ pub fn apply_sync_event(
                 channel_id: Some(event.channel_id.clone()),
                 dm_channel_id: None,
                 sender_id: event.sender_id.clone().unwrap_or_default(),
+                sender_device_id: None,
                 plaintext: plaintext.map(|s| s.to_string()),
                 ciphertext: None,
                 message_type: None,
@@ -185,6 +188,7 @@ mod tests {
             channel_id: Some(channel_id.to_string()),
             dm_channel_id: None,
             sender_id: "u1".to_string(),
+            sender_device_id: None,
             plaintext: Some("hello".to_string()),
             ciphertext: None,
             message_type: None,
@@ -195,12 +199,7 @@ mod tests {
         }
     }
 
-    fn make_event(
-        seq: i64,
-        channel_id: &str,
-        event_type: &str,
-        message_id: &str,
-    ) -> SyncEvent {
+    fn make_event(seq: i64, channel_id: &str, event_type: &str, message_id: &str) -> SyncEvent {
         SyncEvent {
             sequence: seq,
             channel_id: channel_id.to_string(),
@@ -268,8 +267,7 @@ mod tests {
         let conn = test_conn();
 
         let event = make_event(1, "ch1", "message_created", "m_new");
-        let applied =
-            apply_sync_event(&conn, &event, Some("synced message"), Some(2000)).unwrap();
+        let applied = apply_sync_event(&conn, &event, Some("synced message"), Some(2000)).unwrap();
         assert!(applied, "new message should be inserted");
 
         let msg = messages::get_message(&conn, "m_new").unwrap().unwrap();
@@ -284,7 +282,10 @@ mod tests {
 
         let event = make_event(1, "ch1", "message_created", "m_no_pt");
         let applied = apply_sync_event(&conn, &event, None, None).unwrap();
-        assert!(applied, "message without plaintext should still be inserted");
+        assert!(
+            applied,
+            "message without plaintext should still be inserted"
+        );
 
         let msg = messages::get_message(&conn, "m_no_pt").unwrap().unwrap();
         assert!(msg.plaintext.is_none());

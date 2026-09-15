@@ -27,11 +27,13 @@ pub enum RecoveryAction {
 ///
 /// The `remote_bundle` is JSON-serialized `SerializedPreKeyBundle` data from the server.
 /// The bundle's `user_id` field (server-assigned UUID) is used as the address name.
+/// `signal_device_id` is the Signal protocol device ID (u32) for the remote device.
 ///
 /// Returns the `ProtocolAddress` for subsequent message encryption calls.
 pub fn create_outgoing_session(
     conn: &Connection,
     remote_bundle: &[u8],
+    signal_device_id: u32,
 ) -> Result<ProtocolAddress, CryptoError> {
     let bundle: SerializedPreKeyBundle = serde_json::from_slice(remote_bundle)?;
 
@@ -44,9 +46,15 @@ pub fn create_outgoing_session(
     let kyber_pre_key_public = kem::PublicKey::deserialize(&bundle.kyber_pre_key)
         .map_err(|e| CryptoError::InvalidKey(format!("invalid kyber key: {e}")))?;
 
+    let device_id_u8: u8 = signal_device_id.try_into().map_err(|_| {
+        CryptoError::InvalidKey(format!("signal device_id {signal_device_id} exceeds u8"))
+    })?;
+    let signal_did = DeviceId::new(device_id_u8)
+        .map_err(|e| CryptoError::InvalidKey(format!("invalid signal device_id: {e}")))?;
+
     let pre_key_bundle = PreKeyBundle::new(
         bundle.registration_id,
-        DeviceId::new(1).expect("device ID 1 is valid"),
+        signal_did,
         None, // no one-time pre-key in V1 bundle
         SignedPreKeyId::from(bundle.signed_pre_key_id),
         signed_pre_key_public,
@@ -58,7 +66,7 @@ pub fn create_outgoing_session(
     )
     .map_err(|e| CryptoError::SignalProtocolError(e.to_string()))?;
 
-    let remote_address = ProtocolAddress::new(bundle.user_id, DeviceId::new(1).expect("valid"));
+    let remote_address = ProtocolAddress::new(bundle.user_id, signal_did);
 
     // Wrap in transaction so identity save + session save are atomic
     let tx = conn.unchecked_transaction()?;
@@ -136,7 +144,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
         assert_eq!(address.name(), "bob-user-id");
 
         // Session should exist in Alice's DB
@@ -157,7 +165,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
 
         let addr_name = address.name();
         let (session_data, created_at, last_used_at): (Vec<u8>, i64, i64) = alice_conn
@@ -178,7 +186,7 @@ mod tests {
         let alice_conn = init_test_db();
         generate_identity(&alice_conn).unwrap();
 
-        let result = create_outgoing_session(&alice_conn, b"invalid json garbage");
+        let result = create_outgoing_session(&alice_conn, b"invalid json garbage", 1);
         assert!(result.is_err());
 
         // No session should be stored
@@ -199,7 +207,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
         recover_session(&alice_conn, &address).unwrap();
 
         let session_count: u32 = alice_conn
@@ -219,7 +227,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
 
         // Insert dummy skipped message keys
         let now = std::time::SystemTime::now()
@@ -257,7 +265,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
         let action = recover_session(&alice_conn, &address).unwrap();
         assert_eq!(action, RecoveryAction::SessionReset);
     }
@@ -373,7 +381,7 @@ mod tests {
             )
             .unwrap();
 
-        let _ = create_outgoing_session(&alice_conn, b"bad data");
+        let _ = create_outgoing_session(&alice_conn, b"bad data", 1);
 
         let session_after: u32 = alice_conn
             .query_row("SELECT COUNT(*) FROM crypto_sessions", [], |row| row.get(0))
@@ -401,7 +409,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
 
         let identity_count: u32 = alice_conn
             .query_row(

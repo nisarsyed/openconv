@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod device_directory;
 pub mod dm;
 pub mod files;
 pub mod health;

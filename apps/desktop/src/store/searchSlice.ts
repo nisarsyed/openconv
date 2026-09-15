@@ -47,11 +47,7 @@ export const createSearchSlice: SliceCreator<SearchSlice> = (set, get) => ({
       draft.isSearching = true;
     });
 
-    const result = await commands.searchMessages(
-      searchQuery,
-      searchScope,
-      50,
-    );
+    const result = await commands.searchMessages(searchQuery, searchScope, 50);
     if (result.status === "ok") {
       set((draft) => {
         draft.searchResults = result.data;

@@ -52,7 +52,7 @@ fn full_roundtrip_alice_bob() {
 
     // -- Step 3: Alice creates outgoing session to Bob --
     let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
-    let bob_address = session::create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+    let bob_address = session::create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
     let alice_address =
         ProtocolAddress::new("alice-uuid".to_string(), DeviceId::new(1).expect("valid"));
 

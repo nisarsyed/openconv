@@ -59,7 +59,7 @@ mod tests {
             identity::generate_identity as fn(&_) -> _,
             prekeys::generate_pre_key_bundle as fn(&_, &_) -> _,
         );
-        let _ = session::create_outgoing_session as fn(&_, &_) -> _;
+        let _ = session::create_outgoing_session as fn(&_, &_, u32) -> _;
         let _ = std::mem::size_of::<EncryptedMessage>();
         let _ = std::mem::size_of::<MessageType>();
         let _ = std::mem::size_of::<FileKey>();

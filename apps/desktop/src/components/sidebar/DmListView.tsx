@@ -5,9 +5,7 @@ export function DmListView() {
         <h2 className="mb-2 text-lg font-semibold text-[var(--text-primary)]">
           Direct Messages
         </h2>
-        <p className="text-sm">
-          Select a conversation or start a new message.
-        </p>
+        <p className="text-sm">Select a conversation or start a new message.</p>
       </div>
     </div>
   );

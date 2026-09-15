@@ -238,12 +238,7 @@ async fn handle_client_message(
             recipients,
         } => {
             super::fanout::handle_edit_message(
-                state,
-                user_id,
-                device_id,
-                channel_id,
-                message_id,
-                recipients,
+                state, user_id, device_id, channel_id, message_id, recipients,
             )
             .await;
         }

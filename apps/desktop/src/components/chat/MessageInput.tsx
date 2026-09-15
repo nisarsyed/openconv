@@ -15,7 +15,11 @@ interface MessageInputProps {
   onKeyPress?: () => void;
 }
 
-export function MessageInput({ onSend, channelName, onKeyPress }: MessageInputProps) {
+export function MessageInput({
+  onSend,
+  channelName,
+  onKeyPress,
+}: MessageInputProps) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

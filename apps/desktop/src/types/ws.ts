@@ -56,3 +56,27 @@ export interface WsErrorPayload {
   code: number;
   message: string;
 }
+
+export interface WsReadyDataPayload {
+  user_id: string;
+  display_name: string;
+  email: string;
+  avatar_url: string | null;
+  guilds: WsGuildPayload[];
+}
+
+export interface WsGuildPayload {
+  id: string;
+  name: string;
+  owner_id: string;
+  icon_url: string | null;
+  channels: WsChannelPayload[];
+}
+
+export interface WsChannelPayload {
+  id: string;
+  guild_id: string;
+  name: string;
+  channel_type: string;
+  position: number;
+}

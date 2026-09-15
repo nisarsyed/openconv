@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Mutex;
 
 use libsignal_protocol::{DeviceId, ProtocolAddress};
@@ -60,6 +62,19 @@ pub struct CryptoState {
     pub crypto_service: CryptoService,
 }
 
+/// Map a sender's UUID device_id to the Signal protocol device_id (u32).
+///
+/// Signal sessions are keyed by `(user_id, signal_device_id)`. Currently all
+/// sessions are established with signal_device_id = 1 (single-device).
+/// When multi-device support is added, this function should look up the
+/// mapping from a `device_signal_ids` table populated during session creation.
+pub fn resolve_signal_device_id(_sender_device_id: Option<&str>) -> u32 {
+    // All existing sessions use signal device_id = 1.
+    // TODO: Once multi-device directory is implemented, look up the mapping:
+    //   SELECT signal_device_id FROM device_signal_ids WHERE device_uuid = ?
+    1
+}
+
 /// High-level wrapper around the `openconv_crypto` crate.
 ///
 /// All methods are synchronous. Callers in async contexts MUST use
@@ -76,10 +91,7 @@ impl CryptoService {
     ///
     /// Opens the crypto SQLCipher database, applies the encryption key
     /// derived from the OS keychain master key, and runs migrations.
-    pub fn new(
-        crypto_db_path: std::path::PathBuf,
-        api_base_url: String,
-    ) -> Result<Self, AppError> {
+    pub fn new(crypto_db_path: std::path::PathBuf, api_base_url: String) -> Result<Self, AppError> {
         use openconv_crypto::master_key;
 
         let conn = Connection::open(&crypto_db_path)
@@ -146,8 +158,8 @@ impl CryptoService {
     ) -> Result<(), AppError> {
         let conn = self.lock_crypto()?;
 
-        // V1: create_outgoing_session hardcodes device_id=1, so check by address only.
-        // Multi-device support will need to include device_id in this query.
+        // Check session by address only (user_id). Multi-device support will
+        // need to include device_id in this query for per-device sessions.
         let exists: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM crypto_sessions WHERE address = ?1",
@@ -162,7 +174,7 @@ impl CryptoService {
 
         match bundle_json {
             Some(bundle) => {
-                session::create_outgoing_session(&conn, bundle)?;
+                session::create_outgoing_session(&conn, bundle, device_id)?;
                 Ok(())
             }
             None => Err(AppError::new(format!(
@@ -507,10 +519,7 @@ mod tests {
             &second[0].ciphertext,
             &second[0].message_type,
         );
-        assert!(matches!(
-            result,
-            Err(DecryptError::SessionCorrupted { .. })
-        ));
+        assert!(matches!(result, Err(DecryptError::SessionCorrupted { .. })));
     }
 
     // --- encrypt_for_dm ---

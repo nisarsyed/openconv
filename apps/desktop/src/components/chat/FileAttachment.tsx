@@ -20,7 +20,8 @@ const IMAGE_TYPES = new Set([
 ]);
 
 function resolveImageSrc(attachment: FileAttachmentType): string {
-  if (attachment.thumbnailLocalPath) return convertFileSrc(attachment.thumbnailLocalPath);
+  if (attachment.thumbnailLocalPath)
+    return convertFileSrc(attachment.thumbnailLocalPath);
   if (attachment.localPath) return convertFileSrc(attachment.localPath);
   return attachment.thumbnailUrl ?? attachment.url;
 }
@@ -71,7 +72,11 @@ export function FileAttachment({ attachment }: FileAttachmentProps) {
         </div>
       </div>
       <a
-        href={attachment.localPath ? convertFileSrc(attachment.localPath) : attachment.url}
+        href={
+          attachment.localPath
+            ? convertFileSrc(attachment.localPath)
+            : attachment.url
+        }
         download={attachment.fileName}
         className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--interactive-hover)] hover:text-[var(--text-primary)]"
         aria-label={`Download ${attachment.fileName}`}

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 
@@ -281,7 +283,10 @@ mod tests {
         let conn = test_conn();
         enqueue_message(&conn, "m1", Some("ch1"), None, "hello", 1000).unwrap();
         let result = enqueue_message(&conn, "m1", Some("ch1"), None, "hello again", 1001);
-        assert!(result.is_err(), "duplicate message_id should be rejected by UNIQUE constraint");
+        assert!(
+            result.is_err(),
+            "duplicate message_id should be rejected by UNIQUE constraint"
+        );
     }
 
     #[test]
@@ -370,6 +375,7 @@ mod tests {
                 channel_id: Some("ch1".into()),
                 dm_channel_id: None,
                 sender_id: "u1".into(),
+                sender_device_id: None,
                 plaintext: Some("hello".into()),
                 ciphertext: None,
                 message_type: None,
@@ -393,7 +399,9 @@ mod tests {
         assert_eq!(count, 0);
 
         // Message should be delivered
-        let msg = crate::cache::messages::get_message(&conn, "m1").unwrap().unwrap();
+        let msg = crate::cache::messages::get_message(&conn, "m1")
+            .unwrap()
+            .unwrap();
         assert_eq!(msg.status, "delivered");
     }
 }

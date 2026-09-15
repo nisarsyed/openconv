@@ -15,11 +15,14 @@ function sanitizeSnippet(html: string): string {
     .replace(/<\/b>/g, "\x00/B")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\x00B/g, "<b>")
-    .replace(/\x00\/B/g, "</b>");
+    .replaceAll("\x00B", "<b>")
+    .replaceAll("\x00/B", "</b>");
 }
 
-const SCOPE_OPTIONS: { label: string; makeScope: (props: SearchOverlayProps) => SearchScope }[] = [
+const SCOPE_OPTIONS: {
+  label: string;
+  makeScope: (props: SearchOverlayProps) => SearchScope;
+}[] = [
   {
     label: "This Channel",
     makeScope: (props) =>
@@ -68,9 +71,7 @@ export function SearchOverlay({ channelId, guildId }: SearchOverlayProps) {
     useSearch();
   const inputRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  const setSearchOverlayVisible = useAppStore(
-    (s) => s.setSearchOverlayVisible,
-  );
+  const setSearchOverlayVisible = useAppStore((s) => s.setSearchOverlayVisible);
   const channelsById = useAppStore((s) => s.channelsById);
   const usersById = useAppStore((s) => s.usersById);
 
@@ -103,7 +104,10 @@ export function SearchOverlay({ channelId, guildId }: SearchOverlayProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [clear, setSearchOverlayVisible]);
 
-  const handleResultClick = (messageId: string, resultChannelId: string | null) => {
+  const handleResultClick = (
+    messageId: string,
+    resultChannelId: string | null,
+  ) => {
     clear();
     setSearchOverlayVisible(false);
     if (resultChannelId) {
@@ -119,7 +123,7 @@ export function SearchOverlay({ channelId, guildId }: SearchOverlayProps) {
   return (
     <div
       ref={overlayRef}
-      className="absolute right-0 top-12 z-50 flex w-96 flex-col rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-primary)] shadow-xl"
+      className="absolute top-12 right-0 z-50 flex w-96 flex-col rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-primary)] shadow-xl"
     >
       <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] p-3">
         <svg
@@ -217,7 +221,9 @@ export function SearchOverlay({ channelId, guildId }: SearchOverlayProps) {
                 </div>
                 <p
                   className="line-clamp-2 text-sm text-[var(--text-primary)] [&>b]:font-semibold [&>b]:text-[var(--accent)]"
-                  dangerouslySetInnerHTML={{ __html: sanitizeSnippet(r.snippet) }}
+                  dangerouslySetInnerHTML={{
+                    __html: sanitizeSnippet(r.snippet),
+                  }}
                 />
               </button>
             );

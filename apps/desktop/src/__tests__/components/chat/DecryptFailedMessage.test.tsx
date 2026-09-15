@@ -9,9 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
-function makeDecryptFailedMessage(
-  overrides: Partial<Message> = {},
-): Message {
+function makeDecryptFailedMessage(overrides: Partial<Message> = {}): Message {
   return {
     id: "msg-1",
     channelId: "ch-1",
@@ -89,9 +87,7 @@ describe("DecryptFailedMessage", () => {
       failureReason: "SessionNotFound",
     });
     render(<DecryptFailedMessage message={msg} />);
-    expect(
-      screen.getByText(/session not established/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/session not established/i)).toBeInTheDocument();
   });
 
   it("shows specific text for SessionCorrupted", () => {

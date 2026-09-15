@@ -96,28 +96,27 @@ async fn connection_loop(app: AppHandle, ws_state: WsState) {
 
     loop {
         // Get access token (blocking OS keyring call via spawn_blocking)
-        let access_token =
-            match tokio::task::spawn_blocking(auth_service::get_access_token).await {
-                Ok(Ok(token)) => token,
-                Ok(Err(e)) => {
-                    tracing::error!("ws: failed to get access token: {e}");
-                    let mut state = ws_state.connection_state.write().await;
-                    *state = WsConnectionState::Failed {
-                        reason: "no auth token available".into(),
-                    };
-                    events::emit_state(&app, &state);
-                    return;
-                }
-                Err(e) => {
-                    tracing::error!("ws: spawn_blocking failed: {e}");
-                    let mut state = ws_state.connection_state.write().await;
-                    *state = WsConnectionState::Failed {
-                        reason: "internal error".into(),
-                    };
-                    events::emit_state(&app, &state);
-                    return;
-                }
-            };
+        let access_token = match tokio::task::spawn_blocking(auth_service::get_access_token).await {
+            Ok(Ok(token)) => token,
+            Ok(Err(e)) => {
+                tracing::error!("ws: failed to get access token: {e}");
+                let mut state = ws_state.connection_state.write().await;
+                *state = WsConnectionState::Failed {
+                    reason: "no auth token available".into(),
+                };
+                events::emit_state(&app, &state);
+                return;
+            }
+            Err(e) => {
+                tracing::error!("ws: spawn_blocking failed: {e}");
+                let mut state = ws_state.connection_state.write().await;
+                *state = WsConnectionState::Failed {
+                    reason: "internal error".into(),
+                };
+                events::emit_state(&app, &state);
+                return;
+            }
+        };
 
         // Obtain WS ticket
         let ticket = match obtain_ws_ticket(&http_client, &api_base_url, &access_token).await {
@@ -228,7 +227,7 @@ async fn connection_loop(app: AppHandle, ws_state: WsState) {
             while let Some(msg) = rx.recv().await {
                 match serde_json::to_string(&msg) {
                     Ok(json) => {
-                        if let Err(e) = ws_write.send(Message::Text(json.into())).await {
+                        if let Err(e) = ws_write.send(Message::Text(json)).await {
                             tracing::warn!("ws: write error: {e}");
                             break;
                         }
@@ -315,10 +314,7 @@ async fn connection_loop(app: AppHandle, ws_state: WsState) {
 /// Gracefully disconnect the WebSocket.
 #[tauri::command]
 #[specta::specta]
-pub async fn ws_disconnect(
-    app: AppHandle,
-    ws_state: State<'_, WsState>,
-) -> Result<(), AppError> {
+pub async fn ws_disconnect(app: AppHandle, ws_state: State<'_, WsState>) -> Result<(), AppError> {
     // Abort the connection task first to prevent race conditions
     {
         let mut task = ws_state.connection_task.write().await;

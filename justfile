@@ -5,7 +5,7 @@ default:
 
 # Launch Tauri desktop app with hot reload
 dev:
-    cd apps/desktop && npm run tauri dev
+    cd apps/desktop && pnpm tauri dev
 
 # Start the Axum server
 server:
@@ -15,9 +15,9 @@ server:
 build:
     cargo build --release
 
-# Start PostgreSQL container
+# Start PostgreSQL + Redis containers
 db-up:
-    docker compose up -d postgres
+    docker compose up -d postgres redis
 
 # Stop and remove containers
 db-down:
@@ -40,7 +40,7 @@ sqlx-prepare:
 # Run all tests (Rust + JavaScript)
 test:
     cargo test --workspace
-    cd apps/desktop && npm test
+    cd apps/desktop && pnpm test
 
 # Run Rust tests only
 test-rust:
@@ -48,19 +48,19 @@ test-rust:
 
 # Run JavaScript tests only
 test-js:
-    cd apps/desktop && npm test
+    cd apps/desktop && pnpm test
 
 # Lint all code (Clippy + ESLint)
 lint:
     cargo clippy --workspace -- -D warnings
-    cd apps/desktop && npm run lint
+    cd apps/desktop && pnpm run lint
 
 # Format all code
 fmt:
     cargo fmt --all
-    cd apps/desktop && npm run fmt
+    cd apps/desktop && pnpm run fmt
 
 # Check formatting without modifying files
 fmt-check:
     cargo fmt --all --check
-    cd apps/desktop && npm run fmt:check
+    cd apps/desktop && pnpm run fmt:check

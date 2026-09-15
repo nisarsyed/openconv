@@ -55,7 +55,6 @@ async fn check_permission(
             PermissionError::Internal
         })?;
 
-    // TODO: Invalidate cache on role change events (requires integration with REST role endpoints)
     state.ws.permission_cache.insert(user_id, guild_id, perms);
 
     if perms.contains(required) {
@@ -124,8 +123,15 @@ pub async fn handle_subscribe(
     let broadcast_rx = broadcast_tx.subscribe();
 
     // Replay missed messages (if any last_seen exists in Redis)
-    if let Err(e) =
-        replay::replay_missed_messages(&state.db, &state.redis, user_id, device_id, channel_id, &mpsc_tx).await
+    if let Err(e) = replay::replay_missed_messages(
+        &state.db,
+        &state.redis,
+        user_id,
+        device_id,
+        channel_id,
+        &mpsc_tx,
+    )
+    .await
     {
         tracing::warn!(
             user_id = %user_id,
@@ -214,23 +220,35 @@ const MAX_RECIPIENTS: usize = 200;
 pub async fn handle_send_message(
     state: &AppState,
     user_id: UserId,
-    device_id: DeviceId,
+    sender_device_id: DeviceId,
     channel_id: ChannelId,
     recipients: Vec<RecipientPayload>,
 ) {
     // Validate recipients
     if recipients.is_empty() {
-        send_error(state, user_id, device_id, 4004, "recipients must not be empty");
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4004,
+            "recipients must not be empty",
+        );
         return;
     }
     if recipients.len() > MAX_RECIPIENTS {
-        send_error(state, user_id, device_id, 4004, "too many recipients");
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4004,
+            "too many recipients",
+        );
         return;
     }
 
     // Rate limit check
     if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
-        send_error(state, user_id, device_id, 4003, "rate limited");
+        send_error(state, user_id, sender_device_id, 4003, "rate limited");
         return;
     }
 
@@ -238,30 +256,51 @@ pub async fn handle_send_message(
     let guild_id = match resolve_channel_guild(&state.db, channel_id).await {
         Some(gid) => gid,
         None => {
-            send_error(state, user_id, device_id, 4007, "channel not found");
+            send_error(state, user_id, sender_device_id, 4007, "channel not found");
             return;
         }
     };
 
     // Re-check SEND_MESSAGES permission
     if let Err(e) = check_permission(state, user_id, guild_id, Permissions::SEND_MESSAGES).await {
-        handle_permission_error(state, user_id, device_id, e);
+        handle_permission_error(state, user_id, sender_device_id, e);
         return;
     }
 
     // Persist message + recipients + channel event in a single transaction
-    let (message_id, created_at) =
-        match persist_message(&state.db, channel_id, user_id, &recipients).await {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to persist message");
-                send_error(state, user_id, device_id, 4004, "failed to send message");
-                return;
-            }
-        };
+    let (message_id, created_at) = match persist_message(
+        &state.db,
+        channel_id,
+        user_id,
+        sender_device_id,
+        &recipients,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to persist message");
+            send_error(
+                state,
+                user_id,
+                sender_device_id,
+                4004,
+                "failed to send message",
+            );
+            return;
+        }
+    };
 
     // Per-device fan-out: send each subscribed connection its own ciphertext
-    fan_out_message_created(state, channel_id, message_id, user_id, &recipients, created_at);
+    fan_out_message_created(
+        state,
+        channel_id,
+        message_id,
+        user_id,
+        sender_device_id,
+        &recipients,
+        created_at,
+    );
 }
 
 /// Persist message metadata, per-device recipient payloads, and channel event in one transaction.
@@ -269,17 +308,19 @@ async fn persist_message(
     db: &sqlx::PgPool,
     channel_id: ChannelId,
     sender_id: UserId,
+    sender_device_id: DeviceId,
     recipients: &[RecipientPayload],
 ) -> Result<(MessageId, chrono::DateTime<chrono::Utc>), sqlx::Error> {
     let mut tx = db.begin().await?;
 
     // Insert message row (encrypted_content/nonce NULL; content lives in message_recipients)
     let row: (MessageId, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
-        "INSERT INTO messages (channel_id, sender_id, encrypted_content, nonce) \
-         VALUES ($1, $2, NULL, NULL) RETURNING id, created_at",
+        "INSERT INTO messages (channel_id, sender_id, sender_device_id, encrypted_content, nonce) \
+         VALUES ($1, $2, $3, NULL, NULL) RETURNING id, created_at",
     )
     .bind(channel_id)
     .bind(sender_id)
+    .bind(sender_device_id)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -321,6 +362,7 @@ fn fan_out_message_created(
     channel_id: ChannelId,
     message_id: MessageId,
     sender_id: UserId,
+    sender_device_id: DeviceId,
     recipients: &[RecipientPayload],
     created_at: chrono::DateTime<chrono::Utc>,
 ) {
@@ -338,6 +380,7 @@ fn fan_out_message_created(
                 channel_id,
                 message_id,
                 sender_id,
+                sender_device_id,
                 ciphertext: rp.ciphertext.clone(),
                 message_type: rp.message_type.clone(),
                 created_at,
@@ -353,24 +396,36 @@ fn fan_out_message_created(
 pub async fn handle_edit_message(
     state: &AppState,
     user_id: UserId,
-    device_id: DeviceId,
+    sender_device_id: DeviceId,
     channel_id: ChannelId,
     message_id: MessageId,
     recipients: Vec<RecipientPayload>,
 ) {
     // Validate recipients
     if recipients.is_empty() {
-        send_error(state, user_id, device_id, 4004, "recipients must not be empty");
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4004,
+            "recipients must not be empty",
+        );
         return;
     }
     if recipients.len() > MAX_RECIPIENTS {
-        send_error(state, user_id, device_id, 4004, "too many recipients");
+        send_error(
+            state,
+            user_id,
+            sender_device_id,
+            4004,
+            "too many recipients",
+        );
         return;
     }
 
     // Rate limit check
     if !state.ws.rate_limiter.check_and_record(user_id, channel_id) {
-        send_error(state, user_id, device_id, 4003, "rate limited");
+        send_error(state, user_id, sender_device_id, 4003, "rate limited");
         return;
     }
 
@@ -378,13 +433,13 @@ pub async fn handle_edit_message(
     let guild_id = match resolve_channel_guild(&state.db, channel_id).await {
         Some(gid) => gid,
         None => {
-            send_error(state, user_id, device_id, 4007, "channel not found");
+            send_error(state, user_id, sender_device_id, 4007, "channel not found");
             return;
         }
     };
 
     if let Err(e) = check_permission(state, user_id, guild_id, Permissions::READ_MESSAGES).await {
-        handle_permission_error(state, user_id, device_id, e);
+        handle_permission_error(state, user_id, sender_device_id, e);
         return;
     }
 
@@ -397,6 +452,7 @@ pub async fn handle_edit_message(
                 channel_id,
                 message_id,
                 user_id,
+                sender_device_id,
                 &recipients,
                 edited_at,
             );
@@ -405,14 +461,20 @@ pub async fn handle_edit_message(
             send_error(
                 state,
                 user_id,
-                device_id,
+                sender_device_id,
                 4007,
                 "message not found or not yours",
             );
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to edit message");
-            send_error(state, user_id, device_id, 4004, "failed to edit message");
+            send_error(
+                state,
+                user_id,
+                sender_device_id,
+                4004,
+                "failed to edit message",
+            );
         }
     }
 }
@@ -485,6 +547,7 @@ fn fan_out_message_updated(
     channel_id: ChannelId,
     message_id: MessageId,
     sender_id: UserId,
+    sender_device_id: DeviceId,
     recipients: &[RecipientPayload],
     edited_at: chrono::DateTime<chrono::Utc>,
 ) {
@@ -501,6 +564,7 @@ fn fan_out_message_updated(
                 channel_id,
                 message_id,
                 sender_id,
+                sender_device_id,
                 ciphertext: rp.ciphertext.clone(),
                 message_type: rp.message_type.clone(),
                 edited_at,

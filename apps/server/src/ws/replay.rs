@@ -85,7 +85,7 @@ pub async fn replay_missed_messages(
 
     // Query messages with per-device ciphertext since last_seen (capped)
     let rows: Vec<ReplayRow> = sqlx::query_as(
-        "SELECT m.id, m.channel_id, m.sender_id, m.created_at, \
+        "SELECT m.id, m.channel_id, m.sender_id, m.sender_device_id, m.created_at, \
                 mr.ciphertext, mr.message_type \
          FROM messages m \
          JOIN message_recipients mr ON mr.message_id = m.id \
@@ -106,10 +106,12 @@ pub async fn replay_missed_messages(
 
     // Send each as MessageCreated with inline ciphertext
     for row in rows {
+        let sender_device_id = row.sender_device_id.unwrap_or_else(DeviceId::new);
         let event = ServerMessage::MessageCreated {
             channel_id: row.channel_id,
             message_id: row.id,
             sender_id: row.sender_id,
+            sender_device_id,
             ciphertext: row.ciphertext,
             message_type: row.message_type,
             created_at: row.created_at,
@@ -137,6 +139,7 @@ struct ReplayRow {
     id: MessageId,
     channel_id: ChannelId,
     sender_id: UserId,
+    sender_device_id: Option<DeviceId>,
     created_at: chrono::DateTime<chrono::Utc>,
     ciphertext: Vec<u8>,
     message_type: String,

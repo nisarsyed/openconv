@@ -57,7 +57,36 @@ pub struct WsErrorPayload {
     pub message: String,
 }
 
+/// Payload emitted for ws:ready_data events (guild/channel data after login).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WsReadyDataPayload {
+    pub user_id: UserId,
+    pub display_name: String,
+    pub email: String,
+    pub avatar_url: Option<String>,
+    pub guilds: Vec<GuildPayload>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GuildPayload {
+    pub id: GuildId,
+    pub name: String,
+    pub owner_id: UserId,
+    pub icon_url: Option<String>,
+    pub channels: Vec<ChannelPayload>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChannelPayload {
+    pub id: ChannelId,
+    pub guild_id: GuildId,
+    pub name: String,
+    pub channel_type: String,
+    pub position: i32,
+}
+
 /// Event name constants.
+pub const EVENT_READY_DATA: &str = "ws:ready_data";
 pub const EVENT_STATE: &str = "ws:state";
 pub const EVENT_MESSAGE: &str = "ws:message";
 pub const EVENT_MESSAGE_UPDATED: &str = "ws:message_updated";
@@ -67,6 +96,11 @@ pub const EVENT_PRESENCE: &str = "ws:presence";
 pub const EVENT_MEMBER: &str = "ws:member";
 pub const EVENT_REPLAY_COMPLETE: &str = "ws:replay_complete";
 pub const EVENT_ERROR: &str = "ws:error";
+
+/// Emit a ws:ready_data event with guild/channel data after authentication.
+pub fn emit_ready_data(app: &AppHandle, payload: &WsReadyDataPayload) {
+    let _ = app.emit(EVENT_READY_DATA, payload);
+}
 
 /// Emit a ws:state event with the current connection state.
 pub fn emit_state(app: &AppHandle, state: &WsConnectionState) {
@@ -170,7 +204,9 @@ pub fn dispatch_server_message(app: &AppHandle, msg: &ServerMessage) -> bool {
         ServerMessage::MessageCreated { .. }
         | ServerMessage::MessageUpdated { .. }
         | ServerMessage::MessageDeleted { .. } => {
-            tracing::warn!("dispatch_server_message: message variant should be handled by pipeline");
+            tracing::warn!(
+                "dispatch_server_message: message variant should be handled by pipeline"
+            );
             false
         }
         ServerMessage::TypingStarted {
@@ -212,6 +248,7 @@ mod tests {
     #[test]
     fn all_event_names_use_ws_prefix() {
         let events = [
+            EVENT_READY_DATA,
             EVENT_STATE,
             EVENT_MESSAGE,
             EVENT_MESSAGE_UPDATED,
@@ -290,6 +327,34 @@ mod tests {
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["code"], 4001);
         assert_eq!(json["message"], "permission denied");
+    }
+
+    #[test]
+    fn ws_ready_data_payload_serializes() {
+        let payload = WsReadyDataPayload {
+            user_id: UserId::new(),
+            display_name: "Alice".into(),
+            email: "alice@example.com".into(),
+            avatar_url: None,
+            guilds: vec![GuildPayload {
+                id: GuildId::new(),
+                name: "Test Guild".into(),
+                owner_id: UserId::new(),
+                icon_url: None,
+                channels: vec![ChannelPayload {
+                    id: ChannelId::new(),
+                    guild_id: GuildId::new(),
+                    name: "main".into(),
+                    channel_type: "text".into(),
+                    position: 0,
+                }],
+            }],
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(json.get("user_id").is_some());
+        assert_eq!(json["display_name"], "Alice");
+        assert_eq!(json["guilds"].as_array().unwrap().len(), 1);
+        assert_eq!(json["guilds"][0]["channels"].as_array().unwrap().len(), 1);
     }
 
     #[test]

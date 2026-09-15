@@ -5,6 +5,7 @@ export interface GuildsSlice {
   guildsById: Record<string, Guild>;
   guildIds: string[];
   lastVisitedGuildId: string | null;
+  setGuilds: (guilds: Guild[]) => void;
   setLastVisitedGuild: (id: string) => void;
   createGuild: (name: string, iconUrl: string | null) => void;
   updateGuild: (
@@ -18,6 +19,16 @@ export const createGuildsSlice: SliceCreator<GuildsSlice> = (set, get) => ({
   guildsById: {},
   guildIds: [],
   lastVisitedGuildId: null,
+
+  setGuilds: (guilds) =>
+    set((draft) => {
+      draft.guildsById = {};
+      draft.guildIds = [];
+      for (const g of guilds) {
+        draft.guildsById[g.id] = g;
+        draft.guildIds.push(g.id);
+      }
+    }),
 
   setLastVisitedGuild: (id) =>
     set((draft) => {

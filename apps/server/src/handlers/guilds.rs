@@ -19,29 +19,13 @@ fn db_err(e: sqlx::Error) -> ServerError {
     ServerError(OpenConvError::Internal("database error".into()))
 }
 
-async fn fetch_guild_owner(db: &sqlx::PgPool, guild_id: GuildId) -> Result<UserId, ServerError> {
-    sqlx::query_scalar::<_, UserId>("SELECT owner_id FROM guilds WHERE id = $1")
-        .bind(guild_id)
-        .fetch_optional(db)
-        .await
-        .map_err(db_err)?
-        .ok_or(ServerError(OpenConvError::NotFound))
-}
-
-#[utoipa::path(post, path = "/api/guilds", tag = "Guilds", security(("bearer_auth" = [])), request_body = openconv_shared::api::guild::CreateGuildRequest, responses((status = 201, body = openconv_shared::api::guild::GuildResponse), (status = 400, body = crate::error::ErrorResponse)))]
-/// Create a new guild. Auth only -- no guild membership required.
-pub async fn create_guild(
-    auth: AuthUser,
-    State(state): State<AppState>,
-    Json(body): Json<CreateGuildRequest>,
-) -> Result<(StatusCode, Json<GuildResponse>), ServerError> {
-    let name = body.name.trim().to_string();
-    if name.is_empty() || name.len() > 100 {
-        return Err(ServerError(OpenConvError::Validation(
-            "Guild name must be between 1 and 100 characters".into(),
-        )));
-    }
-
+/// Internal helper for creating a guild with default roles, membership, and a #main channel.
+/// Used by both the `create_guild` handler and registration auto-guild creation.
+pub(crate) async fn create_guild_internal(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner_id: UserId,
+    name: &str,
+) -> Result<GuildResponse, sqlx::Error> {
     let guild_id = GuildId::new();
     let owner_role_id = RoleId::new();
     let admin_role_id = RoleId::new();
@@ -65,19 +49,16 @@ pub async fn create_guild(
         | Permissions::ATTACH_FILES)
         .bits() as i64;
 
-    let mut tx = state.db.begin().await.map_err(db_err)?;
-
     // 1. Insert guild
     let row = sqlx::query_as::<_, GuildRow>(
         "INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3) \
          RETURNING id, name, owner_id, icon_url, created_at",
     )
     .bind(guild_id)
-    .bind(&name)
-    .bind(auth.user_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    .bind(name)
+    .bind(owner_id)
+    .fetch_one(&mut **tx)
+    .await?;
 
     // 2. Insert default roles
     sqlx::query(
@@ -93,46 +74,69 @@ pub async fn create_guild(
     .bind(admin_perms)
     .bind(member_role_id)
     .bind(member_perms)
-    .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    .execute(&mut **tx)
+    .await?;
 
     // 3. Insert creator into guild_members
     sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
-        .bind(auth.user_id)
+        .bind(owner_id)
         .bind(guild_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        .execute(&mut **tx)
+        .await?;
 
     // 4. Assign owner role to creator
     sqlx::query("INSERT INTO guild_member_roles (user_id, guild_id, role_id) VALUES ($1, $2, $3)")
-        .bind(auth.user_id)
+        .bind(owner_id)
         .bind(guild_id)
         .bind(owner_role_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        .execute(&mut **tx)
+        .await?;
 
     // 5. Insert #main channel
     sqlx::query("INSERT INTO channels (id, guild_id, name, position) VALUES ($1, $2, 'main', 0)")
         .bind(channel_id)
         .bind(guild_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        .execute(&mut **tx)
+        .await?;
 
-    // 6. Commit
-    tx.commit().await.map_err(db_err)?;
-
-    let resp = GuildResponse {
+    Ok(GuildResponse {
         id: row.id,
         name: row.name,
         owner_id: row.owner_id,
         icon_url: row.icon_url,
         created_at: row.created_at,
         member_count: Some(1),
-    };
+    })
+}
+
+async fn fetch_guild_owner(db: &sqlx::PgPool, guild_id: GuildId) -> Result<UserId, ServerError> {
+    sqlx::query_scalar::<_, UserId>("SELECT owner_id FROM guilds WHERE id = $1")
+        .bind(guild_id)
+        .fetch_optional(db)
+        .await
+        .map_err(db_err)?
+        .ok_or(ServerError(OpenConvError::NotFound))
+}
+
+#[utoipa::path(post, path = "/api/guilds", tag = "Guilds", security(("bearer_auth" = [])), request_body = openconv_shared::api::guild::CreateGuildRequest, responses((status = 201, body = openconv_shared::api::guild::GuildResponse), (status = 400, body = crate::error::ErrorResponse)))]
+/// Create a new guild. Auth only -- no guild membership required.
+pub async fn create_guild(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<CreateGuildRequest>,
+) -> Result<(StatusCode, Json<GuildResponse>), ServerError> {
+    let name = body.name.trim().to_string();
+    if name.is_empty() || name.len() > 100 {
+        return Err(ServerError(OpenConvError::Validation(
+            "Guild name must be between 1 and 100 characters".into(),
+        )));
+    }
+
+    let mut tx = state.db.begin().await.map_err(db_err)?;
+    let resp = create_guild_internal(&mut tx, auth.user_id, &name)
+        .await
+        .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
 
     Ok((StatusCode::CREATED, Json(resp)))
 }

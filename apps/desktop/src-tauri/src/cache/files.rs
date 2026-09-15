@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 

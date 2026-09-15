@@ -8,3 +8,10 @@ database_url = "postgres://openconv:openconv@localhost:5432/openconv"
 max_db_connections = 5
 cors_origins = ["http://localhost:1420"]
 log_level = "debug"
+
+[email]
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_username = "YOUR_GMAIL@gmail.com"
+from_address = "YOUR_GMAIL@gmail.com"
+from_name = "OpenConv"

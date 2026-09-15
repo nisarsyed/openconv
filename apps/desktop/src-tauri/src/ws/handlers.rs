@@ -3,18 +3,19 @@ use std::time::Instant;
 
 use futures_util::StreamExt;
 use openconv_shared::api::ws::{ClientMessage, ServerMessage};
-use openconv_shared::ids::{ChannelId, MessageId, UserId};
+use openconv_shared::ids::{ChannelId, DeviceId, MessageId, UserId};
 use tauri::{AppHandle, Manager};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::cache::CacheDb;
+use crate::auth_service;
 use crate::cache::messages::{self, CachedMessage};
 use crate::cache::read_positions;
 use crate::cache::search;
+use crate::cache::CacheDb;
 use crate::crypto_service::CryptoState;
 use crate::notification_service::{self, NotificationState, VisibleChannelState};
 
-use super::events;
+use super::events::{self, ChannelPayload, GuildPayload, WsReadyDataPayload};
 use super::state::{WsConnectionState, WsState};
 
 /// Message status constants.
@@ -22,6 +23,7 @@ pub const MSG_STATUS_PENDING: &str = "pending";
 pub const MSG_STATUS_DELIVERED: &str = "delivered";
 pub const MSG_STATUS_DECRYPT_FAILED: &str = "decrypt_failed";
 pub const MSG_STATUS_QUEUED: &str = "queued";
+#[allow(dead_code)]
 pub const MSG_STATUS_DELETED: &str = "deleted";
 
 /// Read incoming WebSocket messages and dispatch them.
@@ -89,6 +91,26 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
                 let mut uid = ws_state.current_user_id.write().await;
                 *uid = Some(*user_id);
             }
+            // Load device_id from local_device table so it's available for crypto operations
+            {
+                let loaded_device_id = {
+                    let cache_db = app.state::<CacheDb>();
+                    cache_db
+                        .lock()
+                        .ok()
+                        .and_then(|conn| auth_service::get_or_create_device_id(&conn).ok())
+                        .map(|(did, _name)| did)
+                };
+                match loaded_device_id {
+                    Some(device_id) => {
+                        let mut did = ws_state.current_device_id.write().await;
+                        *did = Some(device_id);
+                    }
+                    None => {
+                        tracing::warn!("failed to load device_id from cache DB");
+                    }
+                }
+            }
             {
                 let mut state = ws_state.connection_state.write().await;
                 *state = WsConnectionState::Authenticated;
@@ -105,6 +127,15 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
                     });
                 }
             }
+
+            // Fetch guild/channel data in the background and emit to frontend
+            let app_clone = app.clone();
+            let ws_clone = ws_state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = fetch_and_emit_ready_data(&app_clone, &ws_clone).await {
+                    tracing::warn!("failed to fetch ready data: {e}");
+                }
+            });
         }
         ServerMessage::Pong { ts: _ } => {
             let mut last_pong = ws_state.last_pong.write().await;
@@ -114,6 +145,7 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             channel_id,
             message_id,
             sender_id,
+            sender_device_id,
             ciphertext,
             message_type,
             created_at,
@@ -122,12 +154,15 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             handle_message_created(
                 app,
                 ws_state,
-                *channel_id,
-                *message_id,
-                *sender_id,
-                ciphertext,
-                message_type,
-                created_at,
+                IncomingMessage {
+                    channel_id: *channel_id,
+                    message_id: *message_id,
+                    sender_id: *sender_id,
+                    sender_device_id: *sender_device_id,
+                    ciphertext,
+                    message_type,
+                    timestamp: created_at,
+                },
                 client_nonce.as_deref(),
             )
             .await;
@@ -136,18 +171,22 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
             channel_id,
             message_id,
             sender_id,
+            sender_device_id,
             ciphertext,
             message_type,
             edited_at,
         } => {
             handle_message_updated(
                 app,
-                *channel_id,
-                *message_id,
-                *sender_id,
-                ciphertext,
-                message_type,
-                edited_at,
+                IncomingMessage {
+                    channel_id: *channel_id,
+                    message_id: *message_id,
+                    sender_id: *sender_id,
+                    sender_device_id: *sender_device_id,
+                    ciphertext,
+                    message_type,
+                    timestamp: edited_at,
+                },
             )
             .await;
         }
@@ -163,18 +202,148 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
     }
 }
 
+/// Fetch user profile, guilds, and channels from the server, then emit `ws:ready_data`.
+async fn fetch_and_emit_ready_data(
+    app: &AppHandle,
+    ws_state: &WsState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let api_base_url = ws_state.api_base_url.read().await.clone();
+    let access_token = tokio::task::spawn_blocking(auth_service::get_access_token)
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {e}"))?
+        .map_err(|e| format!("not authenticated: {e}"))?;
+
+    let client = &ws_state.http_client;
+
+    // 1. Fetch user profile
+    let me_resp = client
+        .get(format!("{api_base_url}/api/users/me"))
+        .bearer_auth(&access_token)
+        .send()
+        .await?;
+    if !me_resp.status().is_success() {
+        return Err(format!("GET /api/users/me returned {}", me_resp.status()).into());
+    }
+    let me: serde_json::Value = me_resp.json().await?;
+
+    let user_id_str = me["id"].as_str().unwrap_or_default();
+    let display_name = me["display_name"].as_str().unwrap_or_default().to_string();
+    let email = me["email"].as_str().unwrap_or_default().to_string();
+    let avatar_url = me["avatar_url"].as_str().map(|s| s.to_string());
+
+    // 2. Fetch guilds
+    let guilds_resp = client
+        .get(format!("{api_base_url}/api/guilds"))
+        .bearer_auth(&access_token)
+        .send()
+        .await?;
+    if !guilds_resp.status().is_success() {
+        return Err(format!("GET /api/guilds returned {}", guilds_resp.status()).into());
+    }
+    let guilds_body: serde_json::Value = guilds_resp.json().await?;
+    let guild_list = guilds_body["guilds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    // 3. For each guild, fetch channels
+    let mut guild_payloads = Vec::with_capacity(guild_list.len());
+    for g in &guild_list {
+        let gid = g["id"].as_str().unwrap_or_default();
+        let channels_resp = client
+            .get(format!("{api_base_url}/api/guilds/{gid}/channels"))
+            .bearer_auth(&access_token)
+            .send()
+            .await?;
+
+        let channel_list: Vec<serde_json::Value> = if channels_resp.status().is_success() {
+            channels_resp.json().await.unwrap_or_default()
+        } else {
+            tracing::warn!(
+                "GET /api/guilds/{gid}/channels returned {}",
+                channels_resp.status()
+            );
+            vec![]
+        };
+
+        let channels: Vec<ChannelPayload> = channel_list
+            .iter()
+            .filter_map(|c| {
+                Some(ChannelPayload {
+                    id: c["id"].as_str()?.parse().ok()?,
+                    guild_id: c["guild_id"].as_str()?.parse().ok()?,
+                    name: c["name"].as_str()?.to_string(),
+                    channel_type: c["channel_type"].as_str().unwrap_or("text").to_string(),
+                    position: c["position"].as_i64().unwrap_or(0) as i32,
+                })
+            })
+            .collect();
+
+        guild_payloads.push(GuildPayload {
+            id: gid
+                .parse()
+                .map_err(|_| format!("invalid guild id: {gid}"))?,
+            name: g["name"].as_str().unwrap_or_default().to_string(),
+            owner_id: g["owner_id"]
+                .as_str()
+                .unwrap_or_default()
+                .parse()
+                .map_err(|_| "invalid owner_id")?,
+            icon_url: g["icon_url"].as_str().map(|s| s.to_string()),
+            channels,
+        });
+    }
+
+    // 4. Emit
+    let payload = WsReadyDataPayload {
+        user_id: user_id_str
+            .parse()
+            .map_err(|_| "invalid user_id in profile")?,
+        display_name,
+        email,
+        avatar_url,
+        guilds: guild_payloads,
+    };
+
+    events::emit_ready_data(app, &payload);
+    tracing::info!("emitted ws:ready_data with {} guilds", payload.guilds.len());
+
+    Ok(())
+}
+
+/// The message fields carried by both `MessageCreated` and `MessageUpdated`
+/// server frames.
+///
+/// These travel together and are always consumed together, so they are grouped
+/// rather than threaded through as eight positional parameters. `timestamp` is
+/// `created_at` for a new message and `edited_at` for an update.
+struct IncomingMessage<'a> {
+    channel_id: ChannelId,
+    message_id: MessageId,
+    sender_id: UserId,
+    sender_device_id: DeviceId,
+    ciphertext: &'a [u8],
+    message_type: &'a str,
+    timestamp: &'a chrono::DateTime<chrono::Utc>,
+}
+
 /// Decrypt an incoming message via spawn_blocking, store in cache, index in FTS, emit event.
 async fn handle_message_created(
     app: &AppHandle,
     ws_state: &WsState,
-    channel_id: ChannelId,
-    message_id: MessageId,
-    sender_id: UserId,
-    ciphertext: &[u8],
-    message_type: &str,
-    created_at: &chrono::DateTime<chrono::Utc>,
+    msg: IncomingMessage<'_>,
     client_nonce: Option<&str>,
 ) {
+    let IncomingMessage {
+        channel_id,
+        message_id,
+        sender_id,
+        sender_device_id,
+        ciphertext,
+        message_type,
+        timestamp: created_at,
+    } = msg;
+
     let msg_id_str = message_id.to_string();
     let sender_id_str = sender_id.to_string();
     let channel_id_str = channel_id.to_string();
@@ -214,12 +383,15 @@ async fn handle_message_created(
     }
 
     // Attempt decryption via spawn_blocking
+    let sender_device_id_str = sender_device_id.to_string();
+    let signal_device_id =
+        crate::crypto_service::resolve_signal_device_id(Some(&sender_device_id_str));
     let app_clone = app.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
         let crypto_state = app_clone.state::<CryptoState>();
         crypto_state.crypto_service.decrypt_message(
             &sender_id_str,
-            1, // TODO: device_id should come from server message
+            signal_device_id,
             &ciphertext_owned,
             &message_type_owned,
         )
@@ -248,6 +420,7 @@ async fn handle_message_created(
         channel_id: Some(channel_id_str.clone()),
         dm_channel_id: None,
         sender_id: sender_id.to_string(),
+        sender_device_id: Some(sender_device_id_str),
         plaintext: plaintext.clone(),
         ciphertext: if status == MSG_STATUS_DECRYPT_FAILED {
             Some(ciphertext.to_vec())
@@ -370,17 +543,22 @@ async fn handle_message_created(
 }
 
 /// Decrypt an updated message, update cache and FTS, emit event.
-async fn handle_message_updated(
-    app: &AppHandle,
-    channel_id: ChannelId,
-    message_id: MessageId,
-    sender_id: UserId,
-    ciphertext: &[u8],
-    message_type: &str,
-    edited_at: &chrono::DateTime<chrono::Utc>,
-) {
+async fn handle_message_updated(app: &AppHandle, msg: IncomingMessage<'_>) {
+    let IncomingMessage {
+        channel_id,
+        message_id,
+        sender_id,
+        sender_device_id,
+        ciphertext,
+        message_type,
+        timestamp: edited_at,
+    } = msg;
+
     let msg_id_str = message_id.to_string();
     let sender_id_str = sender_id.to_string();
+    let sender_device_id_str = sender_device_id.to_string();
+    let signal_device_id =
+        crate::crypto_service::resolve_signal_device_id(Some(&sender_device_id_str));
     let edited_at_ms = edited_at.timestamp_millis();
     let edited_at_rfc3339 = edited_at.to_rfc3339();
     let ciphertext_owned = ciphertext.to_vec();
@@ -392,7 +570,7 @@ async fn handle_message_updated(
         let crypto_state = app_clone.state::<CryptoState>();
         crypto_state.crypto_service.decrypt_message(
             &sender_id_str,
-            1, // TODO: device_id
+            signal_device_id,
             &ciphertext_owned,
             &message_type_owned,
         )

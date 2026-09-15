@@ -42,11 +42,9 @@ impl NotificationSettings {
         let mut settings = Self::default();
 
         let get = |key: &str| -> Option<String> {
-            conn.query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                [key],
-                |row| row.get(0),
-            )
+            conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
             .ok()
         };
 
@@ -233,6 +231,7 @@ pub struct LastNotificationState {
 
 /// Sends a desktop notification if conditions are met.
 /// Called from the recv_loop message handler after successful decryption.
+#[allow(clippy::too_many_arguments)]
 pub fn maybe_send_notification(
     app_handle: &tauri::AppHandle,
     settings: &NotificationSettings,
@@ -342,9 +341,7 @@ pub fn check_pending_notification_click(app_handle: &tauri::AppHandle) {
 /// Check if the app has notification permission from the OS.
 #[tauri::command]
 #[specta::specta]
-pub async fn check_notification_permission(
-    app_handle: tauri::AppHandle,
-) -> Result<bool, String> {
+pub async fn check_notification_permission(app_handle: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
     let granted = app_handle
         .notification()
@@ -356,9 +353,7 @@ pub async fn check_notification_permission(
 /// Request notification permission from the OS.
 #[tauri::command]
 #[specta::specta]
-pub async fn request_notification_permission(
-    app_handle: tauri::AppHandle,
-) -> Result<bool, String> {
+pub async fn request_notification_permission(app_handle: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
     let state = app_handle
         .notification()
@@ -477,11 +472,7 @@ mod tests {
     fn test_muted_channel_suppresses() {
         let mut settings = default_settings();
         settings.muted_channels.insert("ch1".to_string());
-        assert!(!should_notify(
-            &settings, false, false,
-            Some("g1"),
-            "ch1"
-        ));
+        assert!(!should_notify(&settings, false, false, Some("g1"), "ch1"));
     }
 
     #[test]
@@ -524,9 +515,7 @@ mod tests {
     fn test_per_conversation_preview_override() {
         let mut settings = default_settings();
         settings.notification_previews = false; // global off
-        settings
-            .preview_overrides
-            .insert("ch1".to_string(), true); // channel override on
+        settings.preview_overrides.insert("ch1".to_string(), true); // channel override on
         let (_, body) = build_notification_content(&settings, "ch1", "Alice", "Secret msg");
         assert_eq!(body, "Alice: Secret msg");
     }
@@ -535,9 +524,7 @@ mod tests {
     fn test_per_conversation_preview_override_disables() {
         let mut settings = default_settings();
         settings.notification_previews = true; // global on
-        settings
-            .preview_overrides
-            .insert("ch1".to_string(), false); // channel override off
+        settings.preview_overrides.insert("ch1".to_string(), false); // channel override off
         let (_, body) = build_notification_content(&settings, "ch1", "Alice", "Secret msg");
         assert_eq!(body, "New message from Alice");
     }
@@ -610,24 +597,9 @@ mod tests {
         NotificationSettings::save_setting(&conn, "notifications_enabled", "false").unwrap();
         NotificationSettings::save_setting(&conn, "notification_previews", "true").unwrap();
         NotificationSettings::save_setting(&conn, "dnd_enabled", "true").unwrap();
-        NotificationSettings::save_setting(
-            &conn,
-            "muted_guilds",
-            r#"["g1","g2"]"#,
-        )
-        .unwrap();
-        NotificationSettings::save_setting(
-            &conn,
-            "muted_channels",
-            r#"["ch1"]"#,
-        )
-        .unwrap();
-        NotificationSettings::save_setting(
-            &conn,
-            "preview_overrides",
-            r#"{"ch2":true}"#,
-        )
-        .unwrap();
+        NotificationSettings::save_setting(&conn, "muted_guilds", r#"["g1","g2"]"#).unwrap();
+        NotificationSettings::save_setting(&conn, "muted_channels", r#"["ch1"]"#).unwrap();
+        NotificationSettings::save_setting(&conn, "preview_overrides", r#"{"ch2":true}"#).unwrap();
 
         let loaded = NotificationSettings::load_from_db(&conn);
         assert!(!loaded.notifications_enabled);

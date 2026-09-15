@@ -214,9 +214,14 @@ impl PermissionCache {
             .insert((user_id, guild_id), (perms, Instant::now()));
     }
 
-    /// Invalidate a specific cache entry (e.g. on role change).
+    /// Invalidate a specific cache entry (e.g. on role assignment change).
     pub fn invalidate(&self, user_id: UserId, guild_id: GuildId) {
         self.cache.remove(&(user_id, guild_id));
+    }
+
+    /// Invalidate all cache entries for a guild (e.g. on role permission/deletion change).
+    pub fn invalidate_guild(&self, guild_id: GuildId) {
+        self.cache.retain(|&(_, gid), _| gid != guild_id);
     }
 }
 
@@ -496,6 +501,27 @@ mod tests {
         cache.insert(uid, gid, Permissions::SEND_MESSAGES);
         cache.invalidate(uid, gid);
         assert!(cache.get(uid, gid).is_none());
+    }
+
+    #[test]
+    fn permission_cache_invalidate_guild_removes_all_entries_for_guild() {
+        let cache = PermissionCache::new(Duration::from_secs(60));
+        let uid1 = UserId::new();
+        let uid2 = UserId::new();
+        let gid = GuildId::new();
+        let other_gid = GuildId::new();
+
+        cache.insert(uid1, gid, Permissions::SEND_MESSAGES);
+        cache.insert(uid2, gid, Permissions::READ_MESSAGES);
+        cache.insert(uid1, other_gid, Permissions::SEND_MESSAGES);
+
+        cache.invalidate_guild(gid);
+
+        // Both entries for the target guild should be gone
+        assert!(cache.get(uid1, gid).is_none());
+        assert!(cache.get(uid2, gid).is_none());
+        // Entry for other guild should remain
+        assert_eq!(cache.get(uid1, other_gid), Some(Permissions::SEND_MESSAGES));
     }
 
     #[test]

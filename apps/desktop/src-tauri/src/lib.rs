@@ -159,11 +159,9 @@ pub fn run() {
             let api_base_url = std::env::var("OPENCONV_API_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".into());
 
-            let crypto_svc = crypto_service::CryptoService::new(
-                crypto_db_path.clone(),
-                api_base_url.clone(),
-            )
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            let crypto_svc =
+                crypto_service::CryptoService::new(crypto_db_path.clone(), api_base_url.clone())
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(crypto_service::CryptoState {
                 crypto_service: crypto_svc,
             });
@@ -182,7 +180,8 @@ pub fn run() {
             // Initialize notification settings from the cache database
             let notif_settings = {
                 let cache_db = app.state::<crate::cache::CacheDb>();
-                let cache_conn = cache_db.lock()
+                let cache_conn = cache_db
+                    .lock()
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
                 notification_service::NotificationSettings::load_from_db(&cache_conn)
             };

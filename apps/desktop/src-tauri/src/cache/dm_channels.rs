@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 
@@ -11,8 +13,8 @@ pub struct CachedDmChannel {
 }
 
 pub fn upsert_dm_channel(conn: &Connection, dm: &CachedDmChannel) -> Result<(), AppError> {
-    let participants_json = serde_json::to_string(&dm.participant_ids)
-        .map_err(|e| AppError::new(e.to_string()))?;
+    let participants_json =
+        serde_json::to_string(&dm.participant_ids).map_err(|e| AppError::new(e.to_string()))?;
 
     conn.execute(
         "INSERT INTO dm_channel_cache (id, participant_ids, last_message_preview, last_message_at, created_at)
@@ -125,8 +127,8 @@ pub fn list_dm_channels(conn: &Connection) -> Result<Vec<CachedDmChannel>, AppEr
     let mut channels = Vec::new();
     for row in rows {
         let (id, participants_json, preview, last_at, created_at) = row?;
-        let participant_ids: Vec<String> = serde_json::from_str(&participants_json)
-            .map_err(|e| AppError::new(e.to_string()))?;
+        let participant_ids: Vec<String> =
+            serde_json::from_str(&participants_json).map_err(|e| AppError::new(e.to_string()))?;
         channels.push(CachedDmChannel {
             id,
             participant_ids,

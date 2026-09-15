@@ -315,6 +315,42 @@ pub async fn register_complete(
         .await
         .map_err(|e| OpenConvError::Internal(format!("transaction commit failed: {e}")))?;
 
+    // Auto-create a default guild for the new user (best-effort, don't fail registration)
+    {
+        let guild_name = format!("{}'s Server", claims.display_name);
+        match state.db.begin().await {
+            Ok(mut guild_tx) => {
+                match super::guilds::create_guild_internal(&mut guild_tx, user_id, &guild_name)
+                    .await
+                {
+                    Ok(_) => {
+                        if let Err(e) = guild_tx.commit().await {
+                            tracing::warn!(
+                                user_id = %user_id,
+                                error = %e,
+                                "failed to commit default guild creation"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            user_id = %user_id,
+                            error = %e,
+                            "failed to create default guild for new user"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    user_id = %user_id,
+                    error = %e,
+                    "failed to begin transaction for default guild creation"
+                );
+            }
+        }
+    }
+
     Ok(Json(RegisterResponse {
         user_id,
         access_token,

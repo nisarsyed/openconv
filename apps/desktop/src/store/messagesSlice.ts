@@ -53,7 +53,7 @@ export const createMessagesSlice: SliceCreator<MessagesSlice> = (set, get) => ({
   sendMessage: (channelId, content, attachments) => {
     const id = crypto.randomUUID();
     const senderId = get().currentUser?.id ?? "";
-    const nonce = `mock-nonce-${crypto.randomUUID()}`;
+    const nonce = crypto.randomUUID();
     const message: Message = {
       id,
       channelId,

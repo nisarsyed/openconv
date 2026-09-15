@@ -11,12 +11,16 @@ import type {
   WsPresencePayload,
   WsMemberPayload,
   WsReplayCompletePayload,
+  WsReadyDataPayload,
 } from "../types/ws";
+import type { Guild, Channel } from "../types";
 
 export function useWebSocket(): void {
   const setConnectionState = useAppStore((s) => s.setConnectionState);
   const setTypingUsers = useAppStore((s) => s.setTypingUsers);
-  const typingTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const typingTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
@@ -123,8 +127,51 @@ export function useWebSocket(): void {
 
       // Listen for replay completion
       unlisteners.push(
-        await listen<WsReplayCompletePayload>("ws:replay_complete", (_event) => {
-          // Replay complete - will be used for offline catchup in later sections
+        await listen<WsReplayCompletePayload>(
+          "ws:replay_complete",
+          (_event) => {
+            // Replay complete - will be used for offline catchup in later sections
+          },
+        ),
+      );
+
+      // Listen for ready data (guilds/channels after authentication)
+      unlisteners.push(
+        await listen<WsReadyDataPayload>("ws:ready_data", (event) => {
+          const p = event.payload;
+          const store = useAppStore.getState();
+
+          // Set current user
+          store.setCurrentUser({
+            id: p.user_id,
+            displayName: p.display_name,
+            email: p.email,
+            avatarUrl: p.avatar_url,
+          });
+
+          // Map guilds
+          const guilds: Guild[] = p.guilds.map((g) => ({
+            id: g.id,
+            name: g.name,
+            ownerId: g.owner_id,
+            iconUrl: g.icon_url,
+          }));
+          store.setGuilds(guilds);
+
+          // Flatten and map channels
+          const channels: Channel[] = p.guilds.flatMap((g) =>
+            g.channels.map((ch) => ({
+              id: ch.id,
+              guildId: ch.guild_id,
+              name: ch.name,
+              channelType: (ch.channel_type === "voice" ? "voice" : "text") as
+                | "text"
+                | "voice",
+              position: ch.position,
+              category: null,
+            })),
+          );
+          store.setChannels(channels);
         }),
       );
 

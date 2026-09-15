@@ -19,9 +19,8 @@ describe("useTypingIndicator", () => {
   });
 
   it("debounces typing sends to max 1 per 3s", async () => {
-    const { useTypingIndicator } = await import(
-      "../../hooks/useTypingIndicator"
-    );
+    const { useTypingIndicator } =
+      await import("../../hooks/useTypingIndicator");
 
     const { result } = renderHook(() => useTypingIndicator("ch-1"));
 
@@ -60,9 +59,8 @@ describe("useTypingIndicator", () => {
   });
 
   it("returns typing user names from store", async () => {
-    const { useTypingIndicator } = await import(
-      "../../hooks/useTypingIndicator"
-    );
+    const { useTypingIndicator } =
+      await import("../../hooks/useTypingIndicator");
 
     // Seed users and typing state
     useAppStore.setState({
@@ -91,9 +89,8 @@ describe("useTypingIndicator", () => {
   });
 
   it("returns empty array when no one is typing", async () => {
-    const { useTypingIndicator } = await import(
-      "../../hooks/useTypingIndicator"
-    );
+    const { useTypingIndicator } =
+      await import("../../hooks/useTypingIndicator");
 
     const { result } = renderHook(() => useTypingIndicator("ch-1"));
 

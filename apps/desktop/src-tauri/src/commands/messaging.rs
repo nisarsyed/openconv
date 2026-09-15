@@ -11,6 +11,7 @@ use crate::cache::messages::{self, CachedMessage};
 use crate::cache::queue;
 use crate::cache::search;
 use crate::cache::CacheDb;
+use crate::commands::device_directory;
 use crate::crypto_service::CryptoState;
 use crate::ws::handlers::{MSG_STATUS_DELIVERED, MSG_STATUS_PENDING, MSG_STATUS_QUEUED};
 use crate::ws::WsState;
@@ -50,13 +51,15 @@ impl MessageRateLimiter {
 
 /// Send an encrypted message to a channel.
 ///
-/// Inserts an optimistic local message with status="pending", then sends via WebSocket.
-/// Encryption per-device will be wired in once the member/device directory is available.
+/// Inserts an optimistic local message with status="pending", encrypts the
+/// plaintext per-device for all channel members, then sends via WebSocket.
+/// If the WebSocket is disconnected, queues the plaintext for later retry.
 #[tauri::command]
 #[specta::specta]
 pub async fn send_message(
-    _app: AppHandle,
+    app: AppHandle,
     channel_id: String,
+    guild_id: String,
     plaintext: String,
     ws_state: State<'_, WsState>,
     cache_db: State<'_, CacheDb>,
@@ -73,8 +76,7 @@ pub async fn send_message(
     // 2. Get current user ID
     let sender_id = {
         let uid = ws_state.current_user_id.read().await;
-        uid.map(|id| id.to_string())
-            .unwrap_or_default()
+        uid.map(|id| id.to_string()).unwrap_or_default()
     };
 
     // 3. Generate message ID and client nonce
@@ -89,7 +91,8 @@ pub async fn send_message(
         id: msg_id_str.clone(),
         channel_id: Some(channel_id.clone()),
         dm_channel_id: None,
-        sender_id,
+        sender_id: sender_id.clone(),
+        sender_device_id: None,
         plaintext: Some(plaintext.clone()),
         ciphertext: None,
         message_type: None,
@@ -113,20 +116,22 @@ pub async fn send_message(
         nonces.insert(client_nonce.clone(), msg_id_str.clone());
     }
 
-    // 6. Encrypt for channel members
-    // TODO: Fetch channel members and their device lists, establish sessions,
-    // encrypt plaintext per-device via CryptoService::encrypt_for_channel.
-    // For now, recipients is empty -- the server will reject this until
-    // the member/device directory and encryption pipeline are wired in.
-    let recipients = vec![];
-
-    // 7. Send via WebSocket
+    // 6. Check connectivity — only encrypt if we can send
     let channel_id_typed: ChannelId = channel_id
         .parse()
         .map_err(|_| AppError::new("invalid channel_id"))?;
 
     let tx_guard = ws_state.outgoing_tx.read().await;
     if let Some(tx) = tx_guard.as_ref() {
+        // 7. Encrypt for channel members
+        let recipients = device_directory::encrypt_for_channel(
+            &app,
+            &guild_id,
+            &sender_id,
+            plaintext.as_bytes(),
+        )
+        .await?;
+
         tx.send(ClientMessage::SendMessage {
             channel_id: Some(channel_id_typed),
             dm_channel_id: None,
@@ -135,10 +140,18 @@ pub async fn send_message(
         })
         .map_err(|_| AppError::new("failed to send message: WebSocket channel closed"))?;
     } else {
-        // Not connected -- enqueue for offline delivery
+        // Not connected -- enqueue plaintext for offline delivery.
+        // Encryption will happen on retry when connectivity is restored.
         let conn = cache_db.lock()?;
         messages::update_message_status(&conn, &msg_id_str, MSG_STATUS_QUEUED)?;
-        queue::enqueue_message(&conn, &msg_id_str, Some(&channel_id), None, &plaintext, now_ms)?;
+        queue::enqueue_message(
+            &conn,
+            &msg_id_str,
+            Some(&channel_id),
+            None,
+            &plaintext,
+            now_ms,
+        )?;
     }
 
     Ok(msg_id_str)
@@ -146,11 +159,13 @@ pub async fn send_message(
 
 /// Edit a previously sent message.
 ///
-/// Updates local cache and FTS, then sends the edit via WebSocket.
+/// Updates local cache and FTS, re-encrypts per-device, then sends via WebSocket.
 #[tauri::command]
 #[specta::specta]
 pub async fn edit_message(
+    app: AppHandle,
     channel_id: String,
+    guild_id: String,
     message_id: String,
     new_plaintext: String,
     ws_state: State<'_, WsState>,
@@ -165,8 +180,19 @@ pub async fn edit_message(
         search::reindex_message(&conn, &message_id, &new_plaintext)?;
     }
 
-    // TODO: Re-encrypt new plaintext per-device with current ratchet state.
-    let recipients = vec![];
+    let sender_id = {
+        let uid = ws_state.current_user_id.read().await;
+        uid.map(|id| id.to_string()).unwrap_or_default()
+    };
+
+    // Re-encrypt new plaintext per-device with current ratchet state
+    let recipients = device_directory::encrypt_for_channel(
+        &app,
+        &guild_id,
+        &sender_id,
+        new_plaintext.as_bytes(),
+    )
+    .await?;
 
     // Send edit via WebSocket
     let channel_id_typed: ChannelId = channel_id
@@ -242,7 +268,7 @@ pub async fn retry_decrypt(
     cache_db: State<'_, CacheDb>,
 ) -> Result<(), AppError> {
     // Load the failed message from cache
-    let (sender_id, ciphertext, message_type) = {
+    let (sender_id, sender_device_id_opt, ciphertext, message_type) = {
         let conn = cache_db.lock()?;
         let msg = messages::get_message(&conn, &message_id)?
             .ok_or_else(|| AppError::new("message not found"))?;
@@ -254,24 +280,52 @@ pub async fn retry_decrypt(
         let ct = msg
             .ciphertext
             .ok_or_else(|| AppError::new("no ciphertext retained for retry"))?;
-        let mt = msg
-            .message_type
-            .unwrap_or_else(|| "signal".to_string());
+        let mt = msg.message_type.unwrap_or_else(|| "signal".to_string());
 
-        (msg.sender_id, ct, mt)
+        (msg.sender_id, msg.sender_device_id, ct, mt)
     };
 
-    // TODO: Re-fetch pre-key bundle from server and establish new session
-    // via CryptoService::ensure_session before retrying decrypt.
+    // Re-fetch pre-key bundle and establish new session before retrying.
+    // This handles SessionNotFound / SessionCorrupted by rebuilding from scratch.
+    {
+        let sender_user_id: openconv_shared::ids::UserId = sender_id
+            .parse()
+            .map_err(|_| AppError::new(format!("invalid sender user_id: {sender_id}")))?;
+        let (http_client, api_base_url, access_token) =
+            device_directory::prepare_http_context().await?;
+        let bundle = device_directory::fetch_prekey_bundle(
+            &http_client,
+            &api_base_url,
+            &access_token,
+            &sender_user_id,
+        )
+        .await?;
 
-    // Attempt decryption
+        let sid = sender_id.clone();
+        let signal_did =
+            crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
+        let app_clone = app.clone();
+        tokio::task::spawn_blocking(move || {
+            let crypto_state = app_clone.state::<CryptoState>();
+            crypto_state
+                .crypto_service
+                .ensure_session(&sid, signal_did, Some(&bundle))
+        })
+        .await
+        .map_err(|e| AppError::new(format!("internal error: {e}")))?
+        .map_err(|e| AppError::new(format!("session establishment failed: {e}")))?;
+    }
+
+    // Attempt decryption with the (re)established session
+    let signal_device_id =
+        crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
     let msg_id = message_id.clone();
     let app_clone = app.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
         let crypto_state = app_clone.state::<CryptoState>();
         crypto_state.crypto_service.decrypt_message(
             &sender_id,
-            1, // TODO: device_id
+            signal_device_id,
             &ciphertext,
             &message_type,
         )
@@ -347,6 +401,7 @@ mod tests {
             channel_id: Some("ch-001".into()),
             dm_channel_id: None,
             sender_id: "user-001".into(),
+            sender_device_id: None,
             plaintext: Some("hello world".into()),
             ciphertext: None,
             message_type: Some("signal".into()),
@@ -372,6 +427,7 @@ mod tests {
             channel_id: Some("ch-001".into()),
             dm_channel_id: None,
             sender_id: "user-001".into(),
+            sender_device_id: None,
             plaintext: Some("pending message".into()),
             ciphertext: None,
             message_type: None,
@@ -398,6 +454,7 @@ mod tests {
             channel_id: Some("ch-001".into()),
             dm_channel_id: None,
             sender_id: "user-001".into(),
+            sender_device_id: None,
             plaintext: Some("to be deleted".into()),
             ciphertext: None,
             message_type: None,
@@ -421,6 +478,7 @@ mod tests {
             channel_id: Some("ch-001".into()),
             dm_channel_id: None,
             sender_id: "user-001".into(),
+            sender_device_id: None,
             plaintext: Some(plaintext.into()),
             ciphertext: None,
             message_type: None,
@@ -484,6 +542,7 @@ mod tests {
             channel_id: Some("ch-001".into()),
             dm_channel_id: None,
             sender_id: "user-001".into(),
+            sender_device_id: None,
             plaintext: Some("original".into()),
             ciphertext: None,
             message_type: None,
@@ -512,6 +571,7 @@ mod tests {
             channel_id: Some("ch-001".into()),
             dm_channel_id: None,
             sender_id: "user-001".into(),
+            sender_device_id: None,
             plaintext: None,
             ciphertext: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
             message_type: Some("prekey".into()),

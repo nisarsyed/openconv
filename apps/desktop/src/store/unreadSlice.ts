@@ -13,7 +13,11 @@ export interface UnreadSlice {
   lastReadCreatedAtByChannel: Record<string, number>;
   unreadCountByChannel: Record<string, number>;
   mentionCountByGuild: Record<string, number>;
-  markChannelRead: (channelId: string, lastMessageId: string, lastMessageCreatedAt?: number) => void;
+  markChannelRead: (
+    channelId: string,
+    lastMessageId: string,
+    lastMessageCreatedAt?: number,
+  ) => void;
   incrementUnread: (channelId: string) => void;
   incrementMention: (guildId: string) => void;
   resetGuildMentions: (guildId: string) => void;
@@ -36,7 +40,9 @@ export const createUnreadSlice: SliceCreator<UnreadSlice> = (set) => ({
       }
     });
     // Fire-and-forget: update backend cache (convert ms to seconds for Rust)
-    const createdAtSec = Math.floor((lastMessageCreatedAt ?? Date.now()) / 1000);
+    const createdAtSec = Math.floor(
+      (lastMessageCreatedAt ?? Date.now()) / 1000,
+    );
     invoke("mark_channel_read", {
       channelId,
       lastMessageId,

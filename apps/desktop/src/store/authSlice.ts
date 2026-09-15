@@ -24,6 +24,7 @@ export interface AuthSlice {
   recoverVerify: (email: string, code: string) => Promise<void>;
   recoverComplete: () => Promise<void>;
   logout: () => Promise<void>;
+  setCurrentUser: (user: User) => void;
   updateProfile: (
     updates: Partial<Pick<User, "displayName" | "avatarUrl">>,
   ) => void;
@@ -266,6 +267,11 @@ export const createAuthSlice: SliceCreator<AuthSlice> = (set, get) => ({
       draft.error = null;
     });
   },
+
+  setCurrentUser: (user) =>
+    set((draft) => {
+      draft.currentUser = user;
+    }),
 
   updateProfile: (updates) =>
     set((draft) => {

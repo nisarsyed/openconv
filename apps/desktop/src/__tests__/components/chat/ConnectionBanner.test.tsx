@@ -55,9 +55,7 @@ describe("ConnectionBanner", () => {
       },
     });
     render(<ConnectionBanner />);
-    expect(
-      screen.getByText("Reconnecting... (attempt 3)"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Reconnecting... (attempt 3)")).toBeInTheDocument();
   });
 
   it("shows Connection lost when state is Failed", () => {

@@ -1,9 +1,10 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use openconv_shared::api::auth::{DeviceInfo, DevicesListResponse};
 use openconv_shared::api::sync::{BatchUpdateReadStateRequest, ReadStateEntry};
 use openconv_shared::error::OpenConvError;
-use openconv_shared::ids::{ChannelId, MessageId, UserId};
+use openconv_shared::ids::{ChannelId, DeviceId, MessageId, UserId};
 use sqlx::Row;
 
 use crate::error::ServerError;
@@ -249,6 +250,52 @@ pub async fn get_prekeys(
     Ok(Json(PreKeyBundleResponse { key_data }))
 }
 
+#[utoipa::path(get, path = "/api/users/{user_id}/devices", tag = "Users", security(("bearer_auth" = [])), params(("user_id" = uuid::Uuid, Path, description = "User ID")), responses((status = 200, body = DevicesListResponse), (status = 404, body = crate::error::ErrorResponse)))]
+/// GET /api/users/:user_id/devices — list active devices for a user.
+pub async fn get_user_devices(
+    State(state): State<AppState>,
+    _auth_user: AuthUser,
+    Path(user_id): Path<uuid::Uuid>,
+) -> Result<Json<DevicesListResponse>, ServerError> {
+    // Verify user exists
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(user_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    if !exists {
+        return Err(OpenConvError::NotFound.into());
+    }
+
+    type DeviceRow = (
+        uuid::Uuid,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        chrono::DateTime<chrono::Utc>,
+    );
+    let rows: Vec<DeviceRow> = sqlx::query_as(
+        "SELECT id, device_name, last_active, created_at FROM devices \
+         WHERE user_id = $1 ORDER BY last_active DESC",
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| ServerError(OpenConvError::Internal(e.to_string())))?;
+
+    let devices = rows
+        .into_iter()
+        .map(|(id, device_name, last_active, created_at)| DeviceInfo {
+            id: DeviceId(id),
+            device_name,
+            last_active,
+            created_at,
+        })
+        .collect();
+
+    Ok(Json(DevicesListResponse { devices }))
+}
+
 const MAX_BUNDLE_SIZE: usize = 1024;
 
 #[utoipa::path(post, path = "/api/users/me/prekeys", tag = "Users", security(("bearer_auth" = [])), request_body = UploadPreKeysRequest, responses((status = 201), (status = 400, body = crate::error::ErrorResponse)))]
@@ -349,9 +396,7 @@ pub async fn update_read_state(
         return Err(OpenConvError::Validation("entries must not be empty".into()).into());
     }
     if req.entries.len() > 100 {
-        return Err(
-            OpenConvError::Validation("entries must not exceed 100".into()).into(),
-        );
+        return Err(OpenConvError::Validation("entries must not exceed 100".into()).into());
     }
 
     let mut tx = state

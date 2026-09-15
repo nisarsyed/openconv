@@ -3,27 +3,29 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use openconv_shared::api::ws::ClientMessage;
-use openconv_shared::ids::{ChannelId, UserId};
+use openconv_shared::ids::{ChannelId, DeviceId, UserId};
 use tokio::sync::{mpsc, RwLock};
 
 /// All possible states of the WebSocket connection.
 /// Stored in Arc<RwLock<WsConnectionState>> as Tauri managed state.
 /// Every state transition emits a `ws:state` Tauri event to the frontend.
-#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[derive(Debug, Clone, Default, serde::Serialize, specta::Type)]
 #[serde(tag = "status")]
 pub enum WsConnectionState {
+    #[default]
     Disconnected,
-    Connecting { attempt: u32 },
+    Connecting {
+        attempt: u32,
+    },
     Connected,
     Authenticated,
-    Reconnecting { attempt: u32, next_retry_ms: u64 },
-    Failed { reason: String },
-}
-
-impl Default for WsConnectionState {
-    fn default() -> Self {
-        Self::Disconnected
-    }
+    Reconnecting {
+        attempt: u32,
+        next_retry_ms: u64,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 /// Holds all WebSocket-related managed state.
@@ -43,6 +45,8 @@ pub struct WsState {
     pub http_client: reqwest::Client,
     /// Current authenticated user ID, set on Ready.
     pub current_user_id: Arc<RwLock<Option<UserId>>>,
+    /// Current device ID (UUID), set during authentication from local_device table.
+    pub current_device_id: Arc<RwLock<Option<DeviceId>>>,
     /// Maps client_nonce -> local message_id for optimistic insert dedup.
     pub pending_nonces: Arc<RwLock<HashMap<String, String>>>,
 }
@@ -63,6 +67,7 @@ impl WsState {
                 .build()
                 .unwrap_or_default(),
             current_user_id: Arc::new(RwLock::new(None)),
+            current_device_id: Arc::new(RwLock::new(None)),
             pending_nonces: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -192,7 +197,10 @@ mod tests {
             *state = WsConnectionState::Connecting { attempt: 0 };
         }
         let state = ws.connection_state.read().await;
-        assert!(matches!(*state, WsConnectionState::Connecting { attempt: 0 }));
+        assert!(matches!(
+            *state,
+            WsConnectionState::Connecting { attempt: 0 }
+        ));
     }
 
     #[tokio::test]

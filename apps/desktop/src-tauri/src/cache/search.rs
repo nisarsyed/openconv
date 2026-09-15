@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -89,14 +91,12 @@ pub fn search_messages(
 
     let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match scope {
         SearchScope::AllMessages => {
-            let sql = format!(
-                "SELECT f.message_id, m.channel_id, m.sender_id, snippet(messages_fts, 1, '<b>', '</b>', '...', 32), m.created_at
+            let sql = "SELECT f.message_id, m.channel_id, m.sender_id, snippet(messages_fts, 1, '<b>', '</b>', '...', 32), m.created_at
                  FROM messages_fts f
                  JOIN messages m ON m.id = f.message_id
                  WHERE messages_fts MATCH ?1
                  ORDER BY bm25(messages_fts) - (1.0 / ((?2 - m.created_at) / 86400000.0 + 1.0))
-                 LIMIT ?3"
-            );
+                 LIMIT ?3".to_string();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| AppError::new(e.to_string()))?
@@ -111,14 +111,12 @@ pub fn search_messages(
             )
         }
         SearchScope::Channel(channel_id) => {
-            let sql = format!(
-                "SELECT f.message_id, m.channel_id, m.sender_id, snippet(messages_fts, 1, '<b>', '</b>', '...', 32), m.created_at
+            let sql = "SELECT f.message_id, m.channel_id, m.sender_id, snippet(messages_fts, 1, '<b>', '</b>', '...', 32), m.created_at
                  FROM messages_fts f
                  JOIN messages m ON m.id = f.message_id
                  WHERE messages_fts MATCH ?1 AND m.channel_id = ?2
                  ORDER BY bm25(messages_fts) - (1.0 / ((?3 - m.created_at) / 86400.0 + 1.0))
-                 LIMIT ?4"
-            );
+                 LIMIT ?4".to_string();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| AppError::new(e.to_string()))?
@@ -134,15 +132,13 @@ pub fn search_messages(
             )
         }
         SearchScope::Guild(guild_id) => {
-            let sql = format!(
-                "SELECT f.message_id, m.channel_id, m.sender_id, snippet(messages_fts, 1, '<b>', '</b>', '...', 32), m.created_at
+            let sql = "SELECT f.message_id, m.channel_id, m.sender_id, snippet(messages_fts, 1, '<b>', '</b>', '...', 32), m.created_at
                  FROM messages_fts f
                  JOIN messages m ON m.id = f.message_id
                  JOIN channel_cache cc ON cc.id = m.channel_id
                  WHERE messages_fts MATCH ?1 AND cc.guild_id = ?2
                  ORDER BY bm25(messages_fts) - (1.0 / ((?3 - m.created_at) / 86400.0 + 1.0))
-                 LIMIT ?4"
-            );
+                 LIMIT ?4".to_string();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| AppError::new(e.to_string()))?
@@ -195,12 +191,19 @@ mod tests {
         conn
     }
 
-    fn insert_and_index(conn: &Connection, id: &str, channel_id: &str, text: &str, created_at: i64) {
+    fn insert_and_index(
+        conn: &Connection,
+        id: &str,
+        channel_id: &str,
+        text: &str,
+        created_at: i64,
+    ) {
         let msg = CachedMessage {
             id: id.to_string(),
             channel_id: Some(channel_id.to_string()),
             dm_channel_id: None,
             sender_id: "u1".to_string(),
+            sender_device_id: None,
             plaintext: Some(text.to_string()),
             ciphertext: None,
             message_type: None,
@@ -216,7 +219,13 @@ mod tests {
     #[test]
     fn test_search_with_snippets() {
         let conn = test_conn();
-        insert_and_index(&conn, "m1", "ch1", "the quick brown fox jumps over the lazy dog", 1000);
+        insert_and_index(
+            &conn,
+            "m1",
+            "ch1",
+            "the quick brown fox jumps over the lazy dog",
+            1000,
+        );
 
         let results = search_messages(&conn, "quick brown", &SearchScope::AllMessages, 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -230,7 +239,8 @@ mod tests {
         insert_and_index(&conn, "m1", "ch1", "testing special characters", 1000);
 
         // Should not crash with special FTS5 chars
-        let results = search_messages(&conn, "testing*\"()", &SearchScope::AllMessages, 10).unwrap();
+        let results =
+            search_messages(&conn, "testing*\"()", &SearchScope::AllMessages, 10).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -258,7 +268,11 @@ mod tests {
 
         // Using limit=0 should default to 50
         let results = search_messages(&conn, "common", &SearchScope::AllMessages, 0).unwrap();
-        assert!(results.len() <= 50, "should limit to 50 results, got {}", results.len());
+        assert!(
+            results.len() <= 50,
+            "should limit to 50 results, got {}",
+            results.len()
+        );
     }
 
     #[test]
@@ -270,11 +284,18 @@ mod tests {
             .as_millis() as i64;
 
         // Old message (30 days ago in ms)
-        insert_and_index(&conn, "old", "ch1", "identical keyword here", now - 86400_000 * 30);
+        insert_and_index(
+            &conn,
+            "old",
+            "ch1",
+            "identical keyword here",
+            now - 86400_000 * 30,
+        );
         // Recent message (1 minute ago in ms)
         insert_and_index(&conn, "new", "ch1", "identical keyword here", now - 60_000);
 
-        let results = search_messages(&conn, "identical keyword", &SearchScope::AllMessages, 10).unwrap();
+        let results =
+            search_messages(&conn, "identical keyword", &SearchScope::AllMessages, 10).unwrap();
         assert_eq!(results.len(), 2);
         // Recent message should rank higher (appear first)
         assert_eq!(results[0].message_id, "new");

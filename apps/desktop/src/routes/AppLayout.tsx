@@ -1,8 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
-import { seedStores } from "../mock/seed";
 import { AppShell } from "../components/layout/AppShell";
 import { ModalRoot } from "../components/modals/ModalRoot";
 import { commands } from "../bindings";
@@ -11,18 +10,6 @@ import { useReadPositionSync } from "../hooks/useReadPositionSync";
 export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const seeded = useRef(false);
-
-  const guildIds = useAppStore((s) => s.guildIds);
-
-  // Seed stores on mount if not already populated
-  useEffect(() => {
-    if (!seeded.current && guildIds.length === 0) {
-      seedStores();
-      seeded.current = true;
-    }
-  }, [guildIds.length]);
-
   // Load notification settings from backend on mount
   useEffect(() => {
     useAppStore.getState().loadNotificationSettings();
@@ -51,9 +38,7 @@ export function AppLayout() {
         const channel =
           useAppStore.getState().channelsById[event.payload.channelId];
         if (channel) {
-          navigate(
-            `/app/guild/${channel.guildId}/channel/${channel.id}`,
-          );
+          navigate(`/app/guild/${channel.guildId}/channel/${channel.id}`);
         }
       } else if (event.payload.dmChannelId) {
         navigate(`/app/dm/${event.payload.dmChannelId}`);

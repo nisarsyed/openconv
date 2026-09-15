@@ -266,7 +266,7 @@ mod tests {
         let bob_bundle = generate_pre_key_bundle(&bob_conn, "bob-user-id").unwrap();
         let bundle_json = serde_json::to_vec(&bob_bundle).unwrap();
 
-        let bob_address = create_outgoing_session(&alice_conn, &bundle_json).unwrap();
+        let bob_address = create_outgoing_session(&alice_conn, &bundle_json, 1).unwrap();
         let alice_address = ProtocolAddress::new(
             "alice-user-id".to_string(),
             DeviceId::new(1).expect("valid"),

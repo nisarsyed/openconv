@@ -10,9 +10,7 @@ export function ChannelHeader() {
   const memberListVisible = useAppStore((s) => s.memberListVisible);
   const toggleMemberList = useAppStore((s) => s.toggleMemberList);
   const searchOverlayVisible = useAppStore((s) => s.searchOverlayVisible);
-  const setSearchOverlayVisible = useAppStore(
-    (s) => s.setSearchOverlayVisible,
-  );
+  const setSearchOverlayVisible = useAppStore((s) => s.setSearchOverlayVisible);
   const setSearchScope = useAppStore((s) => s.setSearchScope);
 
   if (!channel) return null;

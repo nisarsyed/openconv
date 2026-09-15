@@ -8,9 +8,11 @@ use specta::Type;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::auth_service::AppError;
+use crate::cache::dm_channels;
 use crate::cache::messages::{self, CachedMessage};
 use crate::cache::search;
 use crate::cache::CacheDb;
+use crate::commands::device_directory;
 use crate::crypto_service::CryptoState;
 use crate::ws::handlers::{MSG_STATUS_PENDING, MSG_STATUS_QUEUED};
 use crate::ws::WsState;
@@ -85,8 +87,8 @@ fn is_thumbnail_supported(mime_type: &str) -> bool {
 
 /// Validate that a file path exists and is within the size limit.
 fn validate_file(path: &std::path::Path) -> Result<u64, AppError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| AppError::new(format!("file not found: {e}")))?;
+    let metadata =
+        std::fs::metadata(path).map_err(|e| AppError::new(format!("file not found: {e}")))?;
 
     if !metadata.is_file() {
         return Err(AppError::new("path is not a file".to_string()));
@@ -121,7 +123,7 @@ fn generate_thumbnail_sync(
 
     // Set memory limits to prevent OOM
     let mut reader = reader;
-    let mut limits = image::io::Limits::default();
+    let mut limits = image::Limits::default();
     limits.max_alloc = Some(100 * 1024 * 1024); // 100MB decoded max
     reader.limits(limits);
 
@@ -226,8 +228,8 @@ async fn upload_and_send_file(
         .map_err(|e| AppError::new(format!("spawn_blocking: {e}")))?
         .map_err(|e| AppError::new(format!("auth: {e}")))?;
 
-    let api_base_url = std::env::var("OPENCONV_API_URL")
-        .unwrap_or_else(|_| "http://localhost:3000".into());
+    let api_base_url =
+        std::env::var("OPENCONV_API_URL").unwrap_or_else(|_| "http://localhost:3000".into());
 
     // 6. Upload encrypted blob -- do NOT send the real key to the server.
     //    Key distribution happens via per-device E2E encryption in the WS message.
@@ -310,7 +312,8 @@ async fn upload_and_send_file(
         id: msg_id_str.clone(),
         channel_id: channel_id.map(String::from),
         dm_channel_id: dm_channel_id.map(String::from),
-        sender_id,
+        sender_id: sender_id.clone(),
+        sender_device_id: None,
         plaintext: Some(plaintext.clone()),
         ciphertext: None,
         message_type: Some("file".into()),
@@ -348,16 +351,42 @@ async fn upload_and_send_file(
         nonces.insert(client_nonce.clone(), msg_id_str.clone());
     }
 
-    // 12. Per-device encryption of file key for channel members
-    // TODO: When member/device directory is available, call
-    // CryptoService::encrypt_key_for_recipients(file_key_bytes, channel_id)
-    // to encrypt the file key per-device using Signal sessions.
-    // For now, recipients is empty -- same as text messages.
-    let recipients = vec![];
-
-    // 13. Send via WebSocket
+    // 12. Check connectivity — only encrypt if we can send
     let tx_guard = ws_state.outgoing_tx.read().await;
     if let Some(tx) = tx_guard.as_ref() {
+        // 13. Encrypt the file message plaintext (contains file key) per-device
+        let recipients = if let Some(ch_id) = channel_id {
+            // For channel files: look up guild_id from channel_cache
+            let guild_id = {
+                let conn = cache_db.lock()?;
+                conn.query_row(
+                    "SELECT guild_id FROM channel_cache WHERE id = ?1",
+                    [ch_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|_| AppError::new("channel not found in cache — cannot resolve guild"))?
+            };
+            device_directory::encrypt_for_channel(app, &guild_id, &sender_id, plaintext.as_bytes())
+                .await?
+        } else if let Some(dm_id) = dm_channel_id {
+            // For DM files: look up participant_ids from dm_channel_cache
+            let participant_ids = {
+                let conn = cache_db.lock()?;
+                let dm = dm_channels::get_dm_channel(&conn, dm_id)?
+                    .ok_or_else(|| AppError::new("DM channel not found in cache"))?;
+                dm.participant_ids
+            };
+            device_directory::encrypt_for_dm(
+                app,
+                &participant_ids,
+                &sender_id,
+                plaintext.as_bytes(),
+            )
+            .await?
+        } else {
+            return Err(AppError::new("no channel or dm_channel specified"));
+        };
+
         let ws_msg = ClientMessage::SendMessage {
             channel_id: channel_id
                 .map(|id| id.parse::<ChannelId>())
@@ -374,7 +403,8 @@ async fn upload_and_send_file(
         tx.send(ws_msg)
             .map_err(|_| AppError::new("failed to send file message: WebSocket channel closed"))?;
     } else {
-        // Not connected -- enqueue for offline delivery
+        // Not connected -- enqueue plaintext for offline delivery.
+        // Encryption will happen on retry when connectivity is restored.
         let conn = cache_db.lock()?;
         messages::update_message_status(&conn, &msg_id_str, MSG_STATUS_QUEUED)?;
         crate::cache::queue::enqueue_message(
@@ -464,8 +494,8 @@ pub async fn download_file(
         .map_err(|e| AppError::new(format!("spawn_blocking: {e}")))?
         .map_err(|e| AppError::new(format!("auth: {e}")))?;
 
-    let api_base_url = std::env::var("OPENCONV_API_URL")
-        .unwrap_or_else(|_| "http://localhost:3000".into());
+    let api_base_url =
+        std::env::var("OPENCONV_API_URL").unwrap_or_else(|_| "http://localhost:3000".into());
 
     // Download encrypted blob
     let client = reqwest::Client::new();

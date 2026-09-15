@@ -3,7 +3,12 @@ use std::path::Path;
 use crate::auth_service::AppError;
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(i32, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
+const MIGRATIONS: &[(i32, &str)] = &[
+    (1, MIGRATION_001),
+    (2, MIGRATION_002),
+    (3, MIGRATION_003),
+    (4, MIGRATION_004),
+];
 
 const MIGRATION_001: &str = "
 CREATE TABLE messages (
@@ -131,6 +136,10 @@ const MIGRATION_003: &str = "
 ALTER TABLE cached_files ADD COLUMN thumbnail_path TEXT;
 ";
 
+const MIGRATION_004: &str = "
+ALTER TABLE messages ADD COLUMN sender_device_id TEXT;
+";
+
 pub fn run_cache_migrations(conn: &Connection) -> Result<(), AppError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _cache_migrations (
@@ -198,7 +207,9 @@ pub fn migrate_from_old_db(new_conn: &Connection, old_db_path: &Path) -> Result<
             let icon_url: Option<String> = row.get(3)?;
             let joined_at: i64 = row.get::<_, String>(4)?.parse().unwrap_or(0);
             let updated_at: i64 = row.get::<_, String>(5)?.parse().unwrap_or(0);
-            insert.execute(rusqlite::params![id, name, owner_id, icon_url, joined_at, updated_at])?;
+            insert.execute(rusqlite::params![
+                id, name, owner_id, icon_url, joined_at, updated_at
+            ])?;
         }
     }
 
@@ -218,7 +229,14 @@ pub fn migrate_from_old_db(new_conn: &Connection, old_db_path: &Path) -> Result<
             let channel_type: String = row.get(3)?;
             let position: i64 = row.get(4)?;
             let updated_at: i64 = row.get::<_, String>(5)?.parse().unwrap_or(0);
-            insert.execute(rusqlite::params![id, guild_id, name, channel_type, position, updated_at])?;
+            insert.execute(rusqlite::params![
+                id,
+                guild_id,
+                name,
+                channel_type,
+                position,
+                updated_at
+            ])?;
         }
     }
 
@@ -239,15 +257,22 @@ pub fn migrate_from_old_db(new_conn: &Connection, old_db_path: &Path) -> Result<
             let avatar_url: Option<String> = row.get(4)?;
             let token: String = row.get(5)?;
             let created_at: i64 = row.get::<_, String>(6)?.parse().unwrap_or(0);
-            insert.execute(rusqlite::params![id, public_key, email, display_name, avatar_url, token, created_at])?;
+            insert.execute(rusqlite::params![
+                id,
+                public_key,
+                email,
+                display_name,
+                avatar_url,
+                token,
+                created_at
+            ])?;
         }
     }
 
     // Copy local_device
     {
-        let mut stmt = old_conn.prepare(
-            "SELECT id, device_name, strftime('%s', created_at) FROM local_device",
-        )?;
+        let mut stmt = old_conn
+            .prepare("SELECT id, device_name, strftime('%s', created_at) FROM local_device")?;
         let mut insert = new_conn.prepare(
             "INSERT OR IGNORE INTO local_device (id, device_name, created_at) VALUES (?1, ?2, ?3)",
         )?;
@@ -277,7 +302,9 @@ pub fn migrate_from_old_db(new_conn: &Connection, old_db_path: &Path) -> Result<
             let mime_type: Option<String> = row.get(4)?;
             let local_path: Option<String> = row.get(5)?;
             let created_at: i64 = row.get::<_, String>(6)?.parse().unwrap_or(0);
-            insert.execute(rusqlite::params![id, message_id, file_name, file_size, mime_type, local_path, created_at])?;
+            insert.execute(rusqlite::params![
+                id, message_id, file_name, file_size, mime_type, local_path, created_at
+            ])?;
         }
     }
 
@@ -443,11 +470,8 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "DELETE FROM messages_fts WHERE message_id = 'm1'",
-            [],
-        )
-        .unwrap();
+        conn.execute("DELETE FROM messages_fts WHERE message_id = 'm1'", [])
+            .unwrap();
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'delete'",
@@ -497,7 +521,11 @@ mod tests {
         )
         .unwrap();
         let id1: i64 = conn
-            .query_row("SELECT id FROM outgoing_queue WHERE message_id = 'm1'", [], |row| row.get(0))
+            .query_row(
+                "SELECT id FROM outgoing_queue WHERE message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
 
         conn.execute(
@@ -506,7 +534,11 @@ mod tests {
         )
         .unwrap();
         let id2: i64 = conn
-            .query_row("SELECT id FROM outgoing_queue WHERE message_id = 'm2'", [], |row| row.get(0))
+            .query_row(
+                "SELECT id FROM outgoing_queue WHERE message_id = 'm2'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
 
         assert!(id2 > id1, "second id should be greater than first");
@@ -556,7 +588,10 @@ mod tests {
             .unwrap();
 
         assert!(count1 > 0, "tables should exist after first run");
-        assert_eq!(count1, count2, "table count should be unchanged after second run");
+        assert_eq!(
+            count1, count2,
+            "table count should be unchanged after second run"
+        );
     }
 
     #[test]
@@ -657,11 +692,9 @@ mod migration_tests {
         assert_eq!(name, "Alice");
 
         let guild_name: String = new_conn
-            .query_row(
-                "SELECT name FROM guild_cache WHERE id = 'g1'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT name FROM guild_cache WHERE id = 'g1'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(guild_name, "Guild");
 
@@ -709,7 +742,10 @@ mod migration_tests {
         let count: i64 = new_conn
             .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 0, "messages should be empty (plaintext not migrated)");
+        assert_eq!(
+            count, 0,
+            "messages should be empty (plaintext not migrated)"
+        );
     }
 
     #[test]
@@ -748,11 +784,9 @@ mod migration_tests {
         migrate_from_old_db(&new_conn, &old_path).unwrap();
 
         let email: String = new_conn
-            .query_row(
-                "SELECT email FROM local_user WHERE id = 'u1'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT email FROM local_user WHERE id = 'u1'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(email, "a@b.com");
 

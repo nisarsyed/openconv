@@ -105,6 +105,7 @@ describe("ChannelView integration", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("send_message", {
       channelId: TEST_CHANNEL_ID,
+      guildId: TEST_GUILD_ID,
       plaintext: "Hello",
     });
   });
@@ -116,10 +117,7 @@ describe("ChannelView integration", () => {
     const textarea = screen.getByPlaceholderText("Message #general");
     await user.type(textarea, "Test{Enter}");
 
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "send_message",
-      expect.any(Object),
-    );
+    expect(mockInvoke).toHaveBeenCalledWith("send_message", expect.any(Object));
   });
 
   it("shows typing indicator from store", () => {

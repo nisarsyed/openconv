@@ -287,6 +287,10 @@ pub async fn update_role(
         })?
         .ok_or(ServerError(OpenConvError::NotFound))?;
 
+    // Invalidate cached permissions for all members in this guild since
+    // the role's permissions or position may have changed.
+    state.ws.permission_cache.invalidate_guild(guild_id);
+
     Ok(Json(row.into_response()))
 }
 
@@ -328,6 +332,9 @@ pub async fn delete_role(
         .execute(&state.db)
         .await
         .map_err(db_err)?;
+
+    // Invalidate cached permissions for all members who may have had this role.
+    state.ws.permission_cache.invalidate_guild(guild_id);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -383,6 +390,9 @@ pub async fn assign_role(
     .await
     .map_err(db_err)?;
 
+    // Invalidate cached permissions for this specific user in this guild.
+    state.ws.permission_cache.invalidate(user_id, guild_id);
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -421,6 +431,9 @@ pub async fn remove_role(
     .execute(&state.db)
     .await
     .map_err(db_err)?;
+
+    // Invalidate cached permissions for this specific user in this guild.
+    state.ws.permission_cache.invalidate(user_id, guild_id);
 
     Ok(StatusCode::NO_CONTENT)
 }

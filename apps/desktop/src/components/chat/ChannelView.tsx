@@ -27,13 +27,17 @@ export function ChannelView() {
           await invoke("send_file", { channelId, filePath });
         }
         if (content) {
-          await invoke("send_message", { channelId, plaintext: content });
+          await invoke("send_message", {
+            channelId,
+            guildId,
+            plaintext: content,
+          });
         }
       } catch {
         // Send failure - backend handles optimistic updates
       }
     },
-    [channelId],
+    [channelId, guildId],
   );
 
   if (!channel) {

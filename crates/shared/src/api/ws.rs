@@ -87,6 +87,8 @@ pub enum ServerMessage {
         channel_id: ChannelId,
         message_id: MessageId,
         sender_id: UserId,
+        /// Device ID of the sender (needed for Signal protocol decryption)
+        sender_device_id: DeviceId,
         /// The ciphertext encrypted specifically for this receiving device
         #[serde(with = "base64_serde")]
         #[cfg_attr(feature = "utoipa", schema(value_type = String))]
@@ -102,6 +104,8 @@ pub enum ServerMessage {
         channel_id: ChannelId,
         message_id: MessageId,
         sender_id: UserId,
+        /// Device ID of the sender (needed for Signal protocol decryption)
+        sender_device_id: DeviceId,
         #[serde(with = "base64_serde")]
         #[cfg_attr(feature = "utoipa", schema(value_type = String))]
         ciphertext: Vec<u8>,
@@ -410,6 +414,7 @@ mod tests {
             channel_id: ChannelId::new(),
             message_id: MessageId::new(),
             sender_id: sender,
+            sender_device_id: DeviceId::new(),
             ciphertext: b"device_specific_ct".to_vec(),
             message_type: "prekey".to_string(),
             created_at: now,
@@ -441,6 +446,7 @@ mod tests {
             channel_id: ChannelId::new(),
             message_id: MessageId::new(),
             sender_id: UserId::new(),
+            sender_device_id: DeviceId::new(),
             ciphertext: b"ct".to_vec(),
             message_type: "signal".to_string(),
             created_at: chrono::Utc::now(),
@@ -491,6 +497,7 @@ mod tests {
             channel_id: ChannelId::new(),
             message_id: MessageId::new(),
             sender_id: sender,
+            sender_device_id: DeviceId::new(),
             ciphertext: b"updated_ct".to_vec(),
             message_type: "signal".to_string(),
             edited_at: now,

@@ -31,8 +31,7 @@ impl CacheDb {
         )
         .map_err(|e| AppError::new(e.to_string()))?;
 
-        let conn = Connection::open(&db_path)
-            .map_err(|e| AppError::new(e.to_string()))?;
+        let conn = Connection::open(&db_path).map_err(|e| AppError::new(e.to_string()))?;
         openconv_crypto::master_key::apply_encryption_key(&conn, &db_key)
             .map_err(|e| AppError::new(e.to_string()))?;
 

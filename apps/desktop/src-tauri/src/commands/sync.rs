@@ -1,14 +1,18 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::auth_service::{self, AppError};
+use crate::cache::dm_channels;
 use crate::cache::messages::{self, DEFAULT_PLAINTEXT_TTL_SECS};
 use crate::cache::queue;
 use crate::cache::search;
 use crate::cache::sync;
 use crate::cache::CacheDb;
+use crate::commands::device_directory;
 use crate::crypto_service::CryptoState;
 use crate::ws::handlers::MSG_STATUS_DELIVERED;
 use crate::ws::WsState;
@@ -24,7 +28,7 @@ const MAX_RETRY_COUNT: u32 = 5;
 #[tauri::command]
 #[specta::specta]
 pub async fn sync_inactive_channels(
-    app: AppHandle,
+    _app: AppHandle,
     cache_db: State<'_, CacheDb>,
     ws_state: State<'_, WsState>,
 ) -> Result<u32, String> {
@@ -123,7 +127,6 @@ pub async fn sync_inactive_channels(
                 let conn = cache_db.lock().map_err(|e| e.to_string())?;
                 sync::update_last_sequence(&conn, channel_id, max_sequence)
                     .map_err(|e| e.to_string())?;
-                last_seq = max_sequence;
             }
 
             // Continue if there are more pages
@@ -148,7 +151,7 @@ pub async fn redecrypt_message(
     cache_db: State<'_, CacheDb>,
 ) -> Result<Option<String>, String> {
     // Load the message from cache
-    let (sender_id, ciphertext, message_type) = {
+    let (sender_id, sender_device_id_opt, ciphertext, message_type) = {
         let conn = cache_db.lock().map_err(|e| e.to_string())?;
         let msg = messages::get_message(&conn, &message_id)
             .map_err(|e| e.to_string())?
@@ -162,17 +165,19 @@ pub async fn redecrypt_message(
             .ciphertext
             .ok_or_else(|| "no ciphertext available for re-decryption".to_string())?;
         let mt = msg.message_type.unwrap_or_else(|| "signal".to_string());
-        (msg.sender_id, ct, mt)
+        (msg.sender_id, msg.sender_device_id, ct, mt)
     };
 
     // Attempt decryption
+    let signal_device_id =
+        crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
     let msg_id = message_id.clone();
     let app_clone = app.clone();
     let decrypt_result = tokio::task::spawn_blocking(move || {
         let crypto_state = app_clone.state::<CryptoState>();
         crypto_state.crypto_service.decrypt_message(
             &sender_id,
-            1, // TODO: device_id
+            signal_device_id,
             &ciphertext,
             &message_type,
         )
@@ -263,7 +268,10 @@ pub async fn process_queue(app: AppHandle) {
         return;
     }
 
-    tracing::info!("process_queue: processing {} queued messages", pending.len());
+    tracing::info!(
+        "process_queue: processing {} queued messages",
+        pending.len()
+    );
     let rate_delay = Duration::from_millis(1000 / QUEUE_RATE_LIMIT_PER_SEC);
 
     for queued_msg in &pending {
@@ -292,11 +300,113 @@ pub async fn process_queue(app: AppHandle) {
             }
         }
 
-        // TODO: Re-encrypt plaintext per-device using CryptoService
-        // For channel messages: CryptoService::encrypt_for_channel()
-        // For DM messages: CryptoService::encrypt_for_dm()
-        // On SessionNotFound: re-fetch pre-key bundle, establish new session, retry
-        let recipients = vec![];
+        // Get sender ID for encryption
+        let sender_id = {
+            let uid = ws_state.current_user_id.read().await;
+            match uid.map(|id| id.to_string()) {
+                Some(id) if !id.is_empty() => id,
+                _ => {
+                    tracing::warn!("process_queue: no current user_id, skipping encryption");
+                    continue;
+                }
+            }
+        };
+
+        // Encrypt plaintext per-device for the appropriate recipient set
+        let encrypt_result = if let Some(ref ch_id) = queued_msg.channel_id {
+            // Channel message: look up guild_id from channel_cache
+            let guild_id = {
+                let conn = match cache_db.lock() {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                conn.query_row(
+                    "SELECT guild_id FROM channel_cache WHERE id = ?1",
+                    [ch_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+            };
+            match guild_id {
+                Some(gid) => {
+                    device_directory::encrypt_for_channel(
+                        &app,
+                        &gid,
+                        &sender_id,
+                        queued_msg.plaintext.as_bytes(),
+                    )
+                    .await
+                }
+                None => {
+                    tracing::warn!(
+                        "process_queue: no guild_id for channel {} — skipping {}",
+                        ch_id,
+                        queued_msg.message_id
+                    );
+                    continue;
+                }
+            }
+        } else if let Some(ref dm_id) = queued_msg.dm_channel_id {
+            // DM message: look up participant_ids from dm_channel_cache
+            let participant_ids = {
+                let conn = match cache_db.lock() {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                dm_channels::get_dm_channel(&conn, dm_id)
+                    .ok()
+                    .flatten()
+                    .map(|dm| dm.participant_ids)
+            };
+            match participant_ids {
+                Some(pids) => {
+                    device_directory::encrypt_for_dm(
+                        &app,
+                        &pids,
+                        &sender_id,
+                        queued_msg.plaintext.as_bytes(),
+                    )
+                    .await
+                }
+                None => {
+                    tracing::warn!(
+                        "process_queue: no participants for DM {} — skipping {}",
+                        dm_id,
+                        queued_msg.message_id
+                    );
+                    continue;
+                }
+            }
+        } else {
+            tracing::warn!(
+                "process_queue: message {} has no channel_id or dm_channel_id",
+                queued_msg.message_id
+            );
+            continue;
+        };
+
+        let recipients = match encrypt_result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    "process_queue: encryption failed for {}: {e}",
+                    queued_msg.message_id
+                );
+                // Increment retry — encryption failure is recoverable (session may establish later)
+                let conn = match cache_db.lock() {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let retry_count = queue::increment_retry(&conn, &queued_msg.message_id)
+                    .unwrap_or(MAX_RETRY_COUNT);
+                if retry_count >= MAX_RETRY_COUNT {
+                    let _ = queue::mark_failed(&conn, &queued_msg.message_id);
+                    let _ =
+                        messages::update_message_status(&conn, &queued_msg.message_id, "failed");
+                }
+                continue;
+            }
+        };
 
         // Build and send the message via WebSocket
         let sent = {
@@ -318,10 +428,6 @@ pub async fn process_queue(app: AppHandle) {
                         client_nonce: Some(queued_msg.message_id.clone()),
                     }
                 } else {
-                    tracing::warn!(
-                        "process_queue: message {} has no channel_id or dm_channel_id",
-                        queued_msg.message_id
-                    );
                     continue;
                 };
                 tx.send(msg).is_ok()
@@ -342,23 +448,22 @@ pub async fn process_queue(app: AppHandle) {
                     queued_msg.message_id
                 );
             }
-            let _ =
-                messages::update_message_status(&conn, &queued_msg.message_id, MSG_STATUS_DELIVERED);
+            let _ = messages::update_message_status(
+                &conn,
+                &queued_msg.message_id,
+                MSG_STATUS_DELIVERED,
+            );
         } else {
             // Send failed - increment retry
             let conn = match cache_db.lock() {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let retry_count = queue::increment_retry(&conn, &queued_msg.message_id)
-                .unwrap_or(MAX_RETRY_COUNT);
+            let retry_count =
+                queue::increment_retry(&conn, &queued_msg.message_id).unwrap_or(MAX_RETRY_COUNT);
             if retry_count >= MAX_RETRY_COUNT {
                 let _ = queue::mark_failed(&conn, &queued_msg.message_id);
-                let _ = messages::update_message_status(
-                    &conn,
-                    &queued_msg.message_id,
-                    "failed",
-                );
+                let _ = messages::update_message_status(&conn, &queued_msg.message_id, "failed");
                 tracing::warn!(
                     "process_queue: message {} failed after {} retries",
                     queued_msg.message_id,
@@ -433,15 +538,21 @@ pub async fn proactive_redecrypt(app: &AppHandle, window_secs: i64) -> Result<us
             None => continue,
         };
         let sender_id = msg.sender_id.clone();
-        let message_type = msg.message_type.clone().unwrap_or_else(|| "signal".to_string());
+        let sender_device_id_opt = msg.sender_device_id.clone();
+        let message_type = msg
+            .message_type
+            .clone()
+            .unwrap_or_else(|| "signal".to_string());
         let msg_id = msg.id.clone();
 
+        let signal_device_id =
+            crate::crypto_service::resolve_signal_device_id(sender_device_id_opt.as_deref());
         let app_clone = app.clone();
         let decrypt_result = tokio::task::spawn_blocking(move || {
             let crypto_state = app_clone.state::<CryptoState>();
             crypto_state.crypto_service.decrypt_message(
                 &sender_id,
-                1, // TODO: device_id
+                signal_device_id,
                 &ciphertext,
                 &message_type,
             )

@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use openconv_shared::api::ws::ClientMessage;
 use openconv_shared::ids::{DmChannelId, MessageId};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::auth_service::{self, AppError};
 use crate::cache::dm_channels::{self, CachedDmChannel};
@@ -10,6 +10,7 @@ use crate::cache::messages::{self, CachedMessage};
 use crate::cache::queue;
 use crate::cache::search;
 use crate::cache::CacheDb;
+use crate::commands::device_directory;
 use crate::ws::handlers::{MSG_STATUS_PENDING, MSG_STATUS_QUEUED};
 use crate::ws::WsState;
 
@@ -35,10 +36,7 @@ pub struct DmChannelInfo {
 /// 5. Return the DmChannelId
 #[tauri::command]
 #[specta::specta]
-pub async fn start_dm(
-    user_id: String,
-    cache_db: State<'_, CacheDb>,
-) -> Result<String, AppError> {
+pub async fn start_dm(user_id: String, cache_db: State<'_, CacheDb>) -> Result<String, AppError> {
     // 1. Check local cache for existing DM with this user
     {
         let conn = cache_db.lock()?;
@@ -72,9 +70,7 @@ pub async fn start_dm(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(AppError::new(format!(
-            "server returned {status}: {body}"
-        )));
+        return Err(AppError::new(format!("server returned {status}: {body}")));
     }
 
     let dm_resp: openconv_shared::api::dm_channel::DmChannelResponse = resp.json().await?;
@@ -137,7 +133,6 @@ pub async fn list_dms(cache_db: State<'_, CacheDb>) -> Result<Vec<DmChannelInfo>
             let dm_list: Vec<openconv_shared::api::dm_channel::DmChannelResponse> =
                 resp.json().await?;
 
-            let now_ms = chrono::Utc::now().timestamp_millis();
             let conn = cache_db.lock()?;
             let mut result = Vec::new();
 
@@ -194,7 +189,7 @@ pub async fn list_dms(cache_db: State<'_, CacheDb>) -> Result<Vec<DmChannelInfo>
 #[tauri::command]
 #[specta::specta]
 pub async fn send_dm_message(
-    _app: AppHandle,
+    app: AppHandle,
     dm_channel_id: String,
     plaintext: String,
     ws_state: State<'_, WsState>,
@@ -222,12 +217,21 @@ pub async fn send_dm_message(
     let now = chrono::Utc::now();
     let now_ms = now.timestamp_millis();
 
-    // 4. Optimistic insert into local cache
+    // 4. Get participant IDs from local DM channel cache (needed for encryption)
+    let participant_ids = {
+        let conn = cache_db.lock()?;
+        let dm = dm_channels::get_dm_channel(&conn, &dm_channel_id)?
+            .ok_or_else(|| AppError::new("DM channel not found in local cache"))?;
+        dm.participant_ids
+    };
+
+    // 5. Optimistic insert into local cache
     let cached = CachedMessage {
         id: msg_id_str.clone(),
         channel_id: None,
         dm_channel_id: Some(dm_channel_id.clone()),
-        sender_id,
+        sender_id: sender_id.clone(),
+        sender_device_id: None,
         plaintext: Some(plaintext.clone()),
         ciphertext: None,
         message_type: None,
@@ -252,22 +256,28 @@ pub async fn send_dm_message(
         dm_channels::update_dm_last_message(&conn, &dm_channel_id, &preview, now_ms)?;
     }
 
-    // 5. Store nonce for dedup matching
+    // 6. Store nonce for dedup matching
     {
         let mut nonces = ws_state.pending_nonces.write().await;
         nonces.insert(client_nonce.clone(), msg_id_str.clone());
     }
 
-    // 6. TODO: Encrypt for DM recipient's devices via CryptoService
-    let recipients = vec![];
-
-    // 7. Send via WebSocket
+    // 7. Check connectivity — only encrypt if we can send
     let dm_channel_id_typed: DmChannelId = dm_channel_id
         .parse()
         .map_err(|_| AppError::new("invalid dm_channel_id"))?;
 
     let tx_guard = ws_state.outgoing_tx.read().await;
     if let Some(tx) = tx_guard.as_ref() {
+        // 8. Encrypt for DM recipient devices
+        let recipients = device_directory::encrypt_for_dm(
+            &app,
+            &participant_ids,
+            &sender_id,
+            plaintext.as_bytes(),
+        )
+        .await?;
+
         tx.send(ClientMessage::SendMessage {
             channel_id: None,
             dm_channel_id: Some(dm_channel_id_typed),
@@ -276,10 +286,18 @@ pub async fn send_dm_message(
         })
         .map_err(|_| AppError::new("failed to send DM: WebSocket channel closed"))?;
     } else {
-        // Not connected -- enqueue for offline delivery
+        // Not connected -- enqueue plaintext for offline delivery.
+        // Encryption will happen on retry when connectivity is restored.
         let conn = cache_db.lock()?;
         messages::update_message_status(&conn, &msg_id_str, MSG_STATUS_QUEUED)?;
-        queue::enqueue_message(&conn, &msg_id_str, None, Some(&dm_channel_id), &plaintext, now_ms)?;
+        queue::enqueue_message(
+            &conn,
+            &msg_id_str,
+            None,
+            Some(&dm_channel_id),
+            &plaintext,
+            now_ms,
+        )?;
     }
 
     Ok(msg_id_str)
@@ -308,10 +326,15 @@ mod tests {
         };
 
         dm_channels::upsert_dm_channel(&conn, &dm).unwrap();
-        let retrieved = dm_channels::get_dm_channel(&conn, "dm-001").unwrap().unwrap();
+        let retrieved = dm_channels::get_dm_channel(&conn, "dm-001")
+            .unwrap()
+            .unwrap();
         assert_eq!(retrieved.id, "dm-001");
         assert_eq!(retrieved.participant_ids, vec!["user-a", "user-b"]);
-        assert_eq!(retrieved.last_message_preview.as_deref(), Some("Hey there!"));
+        assert_eq!(
+            retrieved.last_message_preview.as_deref(),
+            Some("Hey there!")
+        );
     }
 
     #[test]
@@ -398,7 +421,9 @@ mod tests {
         dm_channels::update_dm_last_message(&conn, "dm-003", "New message!", 1700000001000)
             .unwrap();
 
-        let retrieved = dm_channels::get_dm_channel(&conn, "dm-003").unwrap().unwrap();
+        let retrieved = dm_channels::get_dm_channel(&conn, "dm-003")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             retrieved.last_message_preview.as_deref(),
             Some("New message!")
@@ -444,6 +469,7 @@ mod tests {
             channel_id: None,
             dm_channel_id: Some("dm-001".into()),
             sender_id: "user-a".into(),
+            sender_device_id: None,
             plaintext: Some("DM hello".into()),
             ciphertext: None,
             message_type: None,
@@ -472,9 +498,18 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         // Verify camelCase keys in JSON output
-        assert!(json.contains("\"participantIds\""), "should use camelCase keys");
-        assert!(json.contains("\"lastMessagePreview\""), "should use camelCase keys");
-        assert!(json.contains("\"unreadCount\""), "should use camelCase keys");
+        assert!(
+            json.contains("\"participantIds\""),
+            "should use camelCase keys"
+        );
+        assert!(
+            json.contains("\"lastMessagePreview\""),
+            "should use camelCase keys"
+        );
+        assert!(
+            json.contains("\"unreadCount\""),
+            "should use camelCase keys"
+        );
         let back: DmChannelInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, "dm-001");
         assert_eq!(back.participant_ids.len(), 2);
