@@ -10,8 +10,21 @@ cors_origins = ["http://localhost:1420"]
 log_level = "debug"
 
 [email]
-smtp_host = "smtp.gmail.com"
+# An empty smtp_host selects the mock email service, which logs verification
+# and recovery codes at INFO instead of sending them:
+#
+#   INFO openconv_server::email: mock: verification code to=a@b.com code=123456
+#
+# That is what makes local registration possible without a mail account. To use
+# real SMTP, fill in the four fields below and supply the password out of band:
+#
+#   smtp_host = "smtp.gmail.com"
+#   smtp_port = 587
+#   smtp_username = "you@gmail.com"
+#   from_address = "you@gmail.com"
+#   SMTP_PASSWORD=... just server      # password only ever comes from the env
+smtp_host = ""
 smtp_port = 587
-smtp_username = "YOUR_GMAIL@gmail.com"
-from_address = "YOUR_GMAIL@gmail.com"
+smtp_username = ""
+from_address = "noreply@openconv.local"
 from_name = "OpenConv"
