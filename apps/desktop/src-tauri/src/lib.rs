@@ -128,7 +128,17 @@ pub fn run() {
         .setup(move |app| {
             builder.mount_events(app);
 
-            let app_data_dir = app.path().app_data_dir()?;
+            // OPENCONV_DATA_DIR lets a second instance run side by side with its
+            // own cache and crypto databases, which is the only way to exercise
+            // two accounts (or two devices) on one machine. Development only —
+            // a release build always uses the OS-provided directory.
+            let app_data_dir = match std::env::var("OPENCONV_DATA_DIR") {
+                Ok(dir) if cfg!(debug_assertions) => {
+                    tracing::warn!("using OPENCONV_DATA_DIR override: {dir}");
+                    std::path::PathBuf::from(dir)
+                }
+                _ => app.path().app_data_dir()?,
+            };
             std::fs::create_dir_all(&app_data_dir)?;
             std::fs::create_dir_all(app_data_dir.join("attachments"))?;
             std::fs::create_dir_all(app_data_dir.join("thumbnails"))?;

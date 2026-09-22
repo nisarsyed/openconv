@@ -96,25 +96,38 @@ pub struct AuthState {
 
 const KEYRING_SERVICE: &str = "com.openconv.auth";
 
+/// Keychain service name for token storage.
+///
+/// When `OPENCONV_DATA_DIR` is set in a development build, the service name is
+/// suffixed with that directory so two instances running side by side do not
+/// overwrite each other's tokens — they would otherwise share one keychain
+/// entry and the second login would silently log the first instance out.
+fn keyring_service() -> String {
+    match std::env::var("OPENCONV_DATA_DIR") {
+        Ok(dir) if cfg!(debug_assertions) => format!("{KEYRING_SERVICE}.{dir}"),
+        _ => KEYRING_SERVICE.to_string(),
+    }
+}
+
 pub(crate) fn store_tokens(access_token: &str, refresh_token: &str) -> Result<(), AppError> {
-    keyring::Entry::new(KEYRING_SERVICE, "access_token")?.set_password(access_token)?;
-    keyring::Entry::new(KEYRING_SERVICE, "refresh_token")?.set_password(refresh_token)?;
+    let service = keyring_service();
+    keyring::Entry::new(&service, "access_token")?.set_password(access_token)?;
+    keyring::Entry::new(&service, "refresh_token")?.set_password(refresh_token)?;
     Ok(())
 }
 
 pub(crate) fn get_access_token() -> Result<String, AppError> {
-    Ok(keyring::Entry::new(KEYRING_SERVICE, "access_token")?.get_password()?)
+    Ok(keyring::Entry::new(&keyring_service(), "access_token")?.get_password()?)
 }
 
 fn get_refresh_token() -> Result<String, AppError> {
-    Ok(keyring::Entry::new(KEYRING_SERVICE, "refresh_token")?.get_password()?)
+    Ok(keyring::Entry::new(&keyring_service(), "refresh_token")?.get_password()?)
 }
 
 fn clear_tokens() -> Result<(), AppError> {
-    let _ =
-        keyring::Entry::new(KEYRING_SERVICE, "access_token").and_then(|e| e.delete_credential());
-    let _ =
-        keyring::Entry::new(KEYRING_SERVICE, "refresh_token").and_then(|e| e.delete_credential());
+    let service = keyring_service();
+    let _ = keyring::Entry::new(&service, "access_token").and_then(|e| e.delete_credential());
+    let _ = keyring::Entry::new(&service, "refresh_token").and_then(|e| e.delete_credential());
     Ok(())
 }
 
