@@ -97,17 +97,23 @@ async fn handle_text_message(app: &AppHandle, ws_state: &WsState, text: &str) {
                     let cache_db = app.state::<CacheDb>();
                     cache_db
                         .lock()
-                        .ok()
-                        .and_then(|conn| auth_service::get_or_create_device_id(&conn).ok())
+                        .map_err(|e| e.to_string())
+                        .and_then(|conn| {
+                            auth_service::get_or_create_device_id(&conn).map_err(|e| e.to_string())
+                        })
                         .map(|(did, _name)| did)
                 };
                 match loaded_device_id {
-                    Some(device_id) => {
+                    Ok(device_id) => {
                         let mut did = ws_state.current_device_id.write().await;
                         *did = Some(device_id);
                     }
-                    None => {
-                        tracing::warn!("failed to load device_id from cache DB");
+                    Err(e) => {
+                        // Without a device id nothing can be encrypted for this
+                        // device, so surface the reason rather than the bare
+                        // fact of failure — a swallowed error here left the id
+                        // unset and every send failing with no explanation.
+                        tracing::error!("failed to load device_id from cache DB: {e}");
                     }
                 }
             }

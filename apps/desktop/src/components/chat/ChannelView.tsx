@@ -33,8 +33,23 @@ export function ChannelView() {
             plaintext: content,
           });
         }
-      } catch {
-        // Send failure - backend handles optimistic updates
+      } catch (err) {
+        // The backend keeps the optimistic row and queues a retry, but the
+        // error still has to reach somewhere — swallowing it silently made a
+        // failing send indistinguishable from a working one.
+        const message =
+          err instanceof Error
+            ? err.message
+            : typeof err === "object" && err !== null && "message" in err
+              ? String((err as { message: unknown }).message)
+              : String(err);
+        console.error("send failed:", message, err);
+        useAppStore.getState().addNotification({
+          id: crypto.randomUUID(),
+          type: "error",
+          message: `Couldn't send: ${message}`,
+          dismissAfterMs: 8000,
+        });
       }
     },
     [channelId, guildId],

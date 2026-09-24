@@ -2,21 +2,8 @@ pub(crate) mod auth_service;
 pub(crate) mod cache;
 pub(crate) mod commands;
 pub(crate) mod crypto_service;
-pub(crate) mod db;
 pub(crate) mod notification_service;
 pub(crate) mod ws;
-
-pub struct DbState {
-    pub conn: std::sync::Mutex<rusqlite::Connection>,
-}
-
-impl DbState {
-    pub fn new(conn: rusqlite::Connection) -> Self {
-        Self {
-            conn: std::sync::Mutex::new(conn),
-        }
-    }
-}
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::Manager;
@@ -143,25 +130,9 @@ pub fn run() {
             std::fs::create_dir_all(app_data_dir.join("attachments"))?;
             std::fs::create_dir_all(app_data_dir.join("thumbnails"))?;
 
-            let db_path = app_data_dir.join("openconv.db");
-            let conn =
-                db::init_db(&db_path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-            app.manage(DbState::new(conn));
-
             // Initialize the encrypted local cache database
             let cache_db = cache::CacheDb::open(&app_data_dir)
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-            // Migrate data from old unencrypted database if present
-            let old_db_path = app_data_dir.join("openconv.db");
-            if old_db_path.exists() {
-                let cache_conn = cache_db
-                    .lock()
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-                if let Err(e) = cache::migrations::migrate_from_old_db(&cache_conn, &old_db_path) {
-                    tracing::warn!("Failed to migrate old database: {e}");
-                }
-            }
 
             app.manage(cache_db);
 

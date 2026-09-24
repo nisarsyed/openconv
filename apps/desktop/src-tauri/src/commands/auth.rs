@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::auth_service::{get_or_create_device_id, AppError, AuthResult, AuthState};
-use crate::DbState;
+use crate::cache::CacheDb;
 
 #[tauri::command]
 #[specta::specta]
@@ -29,10 +29,10 @@ pub async fn auth_register_complete(
     registration_token: String,
     display_name: String,
     auth: State<'_, AuthState>,
-    db: State<'_, DbState>,
+    cache_db: State<'_, CacheDb>,
 ) -> Result<AuthResult, AppError> {
     let (device_id, device_name) = {
-        let conn = db.conn.lock().map_err(|e| AppError::new(e.to_string()))?;
+        let conn = cache_db.lock()?;
         get_or_create_device_id(&conn)?
     };
     auth.auth_service
@@ -44,10 +44,10 @@ pub async fn auth_register_complete(
 #[specta::specta]
 pub async fn auth_login(
     auth: State<'_, AuthState>,
-    db: State<'_, DbState>,
+    cache_db: State<'_, CacheDb>,
 ) -> Result<AuthResult, AppError> {
     let (device_id, device_name) = {
-        let conn = db.conn.lock().map_err(|e| AppError::new(e.to_string()))?;
+        let conn = cache_db.lock()?;
         get_or_create_device_id(&conn)?
     };
     auth.auth_service.login(device_id, device_name).await
@@ -89,10 +89,10 @@ pub async fn auth_recover_verify(
 pub async fn auth_recover_complete(
     recovery_token: String,
     auth: State<'_, AuthState>,
-    db: State<'_, DbState>,
+    cache_db: State<'_, CacheDb>,
 ) -> Result<AuthResult, AppError> {
     let (device_id, device_name) = {
-        let conn = db.conn.lock().map_err(|e| AppError::new(e.to_string()))?;
+        let conn = cache_db.lock()?;
         get_or_create_device_id(&conn)?
     };
     auth.auth_service

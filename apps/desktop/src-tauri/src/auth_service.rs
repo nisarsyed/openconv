@@ -157,9 +157,12 @@ pub fn get_or_create_device_id(conn: &Connection) -> Result<(DeviceId, String), 
 
     let id = DeviceId::new();
     let name = default_device_name();
+    // created_at is NOT NULL with no default in the cache schema — omitting it
+    // fails the insert, and the only caller that tolerated a failure here
+    // (ws/handlers.rs) swallowed it, leaving the device id silently unset.
     conn.execute(
-        "INSERT INTO local_device (id, device_name) VALUES (?1, ?2)",
-        rusqlite::params![id.to_string(), &name],
+        "INSERT INTO local_device (id, device_name, created_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id.to_string(), &name, chrono::Utc::now().timestamp_millis()],
     )?;
     Ok((id, name))
 }
@@ -546,7 +549,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .unwrap();
-        crate::db::run_migrations(&conn).unwrap();
+        crate::cache::migrations::run_cache_migrations(&conn).unwrap();
         conn
     }
 
