@@ -26,6 +26,12 @@ end-to-end encryption the server cannot read.
 - **The client is native.** SwiftUI on macOS, with crypto in a shared Rust core
   rather than reimplemented per platform.
 
+## License
+
+Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
+your option — matching the Rust ecosystem convention and the openmls stack
+underneath.
+
 ## Requirements
 
 Rust (stable) and Swift 6. Xcode is *not* required — the Command Line Tools
