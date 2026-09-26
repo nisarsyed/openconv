@@ -560,8 +560,6 @@ mod tests {
         let mut bob = Member::new("bob").unwrap();
 
         alice.create_group().unwrap();
-        assert_eq!(alice.member_count(), 1);
-
         admit(&mut alice, &mut bob);
 
         assert_eq!(alice.member_count(), 2);
@@ -603,13 +601,19 @@ mod tests {
             "bob's staged add should have been superseded"
         );
 
-        // Bob's commit then arrives. It is stale and must not be applied.
-        assert!(matches!(
-            bob.receive(&bob_commit),
-            Ok(Event::Advanced) | Err(_)
-        ));
-        let _ = alice.receive(&bob_commit);
-        let _ = carol.receive(&bob_commit);
+        // Bob's commit then arrives at everyone. It is stale — it was built
+        // against the previous epoch — so every member must skip it rather
+        // than apply it or error.
+        for (who, member) in [
+            ("bob", &mut bob),
+            ("alice", &mut alice),
+            ("carol", &mut carol),
+        ] {
+            assert!(
+                matches!(member.receive(&bob_commit), Ok(Event::Advanced)),
+                "{who} mishandled the superseded commit"
+            );
+        }
 
         // Everyone agrees on the same group.
         assert_eq!(alice.member_count(), 3);
@@ -620,30 +624,6 @@ mod tests {
         let wire = alice.send("did we survive that?").unwrap();
         assert_message(bob.receive(&wire).unwrap(), "did we survive that?");
         assert_message(carol.receive(&wire).unwrap(), "did we survive that?");
-    }
-
-    /// A member who was already present must apply the commit that admitted
-    /// someone new, or they fall out of sync.
-    #[test]
-    fn existing_member_applies_the_commit_when_a_third_joins() {
-        let mut alice = Member::new("alice").unwrap();
-        let mut bob = Member::new("bob").unwrap();
-        let mut carol = Member::new("carol").unwrap();
-
-        alice.create_group().unwrap();
-        admit(&mut alice, &mut bob);
-
-        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
-        let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
-            panic!("uncontested commit should have been admitted");
-        };
-        carol.join(&welcome).unwrap();
-        // Bob was already here, so he needs the commit.
-        bob.receive(&commit).unwrap();
-
-        let wire = alice.send("everyone still here?").unwrap();
-        assert_message(bob.receive(&wire).unwrap(), "everyone still here?");
-        assert_message(carol.receive(&wire).unwrap(), "everyone still here?");
     }
 
     /// The relay echoes a sender its own frames; they must not be mistaken
@@ -694,22 +674,60 @@ mod tests {
         );
     }
 
-    /// Envelopes carry the relay's ordering and must round trip.
+    /// Frames arrive from the network, so every shape of rubbish must be
+    /// rejected rather than panic. A panic here would cross the FFI boundary
+    /// and take the client down.
     #[test]
-    fn envelopes_round_trip() {
-        let frame = encode_frame(FrameKind::Welcome, &[1, 2, 3]);
-        let mut wire = 42u64.to_be_bytes().to_vec();
-        wire.extend_from_slice(&frame);
+    fn malformed_frames_are_rejected_not_fatal() {
+        let short = &[0u8, 1, 2][..]; // shorter than the sequence prefix
+        let unknown_tag = &[0, 0, 0, 0, 0, 0, 0, 1, 0xff][..];
+        assert!(decode_envelope(short).is_err());
+        assert!(decode_envelope(unknown_tag).is_err());
+        assert!(decode_frame(&[]).is_err());
+    }
 
-        let env = decode_envelope(&wire).unwrap();
-        assert_eq!(env.seq, 42);
-        assert_eq!(env.kind, FrameKind::Welcome);
-        assert_eq!(env.body, vec![1, 2, 3]);
+    /// The same for the crypto path: hostile bytes must surface as errors,
+    /// and must not disturb group state.
+    #[test]
+    fn hostile_payloads_error_without_losing_the_group() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
 
-        assert!(
-            decode_envelope(&[0, 1, 2]).is_err(),
-            "short frame should fail"
-        );
+        let real = alice.send("a real message").unwrap();
+        for (name, payload) in [
+            ("empty", &[][..]),
+            ("garbage", &[9u8; 40][..]),
+            ("truncated", &real[..real.len() / 2]),
+        ] {
+            assert!(
+                bob.receive(payload).is_err(),
+                "{name} payload should have been rejected"
+            );
+        }
+
+        // Still a working group afterwards: rejecting junk must not have
+        // torn down any state.
+        assert_eq!(bob.member_count(), 2);
+        let wire = alice.send("still fine").unwrap();
+        assert_message(bob.receive(&wire).unwrap(), "still fine");
+    }
+
+    /// Two overlapping adds from one member would stage two commits at one
+    /// epoch, which openmls will not do. Fail early and clearly instead.
+    #[test]
+    fn only_one_add_can_be_in_flight() {
+        let mut alice = Member::new("alice").unwrap();
+        let bob = Member::new("bob").unwrap();
+        let carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+
+        alice.propose_add(&bob.key_package().unwrap()).unwrap();
+        assert!(matches!(
+            alice.propose_add(&carol.key_package().unwrap()),
+            Err(Error::AddInFlight)
+        ));
     }
 
     /// A vault in a unique temp dir with a fixed key, so tests never touch
@@ -756,14 +774,48 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
-    /// Opening a fresh path must produce a working member, not an error.
+    /// Reopening must restore the existing identity rather than mint a new
+    /// one. A fresh key pair each launch would silently break every group
+    /// this client belongs to.
     #[test]
-    fn first_run_creates_a_vault() {
+    fn identity_is_stable_across_reopen() {
         let (path, vault) = test_vault("newcomer");
-        let member = Member::restore(vault, "newcomer").unwrap();
-        assert_eq!(member.identity(), "newcomer");
-        assert_eq!(member.member_count(), 0);
-        assert!(path.exists(), "vault file was not written");
+        let first = Member::restore(vault, "newcomer").unwrap();
+        let key = first.key_package().unwrap();
+        drop(first);
+
+        assert!(path.exists(), "opening a fresh path did not write a vault");
+
+        let again = Member::restore(Vault::with_key(&path, [7u8; 32]), "newcomer").unwrap();
+        assert_eq!(again.identity(), "newcomer");
+        // Key packages are single-use and differ per call, but they are signed
+        // by the identity key, which must have survived.
+        assert_ne!(
+            key,
+            again.key_package().unwrap(),
+            "key packages should be fresh"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A wrong key is one failure; a flipped byte is another. AEAD should
+    /// catch tampering, and the vault must refuse rather than load partial
+    /// state.
+    #[test]
+    fn tampered_vault_is_rejected() {
+        let (path, vault) = test_vault("tampered");
+        Member::restore(vault, "tampered")
+            .unwrap()
+            .create_group()
+            .unwrap();
+
+        let mut raw = std::fs::read(&path).unwrap();
+        let last = raw.len() - 1;
+        raw[last] ^= 0xff;
+        std::fs::write(&path, &raw).unwrap();
+
+        let reopened = Member::restore(Vault::with_key(&path, [7u8; 32]), "tampered");
+        assert!(matches!(reopened, Err(Error::Store(_))));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

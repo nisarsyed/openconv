@@ -128,6 +128,25 @@ Test the negative for security properties. `wire_bytes_do_not_contain_plaintext`
 fails if encryption silently no-ops; every "can Bob read it?" test still passes
 in that case.
 
+**A test earns its place by failing when the thing it names is broken.** The
+cheapest way to find out is to break that thing on purpose and check which
+tests go red. Three worth keeping honest: make `persist` a no-op, stop a
+losing member clearing its staged commit, and write the vault unencrypted.
+Each should take tests with it.
+
+When doing that, assert the mutation actually applied. A patch that silently
+fails to match looks exactly like a test gap, and will send you hunting for
+coverage you already have.
+
+Assertions should be precise about what they expect. `matches!(x, Ok(_) |
+Err(_))` passes no matter what happens; find out what the real behaviour is
+and assert that.
+
+Prefer deleting a test to keeping one that cannot fail. Tests that hand-deliver
+the thing under test are a common trap: a test that passes the commit to a
+member by hand proves openmls can apply commits, not that this codebase ever
+sends one.
+
 `BridgeCheck` is a plain executable, not a test target, because XCTest and
 swift-testing both require a full Xcode install and this builds with Command
 Line Tools only. Don't "fix" it into a test target.
