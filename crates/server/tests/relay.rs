@@ -29,7 +29,9 @@ async fn two_clients_talk_through_the_relay() {
 
     // Bob announces his KeyPackage.
     bob_ws
-        .send(Message::Binary(encode_frame(FrameKind::KeyPackage, &bob.key_package().unwrap()).into()))
+        .send(Message::Binary(
+            encode_frame(FrameKind::KeyPackage, &bob.key_package().unwrap()).into(),
+        ))
         .await
         .unwrap();
 
@@ -38,7 +40,9 @@ async fn two_clients_talk_through_the_relay() {
     assert_eq!(kind, FrameKind::KeyPackage);
     let invite = alice.add_member(&body).unwrap();
     alice_ws
-        .send(Message::Binary(encode_frame(FrameKind::Welcome, &invite.welcome).into()))
+        .send(Message::Binary(
+            encode_frame(FrameKind::Welcome, &invite.welcome).into(),
+        ))
         .await
         .unwrap();
 
@@ -50,15 +54,28 @@ async fn two_clients_talk_through_the_relay() {
 
     // Alice -> Bob, encrypted the whole way.
     let ct = alice.send("hello over the wire").unwrap();
-    alice_ws.send(Message::Binary(encode_frame(FrameKind::Application, &ct).into())).await.unwrap();
+    alice_ws
+        .send(Message::Binary(
+            encode_frame(FrameKind::Application, &ct).into(),
+        ))
+        .await
+        .unwrap();
 
     let (kind, body) = decode_frame(&bob_ws.next().await.unwrap().unwrap().into_data()).unwrap();
     assert_eq!(kind, FrameKind::Application);
-    assert_eq!(bob.receive(&body).unwrap().as_deref(), Some("hello over the wire"));
+    assert_eq!(
+        bob.receive(&body).unwrap().as_deref(),
+        Some("hello over the wire")
+    );
 
     // Bob -> Alice.
     let ct = bob.send("got it").unwrap();
-    bob_ws.send(Message::Binary(encode_frame(FrameKind::Application, &ct).into())).await.unwrap();
+    bob_ws
+        .send(Message::Binary(
+            encode_frame(FrameKind::Application, &ct).into(),
+        ))
+        .await
+        .unwrap();
 
     let (_, body) = decode_frame(&alice_ws.next().await.unwrap().unwrap().into_data()).unwrap();
     assert_eq!(alice.receive(&body).unwrap().as_deref(), Some("got it"));

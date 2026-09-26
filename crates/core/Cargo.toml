@@ -2,7 +2,13 @@
 name = "openconv-core"
 version.workspace = true
 edition.workspace = true
+description = "MLS group state, message encryption, and the UniFFI surface for clients"
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [lib]
 crate-type = ["lib", "staticlib"]

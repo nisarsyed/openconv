@@ -1,0 +1,6 @@
+# Pinned so local builds, and anyone else's, agree on compiler and lint
+# behaviour. Bump deliberately rather than drifting with whatever is installed.
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

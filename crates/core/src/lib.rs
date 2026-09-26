@@ -1,7 +1,7 @@
 //! Core client logic for OpenConv: MLS group state and message encryption.
 //!
 //! The server never sees plaintext. Everything in this crate runs on the
-//! client; the wire carries only TLS-serialized MLS messages.
+//! client; the wire carries only TLS-serialised MLS messages.
 
 use openmls::prelude::{tls_codec::*, *};
 use openmls_basic_credential::SignatureKeyPair;
@@ -17,25 +17,38 @@ pub mod ffi;
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
+/// Anything that can go wrong in this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An operation needed a group, but this member has not joined one.
     #[error("no group joined yet")]
     NoGroup,
+    /// A message arrived where a different kind was required.
     #[error("expected a {expected} message")]
-    UnexpectedMessage { expected: &'static str },
+    UnexpectedMessage {
+        /// The kind that was required.
+        expected: &'static str,
+    },
+    /// The MLS layer rejected an operation. Carries its description, so
+    /// callers never depend on `openmls` error types.
     #[error("mls: {0}")]
     Mls(String),
+    /// A message could not be serialised or deserialised.
     #[error("codec: {0}")]
     Codec(#[from] tls_codec::Error),
+    /// A relayed frame was empty or carried an unknown tag.
     #[error("malformed frame")]
     MalformedFrame,
+    /// Reading or writing persisted state failed.
     #[error("store: {0}")]
     Store(String),
+    /// The vault decrypted but its contents do not form a usable client.
     #[error("saved state is unreadable: {0}")]
     CorruptState(&'static str),
 }
 
-type Result<T> = std::result::Result<T, Error>;
+/// Convenience alias for this crate's fallible operations.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Wraps any openmls error into our own, so callers never depend on
 /// openmls error types leaking through the FFI boundary.
@@ -53,9 +66,25 @@ pub struct Member {
     vault: Option<Vault>,
 }
 
+/// Redacting by hand rather than deriving: this type holds identity keys and
+/// ratchet state, and a derived `Debug` would print them into any log or
+/// panic message that formats a `Member`.
+impl std::fmt::Debug for Member {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Member")
+            .field("identity", &self.identity())
+            .field("members", &self.member_count())
+            .field("persisted", &self.vault.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Member {
     /// Create a fresh identity. `identity` is the display name carried in
     /// the MLS basic credential.
+    ///
+    /// # Errors
+    /// If a signature key pair cannot be generated or stored.
     pub fn new(identity: &str) -> Result<Self> {
         let provider = Provider::default();
         let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).map_err(mls)?;
@@ -66,16 +95,29 @@ impl Member {
             signature_key: signer.to_public_vec().into(),
         };
 
-        Ok(Self { provider, signer, credential, group: None, vault: None })
+        Ok(Self {
+            provider,
+            signer,
+            credential,
+            group: None,
+            vault: None,
+        })
     }
 
     /// Open a member backed by an encrypted file, restoring previous state if
     /// the file exists and starting fresh otherwise.
+    ///
+    /// # Errors
+    /// If the data key is unavailable, the vault cannot be decrypted, or the
+    /// restored state is missing its key pair or group.
     pub fn open(path: impl Into<PathBuf>, identity: &str) -> Result<Self> {
         Self::restore(Vault::open(path, identity)?, identity)
     }
 
     /// Open a member against an already-configured vault.
+    ///
+    /// # Errors
+    /// As [`Member::open`].
     pub fn restore(vault: Vault, identity: &str) -> Result<Self> {
         let Some(snapshot) = vault.load()? else {
             let mut member = Self::new(identity)?;
@@ -84,7 +126,12 @@ impl Member {
             return Ok(member);
         };
 
-        let Snapshot { identity, signature_public_key, group_id, storage } = snapshot;
+        let Snapshot {
+            identity,
+            signature_public_key,
+            group_id,
+            storage,
+        } = snapshot;
         let provider = Provider::with_storage(store::restore(storage)?);
 
         let signer = SignatureKeyPair::read(
@@ -102,22 +149,35 @@ impl Member {
         let group = match &group_id {
             Some(id) => MlsGroup::load(provider.storage(), &GroupId::from_slice(id))
                 .map_err(mls)?
-                .ok_or(Error::CorruptState("group id recorded but no group in store"))
+                .ok_or(Error::CorruptState(
+                    "group id recorded but no group in store",
+                ))
                 .map(Some)?,
             None => None,
         };
 
-        Ok(Self { provider, signer, credential, group, vault: Some(vault) })
+        Ok(Self {
+            provider,
+            signer,
+            credential,
+            group,
+            vault: Some(vault),
+        })
     }
 
     /// Write current state to the vault. A no-op for in-memory members.
     fn persist(&self) -> Result<()> {
-        let Some(vault) = &self.vault else { return Ok(()) };
+        let Some(vault) = &self.vault else {
+            return Ok(());
+        };
 
         vault.save(&Snapshot {
             identity: self.identity(),
             signature_public_key: self.signer.to_public_vec(),
-            group_id: self.group.as_ref().map(|g| g.group_id().as_slice().to_vec()),
+            group_id: self
+                .group
+                .as_ref()
+                .map(|g| g.group_id().as_slice().to_vec()),
             storage: store::dump(self.provider.storage())?,
         })
     }
@@ -131,16 +191,27 @@ impl Member {
             .build()
     }
 
-    /// A published KeyPackage, which anyone can use to add this member to a
+    /// A published `KeyPackage`, which anyone can use to add this member to a
     /// group. Safe to hand to the server.
+    ///
+    /// # Errors
+    /// If the key package cannot be built or serialised.
     pub fn key_package(&self) -> Result<Vec<u8>> {
         let bundle = KeyPackage::builder()
-            .build(CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
+            .build(
+                CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential.clone(),
+            )
             .map_err(mls)?;
         Ok(MlsMessageOut::from(bundle.key_package().clone()).tls_serialize_detached()?)
     }
 
     /// Start a new group with just this member in it.
+    ///
+    /// # Errors
+    /// If the group cannot be created, or its state cannot be persisted.
     pub fn create_group(&mut self) -> Result<()> {
         let group = MlsGroup::new(
             &self.provider,
@@ -153,15 +224,23 @@ impl Member {
         self.persist()
     }
 
-    /// Add a member using their published KeyPackage. Returns the Welcome to
-    /// deliver to them, and the commit to fan out to existing members.
+    /// Add a member using their published `KeyPackage`. Returns the `Welcome`
+    /// to deliver to them, and the commit to fan out to existing members.
+    ///
+    /// # Errors
+    /// If the key package is not a valid `KeyPackage`, this member has no
+    /// group, or the new state cannot be persisted.
     pub fn add_member(&mut self, key_package: &[u8]) -> Result<Invite> {
         let msg = MlsMessageIn::tls_deserialize_exact(key_package)?;
         let MlsMessageBodyIn::KeyPackage(kp) = msg.extract() else {
-            return Err(Error::UnexpectedMessage { expected: "KeyPackage" });
+            return Err(Error::UnexpectedMessage {
+                expected: "KeyPackage",
+            });
         };
         // Verifies the signature and lifetime before we trust it.
-        let kp = kp.validate(self.provider.crypto(), ProtocolVersion::Mls10).map_err(mls)?;
+        let kp = kp
+            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(mls)?;
 
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         let (commit, welcome, _) = group
@@ -177,11 +256,16 @@ impl Member {
         Ok(invite)
     }
 
-    /// Join a group from a Welcome produced by [`Member::add_member`].
+    /// Join a group from a `Welcome` produced by [`Member::add_member`].
+    ///
+    /// # Errors
+    /// If the message is not a `Welcome`, or does not admit this member.
     pub fn join(&mut self, welcome: &[u8]) -> Result<()> {
         let msg = MlsMessageIn::tls_deserialize_exact(welcome)?;
         let MlsMessageBodyIn::Welcome(welcome) = msg.extract() else {
-            return Err(Error::UnexpectedMessage { expected: "Welcome" });
+            return Err(Error::UnexpectedMessage {
+                expected: "Welcome",
+            });
         };
 
         let group = StagedWelcome::new_from_welcome(
@@ -199,6 +283,9 @@ impl Member {
     }
 
     /// Encrypt an application message for the group.
+    ///
+    /// # Errors
+    /// If this member has no group, or encryption fails.
     pub fn send(&mut self, text: &str) -> Result<Vec<u8>> {
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         // Encrypting ratchets the sender key, so the new state must be saved.
@@ -212,25 +299,35 @@ impl Member {
 
     /// Process an incoming message. Returns `Some` for application messages,
     /// `None` for handshake traffic that was applied to group state.
+    ///
+    /// # Errors
+    /// If the message is malformed, this member has no group, or the message
+    /// cannot be decrypted.
     pub fn receive(&mut self, wire: &[u8]) -> Result<Option<String>> {
         let msg = MlsMessageIn::tls_deserialize_exact(wire)?;
-        let protocol: ProtocolMessage = msg
-            .try_into_protocol_message()
-            .map_err(|_| Error::UnexpectedMessage { expected: "application or handshake" })?;
+        let protocol: ProtocolMessage =
+            msg.try_into_protocol_message()
+                .map_err(|_| Error::UnexpectedMessage {
+                    expected: "application or handshake",
+                })?;
 
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         // Our own messages come back off the relay; MLS cannot decrypt them.
         if protocol.epoch() < group.epoch() {
             return Ok(None);
         }
-        let processed = group.process_message(&self.provider, protocol).map_err(mls)?;
+        let processed = group
+            .process_message(&self.provider, protocol)
+            .map_err(mls)?;
 
         let text = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 Some(String::from_utf8_lossy(&app.into_bytes()).into_owned())
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
-                group.merge_staged_commit(&self.provider, *commit).map_err(mls)?;
+                group
+                    .merge_staged_commit(&self.provider, *commit)
+                    .map_err(mls)?;
                 None
             }
             _ => None,
@@ -241,11 +338,13 @@ impl Member {
     }
 
     /// Display name of this member.
+    #[must_use]
     pub fn identity(&self) -> String {
         String::from_utf8_lossy(self.credential.credential.serialized_content()).into_owned()
     }
 
     /// Number of members currently in the group.
+    #[must_use]
     pub fn member_count(&self) -> usize {
         self.group.as_ref().map_or(0, |g| g.members().count())
     }
@@ -254,7 +353,7 @@ impl Member {
 /// What a relayed frame carries. The relay never reads this; only clients do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, uniffi::Enum)]
 pub enum FrameKind {
-    /// A published KeyPackage, offering to be added to a group.
+    /// A published `KeyPackage`, offering to be added to a group.
     KeyPackage,
     /// A Welcome admitting someone to the group.
     Welcome,
@@ -286,6 +385,7 @@ impl FrameKind {
 }
 
 /// Prefix a payload with its frame tag.
+#[must_use]
 pub fn encode_frame(kind: FrameKind, body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(body.len() + 1);
     v.push(kind.tag());
@@ -294,6 +394,9 @@ pub fn encode_frame(kind: FrameKind, body: &[u8]) -> Vec<u8> {
 }
 
 /// Split a relayed frame into its kind and payload.
+///
+/// # Errors
+/// If the frame is empty or carries an unknown tag.
 pub fn decode_frame(wire: &[u8]) -> Result<(FrameKind, Vec<u8>)> {
     let (&tag, body) = wire.split_first().ok_or(Error::MalformedFrame)?;
     let kind = FrameKind::from_tag(tag).ok_or(Error::MalformedFrame)?;
@@ -301,6 +404,7 @@ pub fn decode_frame(wire: &[u8]) -> Result<(FrameKind, Vec<u8>)> {
 }
 
 /// The two messages produced by adding a member.
+#[derive(Debug)]
 pub struct Invite {
     /// Deliver to the new member so they can join.
     pub welcome: Vec<u8>,
@@ -366,7 +470,10 @@ mod tests {
         // Eve builds her own group and tries to process alice's traffic.
         eve.create_group().unwrap();
         let wire = alice.send("secret").unwrap();
-        assert!(eve.receive(&wire).is_err(), "outsider decrypted group traffic");
+        assert!(
+            eve.receive(&wire).is_err(),
+            "outsider decrypted group traffic"
+        );
     }
 
     /// Adding a third member advances the group epoch. Members who were
@@ -389,8 +496,14 @@ mod tests {
         bob.receive(&invite.commit).unwrap();
 
         let wire = alice.send("everyone still here?").unwrap();
-        assert_eq!(bob.receive(&wire).unwrap().as_deref(), Some("everyone still here?"));
-        assert_eq!(carol.receive(&wire).unwrap().as_deref(), Some("everyone still here?"));
+        assert_eq!(
+            bob.receive(&wire).unwrap().as_deref(),
+            Some("everyone still here?")
+        );
+        assert_eq!(
+            carol.receive(&wire).unwrap().as_deref(),
+            Some("everyone still here?")
+        );
     }
 
     /// A vault in a unique temp dir with a fixed key, so tests never touch
@@ -431,7 +544,10 @@ mod tests {
 
         // The restored ratchet state must still work in both directions.
         let wire = alice.send("still here after a restart").unwrap();
-        assert_eq!(bob.receive(&wire).unwrap().as_deref(), Some("still here after a restart"));
+        assert_eq!(
+            bob.receive(&wire).unwrap().as_deref(),
+            Some("still here after a restart")
+        );
 
         let wire = bob.send("so am i").unwrap();
         assert_eq!(alice.receive(&wire).unwrap().as_deref(), Some("so am i"));
@@ -470,10 +586,16 @@ mod tests {
     #[test]
     fn wrong_key_is_an_error_not_a_fresh_start() {
         let (path, vault) = test_vault("guarded");
-        Member::restore(vault, "guarded").unwrap().create_group().unwrap();
+        Member::restore(vault, "guarded")
+            .unwrap()
+            .create_group()
+            .unwrap();
 
         let wrong = Vault::with_key(&path, [9u8; 32]);
-        assert!(matches!(Member::restore(wrong, "guarded"), Err(Error::Store(_))));
+        assert!(matches!(
+            Member::restore(wrong, "guarded"),
+            Err(Error::Store(_))
+        ));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

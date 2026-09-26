@@ -1,0 +1,16 @@
+# Proper nouns that clippy's doc_markdown lint would otherwise want in
+# backticks. Backticks mean "this is code"; these are names, so the lint is
+# wrong about them. `..` keeps clippy's own default list.
+doc-valid-idents = [
+    "OpenConv",
+    "OpenMLS",
+    "UniFFI",
+    "SwiftUI",
+    "SwiftPM",
+    "Keychain",
+    "WebSocket",
+    "XChaCha20",
+    "SQLite",
+    "SQLCipher",
+    "..",
+]

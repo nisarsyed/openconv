@@ -2,7 +2,13 @@
 name = "openconv-server"
 version.workspace = true
 edition.workspace = true
+description = "Blind WebSocket relay: fans out opaque frames without parsing them"
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }

@@ -1,7 +1,22 @@
 # OpenConv dev tasks.
 
-# Run every check: rust tests plus the swift bridge verification.
-check: test bridge smoke
+# Run every check: formatting, lints, tests, bridge, and the real app.
+check: fmt-check lint test bridge smoke
+
+# Format both languages.
+fmt:
+    cargo fmt --all
+    cd clients/macos && swift format --in-place --recursive Sources/OpenConv Sources/BridgeCheck
+
+# Fail if anything is unformatted.
+fmt-check:
+    cargo fmt --all --check
+    cd clients/macos && swift format lint --strict --recursive Sources/OpenConv Sources/BridgeCheck
+
+# Lint both languages. Generated bindings are deliberately not linted.
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+    cd clients/macos && swift format lint --recursive Sources/OpenConv Sources/BridgeCheck
 
 # Rust unit and integration tests.
 test:

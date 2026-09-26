@@ -26,9 +26,21 @@ pub struct Provider {
     storage: MemoryStorage,
 }
 
+/// Opaque on purpose: the storage map holds private key material.
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Provider").finish_non_exhaustive()
+    }
+}
+
 impl Provider {
+    /// Pair the default crypto backend with an existing store.
+    #[must_use]
     pub fn with_storage(storage: MemoryStorage) -> Self {
-        Self { crypto: RustCrypto::default(), storage }
+        Self {
+            crypto: RustCrypto::default(),
+            storage,
+        }
     }
 }
 
@@ -51,6 +63,7 @@ impl OpenMlsProvider for Provider {
 /// Everything needed to reconstruct a [`crate::Member`] after a restart.
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Display name carried in the MLS credential.
     pub identity: String,
     /// Identifies which key pair in the store belongs to us.
     pub signature_public_key: Vec<u8>,
@@ -65,11 +78,26 @@ pub struct Snapshot {
     pub storage: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+/// Redacted by hand: every field except the identity is key material or
+/// derived from it.
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot")
+            .field("identity", &self.identity)
+            .field("has_group", &self.group_id.is_some())
+            .field("entries", &self.storage.len())
+            .finish_non_exhaustive()
+    }
+}
+
 const MAGIC: &[u8; 4] = b"OCV1";
 const NONCE_LEN: usize = 24;
 const KEY_LEN: usize = 32;
 
 /// Flatten a store into serialisable pairs.
+///
+/// # Errors
+/// If the storage lock was poisoned by an earlier panic.
 pub fn dump(storage: &MemoryStorage) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let values = storage
         .values
@@ -79,6 +107,9 @@ pub fn dump(storage: &MemoryStorage) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
 }
 
 /// Rebuild a store from pairs produced by [`dump`].
+///
+/// # Errors
+/// If the storage lock was poisoned by an earlier panic.
 pub fn restore(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<MemoryStorage> {
     let storage = MemoryStorage::default();
     {
@@ -97,30 +128,56 @@ pub struct Vault {
     key: [u8; KEY_LEN],
 }
 
+/// Prints the path but never the key.
+impl std::fmt::Debug for Vault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vault")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Vault {
     /// Open the vault at `path`, fetching (or creating) its data key in the
     /// Keychain under `account`.
+    ///
+    /// # Errors
+    /// If the data key cannot be read or created.
     pub fn open(path: impl Into<PathBuf>, account: &str) -> Result<Self> {
-        Ok(Self { path: path.into(), key: data_key(account)? })
+        Ok(Self {
+            path: path.into(),
+            key: data_key(account)?,
+        })
     }
 
     /// Open a vault with an explicit data key, bypassing the Keychain.
     ///
     /// Used by tests, which must not touch the real Keychain, and the hook a
     /// passphrase-derived key would use.
+    #[must_use]
     pub fn with_key(path: impl Into<PathBuf>, key: [u8; KEY_LEN]) -> Self {
-        Self { path: path.into(), key }
+        Self {
+            path: path.into(),
+            key,
+        }
     }
 
+    /// Where this vault is stored.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Whether the vault file has been written yet.
+    #[must_use]
     pub fn exists(&self) -> bool {
         self.path.exists()
     }
 
     /// Encrypt and write a snapshot, replacing any previous one.
+    ///
+    /// # Errors
+    /// If the snapshot cannot be serialised, encrypted, or written.
     pub fn save(&self, snapshot: &Snapshot) -> Result<()> {
         use chacha20poly1305::{
             AeadCore, KeyInit, XChaCha20Poly1305,
@@ -151,6 +208,10 @@ impl Vault {
     }
 
     /// Read and decrypt the snapshot, or `None` if the file does not exist.
+    ///
+    /// # Errors
+    /// If the file is unreadable, not a vault, fails to decrypt (wrong key or
+    /// tampering), or does not deserialise.
     pub fn load(&self) -> Result<Option<Snapshot>> {
         use chacha20poly1305::{KeyInit, XChaCha20Poly1305, aead::Aead};
 
@@ -200,7 +261,7 @@ const KEYCHAIN_SERVICE: &str = "com.openconv.vault";
 /// Keychain then shows an ACL prompt when it reads an item an earlier build
 /// created. Launched headlessly that prompt is invisible and the process
 /// hangs forever, which is how this was found. Real installs are code-signed
-/// and use the Keychain; dev and test runs set OPENCONV_DATA_DIR and get a
+/// and use the Keychain; dev and test runs set `OPENCONV_DATA_DIR` and get a
 /// throwaway key file.
 ///
 /// This is weaker on purpose: the key sits next to the data it protects, so
@@ -212,9 +273,7 @@ const DEV_DATA_DIR: &str = "OPENCONV_DATA_DIR";
 /// `OPENCONV_DATA_DIR` is set and otherwise from the Keychain.
 fn data_key(account: &str) -> Result<[u8; KEY_LEN]> {
     match std::env::var(DEV_DATA_DIR) {
-        Ok(dir) if !dir.is_empty() => {
-            file_key(&Path::new(&dir).join(format!(".{account}.key")))
-        }
+        Ok(dir) if !dir.is_empty() => file_key(&Path::new(&dir).join(format!(".{account}.key"))),
         _ => platform_key(account),
     }
 }
@@ -265,7 +324,9 @@ fn platform_key(account: &str) -> Result<[u8; KEY_LEN]> {
 /// would weaken the guarantee without saying so.
 #[cfg(not(target_os = "macos"))]
 fn platform_key(_account: &str) -> Result<[u8; KEY_LEN]> {
-    Err(Error::Store("encrypted storage is only implemented on macOS".into()))
+    Err(Error::Store(
+        "encrypted storage is only implemented on macOS".into(),
+    ))
 }
 
 fn getrandom(buf: &mut [u8]) -> Result<()> {
