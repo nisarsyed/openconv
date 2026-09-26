@@ -28,9 +28,7 @@ end-to-end encryption the server cannot read.
 
 ## License
 
-Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
-your option — matching the Rust ecosystem convention and the openmls stack
-underneath.
+[MIT](LICENSE).
 
 ## Requirements
 
