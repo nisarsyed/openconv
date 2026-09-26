@@ -8,6 +8,10 @@ use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
 
+uniffi::setup_scaffolding!();
+
+pub mod ffi;
+
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +24,8 @@ pub enum Error {
     Mls(String),
     #[error("codec: {0}")]
     Codec(#[from] tls_codec::Error),
+    #[error("malformed frame")]
+    MalformedFrame,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -173,6 +179,55 @@ impl Member {
     pub fn member_count(&self) -> usize {
         self.group.as_ref().map_or(0, |g| g.members().count())
     }
+}
+
+/// What a relayed frame carries. The relay never reads this; only clients do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, uniffi::Enum)]
+pub enum FrameKind {
+    /// A published KeyPackage, offering to be added to a group.
+    KeyPackage,
+    /// A Welcome admitting someone to the group.
+    Welcome,
+    /// A commit that existing members must apply.
+    Commit,
+    /// An encrypted application message.
+    Application,
+}
+
+impl FrameKind {
+    fn tag(self) -> u8 {
+        match self {
+            Self::KeyPackage => 1,
+            Self::Welcome => 2,
+            Self::Commit => 3,
+            Self::Application => 4,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::KeyPackage),
+            2 => Some(Self::Welcome),
+            3 => Some(Self::Commit),
+            4 => Some(Self::Application),
+            _ => None,
+        }
+    }
+}
+
+/// Prefix a payload with its frame tag.
+pub fn encode_frame(kind: FrameKind, body: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(body.len() + 1);
+    v.push(kind.tag());
+    v.extend_from_slice(body);
+    v
+}
+
+/// Split a relayed frame into its kind and payload.
+pub fn decode_frame(wire: &[u8]) -> Result<(FrameKind, Vec<u8>)> {
+    let (&tag, body) = wire.split_first().ok_or(Error::MalformedFrame)?;
+    let kind = FrameKind::from_tag(tag).ok_or(Error::MalformedFrame)?;
+    Ok((kind, body.to_vec()))
 }
 
 /// The two messages produced by adding a member.
