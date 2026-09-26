@@ -43,13 +43,10 @@ final class ChatModel: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var saidAuto = false
 
-    /// Only one member may commit per epoch. Two members admitting the same
-    /// joiner produce competing commits and fork the group, so for now the
-    /// member who created the group is the only one who admits anyone.
-    ///
-    /// The real fix is for the relay to serialise commits the way an MLS
-    /// delivery service does; until then this keeps the invariant obvious.
-    private var isHost = false
+    /// Highest relay sequence seen. The relay numbers every frame, so a gap
+    /// means frames were missed and this client's view of the order — and
+    /// therefore of who won a commit race — can no longer be trusted.
+    private var lastSeq: UInt64?
 
     init(identity: String) throws {
         self.identity = identity
@@ -95,7 +92,6 @@ final class ChatModel: ObservableObject {
         task.resume()
         receiveLoop()
 
-        isHost = hosting
         do {
             if hosting {
                 // Host opens the group and waits for others to announce.
@@ -165,20 +161,16 @@ final class ChatModel: ObservableObject {
 
     private func handle(_ data: Data) {
         do {
-            let frame = try decodeFrame(wire: data)
+            let frame = try decodeEnvelope(wire: data)
+            checkOrder(frame.seq)
+
             switch frame.kind {
             case .keyPackage:
-                // Only the host admits, and only once it has a group.
-                guard isHost, case .joined = status else { return }
-                let invite = try client.addMember(keyPackage: frame.body)
-                try send(kind: .welcome, body: invite.welcome)
-                // Admitting someone advances the epoch. Members who were
-                // already here must apply the commit or they fall out of
-                // sync and can no longer decrypt. The new member ignores it,
-                // having arrived at the new epoch via the Welcome.
-                try send(kind: .commit, body: invite.commit)
-                status = .joined(members: Int(client.memberCount()))
-                note("admitted a new member")
+                // Any member may admit; the relay's ordering decides which
+                // commit takes effect if several land at the same epoch.
+                guard case .joined = status else { return }
+                let commit = try client.proposeAdd(keyPackage: frame.body)
+                try send(kind: .commit, body: commit)
 
             case .welcome:
                 guard case .waitingForGroup = status else { return }
@@ -187,19 +179,54 @@ final class ChatModel: ObservableObject {
                 note("joined the group")
                 sendAutoIfReady()
 
-            case .commit:
-                _ = try client.receive(wire: frame.body)
-                status = .joined(members: Int(client.memberCount()))
-
-            case .application:
-                if let text = try client.receive(wire: frame.body) {
-                    print("[\(identity)] received: \(text)")
-                    lines.append(Line(author: "them", text: text, mine: false))
-                }
+            case .commit, .application:
+                // Traffic for a group this client has not joined yet. It
+                // cannot be decrypted and is not addressed to us; waiting for
+                // a Welcome is the whole point of this state.
+                guard case .joined = status else { return }
+                try apply(try client.receive(wire: frame.body))
             }
         } catch {
             fail(error)
         }
+    }
+
+    /// Act on what the core made of a frame.
+    private func apply(_ event: ClientEvent) throws {
+        switch event {
+        case .message(let text):
+            print("[\(identity)] received: \(text)")
+            lines.append(Line(author: "them", text: text, mine: false))
+
+        case .admitted(let welcome):
+            // Our commit was ordered first, so the add stands and the new
+            // member can be let in.
+            try send(kind: .welcome, body: welcome)
+            status = .joined(members: Int(client.memberCount()))
+            note("admitted a new member")
+
+        case .addSuperseded:
+            // Someone else's commit was ordered first. Theirs has been
+            // applied; the joiner was very likely admitted by it, so this is
+            // a notice rather than something to retry.
+            status = .joined(members: Int(client.memberCount()))
+            note("another member admitted them first")
+
+        case .advanced:
+            status = .joined(members: Int(client.memberCount()))
+
+        case .echo:
+            break
+        }
+    }
+
+    /// The relay numbers every frame. A gap means this client missed traffic
+    /// and can no longer trust its view of the order, so say so loudly rather
+    /// than letting it surface later as an undecryptable message.
+    private func checkOrder(_ seq: UInt64) {
+        defer { lastSeq = seq }
+        guard let last = lastSeq, seq != last + 1 else { return }
+        note("missed \(seq - last - 1) frame(s) from the relay; state may be stale")
     }
 
     // MARK: - Feedback

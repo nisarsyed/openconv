@@ -22,7 +22,10 @@ end-to-end encryption the server cannot read.
   via [openmls](https://github.com/openmls/openmls)). One group state rather
   than pairwise sessions per device pair.
 - **The server is blind.** It relays opaque frames and has no code path that
-  inspects a payload. Privacy comes from that plus self-hosting.
+  inspects a payload. Its one semantic job is ordering: every frame gets a
+  sequence number and all clients see the same order, which is what decides a
+  race when two members commit at the same epoch — without the relay ever
+  knowing which frames are commits.
 - **The client is native.** SwiftUI on macOS, with crypto in a shared Rust core
   rather than reimplemented per platform.
 
@@ -92,11 +95,10 @@ that survives a restart.
 Not yet: accounts or identity verification, guilds and channels, message
 history, multi-device, and offline delivery.
 
-Two known stopgaps, both marked in the code:
+Any member can admit a new one. Adds are two-phase: a member stages a commit
+and holds the `Welcome` back until the relay's ordering says the commit won.
+A member whose commit loses applies the winner's instead.
 
-- **Only the host admits new members.** Any member responding to a KeyPackage
-  produces competing commits at the same epoch and forks the group. The real
-  fix is for the relay to serialise commits the way an MLS delivery service
-  does.
-- **The whole MLS store is rewritten on every change.** Fine at this size;
-  implementing openmls's `StorageProvider` over SQLite is the scaling path.
+One known stopgap, marked in the code: **the whole MLS store is rewritten on
+every change.** Fine at this size; implementing openmls's `StorageProvider`
+over SQLite is the scaling path.

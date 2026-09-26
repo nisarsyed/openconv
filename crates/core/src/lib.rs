@@ -6,6 +6,7 @@
 use openmls::prelude::{tls_codec::*, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 pub mod store;
@@ -42,6 +43,9 @@ pub enum Error {
     /// Reading or writing persisted state failed.
     #[error("store: {0}")]
     Store(String),
+    /// Another add is already staged and waiting on the relay's ordering.
+    #[error("an add is already in flight")]
+    AddInFlight,
     /// The vault decrypted but its contents do not form a usable client.
     #[error("saved state is unreadable: {0}")]
     CorruptState(&'static str),
@@ -64,6 +68,48 @@ pub struct Member {
     group: Option<MlsGroup>,
     /// Absent for in-memory members, which keep nothing across a restart.
     vault: Option<Vault>,
+    /// An add staged but not yet confirmed by the relay's ordering.
+    ///
+    /// Not persisted: a restart mid-add drops it, and the add is simply
+    /// retried. Persisting it would mean reconciling a staged commit against
+    /// an ordering this client has not yet seen.
+    pending: Option<PendingAdd>,
+    /// Recently sent frames, so their echoes off the relay can be recognised
+    /// without putting sender identity on the wire.
+    sent: VecDeque<Vec<u8>>,
+}
+
+/// An add waiting to find out whether it won its epoch.
+#[derive(Debug)]
+struct PendingAdd {
+    /// Exactly the bytes sent, used to spot this commit coming back.
+    commit: Vec<u8>,
+    /// Held until the commit is confirmed; useless if the commit loses.
+    welcome: Vec<u8>,
+}
+
+/// How many recently sent frames to remember. Only needs to outlive a round
+/// trip through the relay.
+const SENT_HISTORY: usize = 32;
+
+/// What processing a relayed frame produced.
+#[derive(Debug)]
+pub enum Event {
+    /// A decrypted application message.
+    Message(String),
+    /// A staged add won its epoch. Send this `Welcome` to the new member.
+    Admitted {
+        /// Deliver to the member being added.
+        welcome: Vec<u8>,
+    },
+    /// A staged add lost its epoch to another member's commit, which has been
+    /// applied instead. The joiner was probably admitted by that commit, so
+    /// this is a notice rather than something to retry blindly.
+    AddSuperseded,
+    /// Group state moved forward; nothing to display.
+    Advanced,
+    /// This client's own frame, echoed back by the relay.
+    Echo,
 }
 
 /// Redacting by hand rather than deriving: this type holds identity keys and
@@ -101,6 +147,8 @@ impl Member {
             credential,
             group: None,
             vault: None,
+            pending: None,
+            sent: VecDeque::new(),
         })
     }
 
@@ -162,6 +210,8 @@ impl Member {
             credential,
             group,
             vault: Some(vault),
+            pending: None,
+            sent: VecDeque::new(),
         })
     }
 
@@ -224,13 +274,22 @@ impl Member {
         self.persist()
     }
 
-    /// Add a member using their published `KeyPackage`. Returns the `Welcome`
-    /// to deliver to them, and the commit to fan out to existing members.
+    /// Stage adding a member from their published `KeyPackage`.
+    ///
+    /// Returns the commit to send. The commit is *not* applied yet: two
+    /// members can stage a commit at the same epoch, and only the one the
+    /// relay orders first may take effect. [`Member::receive`] resolves it,
+    /// yielding [`Event::Admitted`] with the `Welcome` if this commit won or
+    /// [`Event::AddSuperseded`] if it lost.
     ///
     /// # Errors
-    /// If the key package is not a valid `KeyPackage`, this member has no
-    /// group, or the new state cannot be persisted.
-    pub fn add_member(&mut self, key_package: &[u8]) -> Result<Invite> {
+    /// If the key package is invalid, this member has no group, or another
+    /// add is already staged.
+    pub fn propose_add(&mut self, key_package: &[u8]) -> Result<Vec<u8>> {
+        if self.pending.is_some() {
+            return Err(Error::AddInFlight);
+        }
+
         let msg = MlsMessageIn::tls_deserialize_exact(key_package)?;
         let MlsMessageBodyIn::KeyPackage(kp) = msg.extract() else {
             return Err(Error::UnexpectedMessage {
@@ -246,14 +305,14 @@ impl Member {
         let (commit, welcome, _) = group
             .add_members(&self.provider, &self.signer, &[kp])
             .map_err(mls)?;
-        group.merge_pending_commit(&self.provider).map_err(mls)?;
 
-        let invite = Invite {
+        let commit = commit.tls_serialize_detached()?;
+        self.pending = Some(PendingAdd {
+            commit: commit.clone(),
             welcome: welcome.tls_serialize_detached()?,
-            commit: commit.tls_serialize_detached()?,
-        };
+        });
         self.persist()?;
-        Ok(invite)
+        Ok(commit)
     }
 
     /// Join a group from a `Welcome` produced by [`Member::add_member`].
@@ -293,6 +352,7 @@ impl Member {
             .create_message(&self.provider, &self.signer, text.as_bytes())
             .map_err(mls)?
             .tls_serialize_detached()?;
+        self.remember_sent(wire.clone());
         self.persist()?;
         Ok(wire)
     }
@@ -303,7 +363,20 @@ impl Member {
     /// # Errors
     /// If the message is malformed, this member has no group, or the message
     /// cannot be decrypted.
-    pub fn receive(&mut self, wire: &[u8]) -> Result<Option<String>> {
+    pub fn receive(&mut self, wire: &[u8]) -> Result<Event> {
+        // A staged commit coming back means the relay ordered it first and
+        // nothing beat it: apply it and release the Welcome.
+        if let Some(pending) = self.pending.take_if(|p| p.commit == wire) {
+            let welcome = pending.welcome;
+            let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+            group.merge_pending_commit(&self.provider).map_err(mls)?;
+            self.persist()?;
+            return Ok(Event::Admitted { welcome });
+        }
+        if self.sent.iter().any(|sent| sent == wire) {
+            return Ok(Event::Echo);
+        }
+
         let msg = MlsMessageIn::tls_deserialize_exact(wire)?;
         let protocol: ProtocolMessage =
             msg.try_into_protocol_message()
@@ -311,30 +384,54 @@ impl Member {
                     expected: "application or handshake",
                 })?;
 
+        // Another member's commit at this epoch beats anything we staged,
+        // because the relay ordered theirs first. Drop ours before applying
+        // theirs; openmls will not stage two commits at once.
+        let superseded = protocol.content_type() == ContentType::Commit && self.pending.is_some();
+        if superseded {
+            self.pending = None;
+            let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+            group
+                .clear_pending_commit(self.provider.storage())
+                .map_err(mls)?;
+        }
+
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
-        // Our own messages come back off the relay; MLS cannot decrypt them.
+        // Frames from an epoch we have already left cannot be decrypted.
         if protocol.epoch() < group.epoch() {
-            return Ok(None);
+            return Ok(Event::Advanced);
         }
         let processed = group
             .process_message(&self.provider, protocol)
             .map_err(mls)?;
 
-        let text = match processed.into_content() {
+        let event = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
-                Some(String::from_utf8_lossy(&app.into_bytes()).into_owned())
+                Event::Message(String::from_utf8_lossy(&app.into_bytes()).into_owned())
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 group
                     .merge_staged_commit(&self.provider, *commit)
                     .map_err(mls)?;
-                None
+                if superseded {
+                    Event::AddSuperseded
+                } else {
+                    Event::Advanced
+                }
             }
-            _ => None,
+            _ => Event::Advanced,
         };
         // Receiving advances ratchet state whether or not it was a message.
         self.persist()?;
-        Ok(text)
+        Ok(event)
+    }
+
+    /// Record a frame so the relay's echo of it can be recognised.
+    fn remember_sent(&mut self, wire: Vec<u8>) {
+        if self.sent.len() == SENT_HISTORY {
+            self.sent.pop_front();
+        }
+        self.sent.push_back(wire);
     }
 
     /// Display name of this member.
@@ -393,7 +490,36 @@ pub fn encode_frame(kind: FrameKind, body: &[u8]) -> Vec<u8> {
     v
 }
 
-/// Split a relayed frame into its kind and payload.
+/// Width of the sequence number the relay prepends to every frame.
+const SEQ_LEN: usize = 8;
+
+/// A frame as the relay delivers it: its sequence number, then the frame.
+#[derive(Debug)]
+pub struct Envelope {
+    /// The relay's position for this frame. Monotonic per channel, and the
+    /// same for every client, which is what decides competing commits.
+    pub seq: u64,
+    /// What the frame carries.
+    pub kind: FrameKind,
+    /// The payload behind the tag.
+    pub body: Vec<u8>,
+}
+
+/// Split a frame delivered by the relay into sequence number, kind, payload.
+///
+/// # Errors
+/// If the frame is too short, or carries an unknown tag.
+pub fn decode_envelope(wire: &[u8]) -> Result<Envelope> {
+    if wire.len() < SEQ_LEN {
+        return Err(Error::MalformedFrame);
+    }
+    let (seq, frame) = wire.split_at(SEQ_LEN);
+    let seq = u64::from_be_bytes(seq.try_into().map_err(|_| Error::MalformedFrame)?);
+    let (kind, body) = decode_frame(frame)?;
+    Ok(Envelope { seq, kind, body })
+}
+
+/// Split a client frame into its kind and payload.
 ///
 /// # Errors
 /// If the frame is empty or carries an unknown tag.
@@ -403,18 +529,28 @@ pub fn decode_frame(wire: &[u8]) -> Result<(FrameKind, Vec<u8>)> {
     Ok((kind, body.to_vec()))
 }
 
-/// The two messages produced by adding a member.
-#[derive(Debug)]
-pub struct Invite {
-    /// Deliver to the new member so they can join.
-    pub welcome: Vec<u8>,
-    /// Fan out to members who were already in the group.
-    pub commit: Vec<u8>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Assert an event is a message with the given text.
+    #[track_caller]
+    fn assert_message(event: Event, expected: &str) {
+        match event {
+            Event::Message(text) => assert_eq!(text, expected),
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    /// Drive an add to completion the way the relay would when nothing
+    /// competes: the proposer's own commit comes back first, confirming it.
+    fn admit(host: &mut Member, joiner: &mut Member) {
+        let commit = host.propose_add(&joiner.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome } = host.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        joiner.join(&welcome).unwrap();
+    }
 
     /// The whole point of the slice: two members, one group, real MLS
     /// ciphertext on the wire, plaintext out the other side.
@@ -426,17 +562,101 @@ mod tests {
         alice.create_group().unwrap();
         assert_eq!(alice.member_count(), 1);
 
-        let invite = alice.add_member(&bob.key_package().unwrap()).unwrap();
-        bob.join(&invite.welcome).unwrap();
+        admit(&mut alice, &mut bob);
 
         assert_eq!(alice.member_count(), 2);
         assert_eq!(bob.member_count(), 2);
 
         let wire = alice.send("hello bob").unwrap();
-        assert_eq!(bob.receive(&wire).unwrap().as_deref(), Some("hello bob"));
+        assert_message(bob.receive(&wire).unwrap(), "hello bob");
 
         let wire = bob.send("hi alice").unwrap();
-        assert_eq!(alice.receive(&wire).unwrap().as_deref(), Some("hi alice"));
+        assert_message(alice.receive(&wire).unwrap(), "hi alice");
+    }
+
+    /// Two members staging an add at the same epoch must not fork the group.
+    /// Whichever commit the relay orders first wins, and everyone converges.
+    #[test]
+    fn competing_commits_resolve_to_one_winner() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let dave = Member::new("dave").unwrap();
+
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+
+        // Alice and Bob both try to admit someone, at the same epoch.
+        let alice_commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let bob_commit = bob.propose_add(&dave.key_package().unwrap()).unwrap();
+
+        // The relay orders Alice's first, and delivers both to everyone in
+        // that order.
+        let Event::Admitted { welcome } = alice.receive(&alice_commit).unwrap() else {
+            panic!("alice's commit was ordered first, so it should win");
+        };
+        carol.join(&welcome).unwrap();
+
+        // Bob sees Alice's commit while his own is staged: he lost.
+        assert!(
+            matches!(bob.receive(&alice_commit).unwrap(), Event::AddSuperseded),
+            "bob's staged add should have been superseded"
+        );
+
+        // Bob's commit then arrives. It is stale and must not be applied.
+        assert!(matches!(
+            bob.receive(&bob_commit),
+            Ok(Event::Advanced) | Err(_)
+        ));
+        let _ = alice.receive(&bob_commit);
+        let _ = carol.receive(&bob_commit);
+
+        // Everyone agrees on the same group.
+        assert_eq!(alice.member_count(), 3);
+        assert_eq!(bob.member_count(), 3);
+        assert_eq!(carol.member_count(), 3);
+
+        // And the group still works for everyone in it.
+        let wire = alice.send("did we survive that?").unwrap();
+        assert_message(bob.receive(&wire).unwrap(), "did we survive that?");
+        assert_message(carol.receive(&wire).unwrap(), "did we survive that?");
+    }
+
+    /// A member who was already present must apply the commit that admitted
+    /// someone new, or they fall out of sync.
+    #[test]
+    fn existing_member_applies_the_commit_when_a_third_joins() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.join(&welcome).unwrap();
+        // Bob was already here, so he needs the commit.
+        bob.receive(&commit).unwrap();
+
+        let wire = alice.send("everyone still here?").unwrap();
+        assert_message(bob.receive(&wire).unwrap(), "everyone still here?");
+        assert_message(carol.receive(&wire).unwrap(), "everyone still here?");
+    }
+
+    /// The relay echoes a sender its own frames; they must not be mistaken
+    /// for incoming traffic.
+    #[test]
+    fn own_frames_echoed_back_are_recognised() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+
+        let wire = alice.send("talking to myself").unwrap();
+        assert!(matches!(alice.receive(&wire).unwrap(), Event::Echo));
     }
 
     /// The server must never be able to read traffic it relays.
@@ -445,8 +665,7 @@ mod tests {
         let mut alice = Member::new("alice").unwrap();
         let mut bob = Member::new("bob").unwrap();
         alice.create_group().unwrap();
-        let invite = alice.add_member(&bob.key_package().unwrap()).unwrap();
-        bob.join(&invite.welcome).unwrap();
+        admit(&mut alice, &mut bob);
 
         let secret = "launch codes are 1234";
         let wire = alice.send(secret).unwrap();
@@ -464,8 +683,7 @@ mod tests {
         let mut eve = Member::new("eve").unwrap();
 
         alice.create_group().unwrap();
-        let invite = alice.add_member(&bob.key_package().unwrap()).unwrap();
-        bob.join(&invite.welcome).unwrap();
+        admit(&mut alice, &mut bob);
 
         // Eve builds her own group and tries to process alice's traffic.
         eve.create_group().unwrap();
@@ -476,33 +694,21 @@ mod tests {
         );
     }
 
-    /// Adding a third member advances the group epoch. Members who were
-    /// already present must apply the commit or they fall out of sync.
+    /// Envelopes carry the relay's ordering and must round trip.
     #[test]
-    fn existing_member_needs_the_commit_when_a_third_joins() {
-        let mut alice = Member::new("alice").unwrap();
-        let mut bob = Member::new("bob").unwrap();
-        let mut carol = Member::new("carol").unwrap();
+    fn envelopes_round_trip() {
+        let frame = encode_frame(FrameKind::Welcome, &[1, 2, 3]);
+        let mut wire = 42u64.to_be_bytes().to_vec();
+        wire.extend_from_slice(&frame);
 
-        alice.create_group().unwrap();
-        let invite = alice.add_member(&bob.key_package().unwrap()).unwrap();
-        bob.join(&invite.welcome).unwrap();
+        let env = decode_envelope(&wire).unwrap();
+        assert_eq!(env.seq, 42);
+        assert_eq!(env.kind, FrameKind::Welcome);
+        assert_eq!(env.body, vec![1, 2, 3]);
 
-        // Alice admits Carol. This moves alice and carol to a new epoch.
-        let invite = alice.add_member(&carol.key_package().unwrap()).unwrap();
-        carol.join(&invite.welcome).unwrap();
-
-        // Bob must be given the commit, or he is left in the old epoch.
-        bob.receive(&invite.commit).unwrap();
-
-        let wire = alice.send("everyone still here?").unwrap();
-        assert_eq!(
-            bob.receive(&wire).unwrap().as_deref(),
-            Some("everyone still here?")
-        );
-        assert_eq!(
-            carol.receive(&wire).unwrap().as_deref(),
-            Some("everyone still here?")
+        assert!(
+            decode_envelope(&[0, 1, 2]).is_err(),
+            "short frame should fail"
         );
     }
 
@@ -532,9 +738,7 @@ mod tests {
             let mut alice = Member::restore(vault, "alice").unwrap();
             alice.create_group().unwrap();
             identity_before = alice.identity();
-
-            let invite = alice.add_member(&bob.key_package().unwrap()).unwrap();
-            bob.join(&invite.welcome).unwrap();
+            admit(&mut alice, &mut bob);
             assert_eq!(alice.member_count(), 2);
         } // alice is dropped: everything now has to come off disk
 
@@ -544,13 +748,10 @@ mod tests {
 
         // The restored ratchet state must still work in both directions.
         let wire = alice.send("still here after a restart").unwrap();
-        assert_eq!(
-            bob.receive(&wire).unwrap().as_deref(),
-            Some("still here after a restart")
-        );
+        assert_message(bob.receive(&wire).unwrap(), "still here after a restart");
 
         let wire = bob.send("so am i").unwrap();
-        assert_eq!(alice.receive(&wire).unwrap().as_deref(), Some("so am i"));
+        assert_message(alice.receive(&wire).unwrap(), "so am i");
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

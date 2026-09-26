@@ -49,23 +49,28 @@ rather than pairwise sessions per device pair. `Member` in `crates/core/src/lib.
 is the whole client protocol surface; `ffi.rs` wraps it in a mutex because
 UniFFI objects take `&self`.
 
-**The join handshake spans three files** and is hard to follow from any one of
-them. A new member publishes a `KeyPackage`; an existing member calls
-`add_member`, which returns *both* a `Welcome` (for the joiner) and a `commit`
-(for members already present). Both must be sent — dropping the commit strands
-existing members in the old epoch. See `ChatModel.handle` in
-`clients/macos/Sources/OpenConv/ChatModel.swift`, `Member::add_member`, and
-`crates/server/tests/relay.rs` for the same flow in test form.
+**Adds are two-phase, and this is the subtlest thing in the codebase.** A new
+member publishes a `KeyPackage`. Any existing member may call `propose_add`,
+which *stages* a commit without applying it and holds the `Welcome` back. The
+commit goes to the relay. Only when it comes back — meaning the relay ordered
+it first and nothing beat it — does `receive` return `Event::Admitted` with
+the `Welcome` to send. A member whose commit loses gets `Event::AddSuperseded`
+and applies the winner's commit instead.
 
-**Only the host admits new members.** This is a stopgap, marked in `ChatModel`.
-Every joined member responding to a `KeyPackage` produces competing commits at
-the same epoch and forks the group. The real fix is for the relay to serialise
-commits the way an MLS delivery service does.
+Without this, two members admitting the same joiner produce competing commits
+at one epoch and fork the group, which surfaces as `AEAD decryption failed`
+much later. Follow it through `Member::propose_add` and `Member::receive`,
+`ChatModel.handle`/`apply`, and `crates/server/tests/relay.rs`.
 
-**The relay never parses payloads.** `crates/server` moves opaque bytes and has
-no code path that inspects one. Frame tags (`FrameKind`) are a client-side
-concern defined once in Rust and exported through UniFFI — Swift does not get
-its own copy.
+**The relay never parses payloads**, but it does order them. `crates/server`
+moves opaque bytes and prepends an 8-byte sequence number without looking past
+it. Every client sees the same order, which is what resolves commit races.
+Frames are echoed back to their sender too, so a sender learns where its own
+frame landed; clients recognise their own frames by exact byte match, which
+keeps sender identity off the wire.
+
+Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
+exported through UniFFI — Swift does not get its own copy.
 
 **State persists in an encrypted vault** (`crates/core/src/store.rs`): the whole
 MLS store snapshotted, XChaCha20-Poly1305, key from the macOS Keychain. The

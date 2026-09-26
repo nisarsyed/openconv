@@ -7,6 +7,16 @@
 import Foundation
 import OpenConvCore
 
+enum BridgeError: Error {
+    case unexpected(String)
+}
+
+/// Text of a message event, or nil for anything else.
+func messageText(_ event: ClientEvent) -> String? {
+    if case .message(let text) = event { return text }
+    return nil
+}
+
 var failures = 0
 
 func check(_ label: String, _ condition: @autoclosure () throws -> Bool) {
@@ -31,17 +41,27 @@ do {
     try alice.createGroup()
     check("group starts with one member", alice.memberCount() == 1)
 
-    let invite = try alice.addMember(keyPackage: bob.keyPackage())
-    try bob.join(welcome: invite.welcome)
+    // Two-phase add: stage the commit, then confirm it the way the relay
+    // would when nothing competes.
+    let commit = try alice.proposeAdd(keyPackage: bob.keyPackage())
+    guard case .admitted(let welcome) = try alice.receive(wire: commit) else {
+        throw BridgeError.unexpected("uncontested commit should have been admitted")
+    }
+    try bob.join(welcome: welcome)
 
     check("alice sees two members", alice.memberCount() == 2)
     check("bob sees two members", bob.memberCount() == 2)
 
     let ciphertext = try alice.send(text: "hello from swift")
-    check("bob decrypts alice", try bob.receive(wire: ciphertext) == "hello from swift")
+    check(
+        "bob decrypts alice", messageText(try bob.receive(wire: ciphertext)) == "hello from swift")
 
     let reply = try bob.send(text: "hi back")
-    check("alice decrypts bob", try alice.receive(wire: reply) == "hi back")
+    check("alice decrypts bob", messageText(try alice.receive(wire: reply)) == "hi back")
+
+    // The relay echoes senders their own frames; they must be recognised.
+    let mine = try alice.send(text: "talking to myself")
+    check("own frames are recognised as echoes", try alice.receive(wire: mine) == .echo)
 
     let secret = "seahorse battery"
     let sealed = try alice.send(text: secret)
@@ -54,7 +74,12 @@ do {
 print("bridge: framing")
 do {
     let body = Data([9, 8, 7])
-    let decoded = try decodeFrame(wire: encodeFrame(kind: .welcome, body: body))
+    // The relay prepends an 8-byte big-endian sequence number.
+    var wire = Data([0, 0, 0, 0, 0, 0, 0, 42])
+    wire.append(encodeFrame(kind: .welcome, body: body))
+
+    let decoded = try decodeEnvelope(wire: wire)
+    check("sequence round trips", decoded.seq == 42)
     check("kind round trips", decoded.kind == .welcome)
     check("body round trips", decoded.body == body)
 } catch {

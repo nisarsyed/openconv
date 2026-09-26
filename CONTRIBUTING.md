@@ -100,6 +100,13 @@ decrypts, or inspects a payload. It moves opaque bytes. Every feature that
 wants the server to understand a message is a feature that breaks the privacy
 claim — find another way.
 
+Ordering is the one exception, and it is deliberately shaped to stay blind:
+the relay stamps a sequence number on every frame without looking past it, and
+clients do the work of deciding what that ordering means. Commit conflict
+resolution lives in `Member::receive`, not in the server. Serialising commits
+by having the relay recognise them would have been simpler and would have cost
+the privacy claim.
+
 **Protocol definitions live in Rust, once.** Frame tags are `FrameKind` in
 `openconv-core`, exported through UniFFI. Swift does not get its own copy.
 Two definitions drift; this one nearly did.

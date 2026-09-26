@@ -33,13 +33,38 @@ impl From<crate::Error> for ClientError {
 
 type Result<T> = std::result::Result<T, ClientError>;
 
-/// The two messages produced by admitting a member.
-#[derive(Debug, uniffi::Record)]
-pub struct Invite {
-    /// Deliver to the new member.
-    pub welcome: Vec<u8>,
-    /// Fan out to members who were already present.
-    pub commit: Vec<u8>,
+/// What processing a relayed frame produced.
+#[derive(Debug, uniffi::Enum)]
+pub enum ClientEvent {
+    /// A decrypted application message.
+    Message {
+        /// The plaintext.
+        text: String,
+    },
+    /// A staged add won its epoch; send this `Welcome` to the new member.
+    Admitted {
+        /// Deliver to the member being added.
+        welcome: Vec<u8>,
+    },
+    /// A staged add lost its epoch to another member's commit, which has been
+    /// applied instead.
+    AddSuperseded,
+    /// Group state moved forward; nothing to display.
+    Advanced,
+    /// This client's own frame, echoed back by the relay.
+    Echo,
+}
+
+impl From<crate::Event> for ClientEvent {
+    fn from(e: crate::Event) -> Self {
+        match e {
+            crate::Event::Message(text) => Self::Message { text },
+            crate::Event::Admitted { welcome } => Self::Admitted { welcome },
+            crate::Event::AddSuperseded => Self::AddSuperseded,
+            crate::Event::Advanced => Self::Advanced,
+            crate::Event::Echo => Self::Echo,
+        }
+    }
 }
 
 /// A chat client bound to one identity.
@@ -92,17 +117,17 @@ impl Client {
         Ok(self.lock().create_group()?)
     }
 
-    /// Admit a member from their published `KeyPackage`.
+    /// Stage admitting a member from their published `KeyPackage`, returning
+    /// the commit to send.
+    ///
+    /// The add is not applied until the relay's ordering confirms it; watch
+    /// for [`ClientEvent::Admitted`] or [`ClientEvent::AddSuperseded`].
     ///
     /// # Errors
-    /// If the key package is invalid, this client is not in a group, or the
-    /// resulting state cannot be saved.
-    pub fn add_member(&self, key_package: Vec<u8>) -> Result<Invite> {
-        let invite = self.lock().add_member(&key_package)?;
-        Ok(Invite {
-            welcome: invite.welcome,
-            commit: invite.commit,
-        })
+    /// If the key package is invalid, this client is not in a group, or an
+    /// add is already in flight.
+    pub fn propose_add(&self, key_package: Vec<u8>) -> Result<Vec<u8>> {
+        Ok(self.lock().propose_add(&key_package)?)
     }
 
     /// Join a group from a `Welcome`.
@@ -121,13 +146,12 @@ impl Client {
         Ok(self.lock().send(&text)?)
     }
 
-    /// Process an incoming frame. `None` means handshake traffic that was
-    /// applied to group state rather than a message to display.
+    /// Process an incoming frame.
     ///
     /// # Errors
     /// If the frame is malformed, or cannot be decrypted by this client.
-    pub fn receive(&self, wire: Vec<u8>) -> Result<Option<String>> {
-        Ok(self.lock().receive(&wire)?)
+    pub fn receive(&self, wire: Vec<u8>) -> Result<ClientEvent> {
+        Ok(self.lock().receive(&wire)?.into())
     }
 
     /// This client's display name.
@@ -161,19 +185,25 @@ pub fn encode_frame(kind: FrameKind, body: Vec<u8>) -> Vec<u8> {
     crate::encode_frame(kind, &body)
 }
 
-/// Split a relayed frame into its kind and payload.
+/// Split a frame delivered by the relay into sequence number, kind, payload.
 ///
 /// # Errors
-/// If the frame is empty or carries an unknown tag.
+/// If the frame is too short, or carries an unknown tag.
 #[uniffi::export]
-pub fn decode_frame(wire: Vec<u8>) -> Result<DecodedFrame> {
-    let (kind, body) = crate::decode_frame(&wire)?;
-    Ok(DecodedFrame { kind, body })
+pub fn decode_envelope(wire: Vec<u8>) -> Result<DecodedFrame> {
+    let env = crate::decode_envelope(&wire)?;
+    Ok(DecodedFrame {
+        seq: env.seq,
+        kind: env.kind,
+        body: env.body,
+    })
 }
 
 /// A frame split into its parts.
 #[derive(Debug, uniffi::Record)]
 pub struct DecodedFrame {
+    /// The relay's ordering position for this frame.
+    pub seq: u64,
     /// What the frame carries.
     pub kind: FrameKind,
     /// The payload behind the tag.
