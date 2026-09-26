@@ -87,6 +87,12 @@ just check            # rust tests + swift bridge verification
 | `scripts/gen-bindings.sh` | Regenerates Swift bindings from the Rust core |
 | `planning/v2-design-requirements.md` | Lessons carried over from the v1 audit |
 
+## Where this is going
+
+`planning/roadmap.md` has the milestone order and the reasoning. The short
+version: continuous integration, then giving the relay addressing and memory
+so messages survive being offline, then history, then identity.
+
 ## Status
 
 Encrypted messaging between several clients in one implicit group, with state

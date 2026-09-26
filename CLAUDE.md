@@ -118,6 +118,10 @@ most often gotten wrong:
 
 ## Context
 
+`planning/roadmap.md` is the milestone order and why. Check it before
+proposing what to build next — it exists because that decision was previously
+made per-session and drifted.
+
 `planning/v2-design-requirements.md` carries forward findings from an audit of
 the previous implementation, tagged by the milestone where each applies.
 
