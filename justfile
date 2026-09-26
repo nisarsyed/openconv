@@ -1,7 +1,7 @@
 # OpenConv dev tasks.
 
 # Run every check: rust tests plus the swift bridge verification.
-check: test bridge
+check: test bridge smoke
 
 # Rust unit and integration tests.
 test:
@@ -14,6 +14,10 @@ bindings:
 # Verify the Rust<->Swift bridge at runtime.
 bridge: bindings
     cd clients/macos && swift run BridgeCheck
+
+# End-to-end check against the real app: relay plus two live clients.
+smoke:
+    ./scripts/smoke.sh
 
 # Start the relay on 127.0.0.1:8080.
 relay:

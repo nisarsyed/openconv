@@ -35,12 +35,25 @@ final class ChatModel: ObservableObject {
     @Published var draft: String = ""
 
     let identity: String
+    /// Sent automatically once this client is in the group. Used to drive the
+    /// app headlessly; nil for normal interactive use.
+    var autoSay: String?
+
     private let client: Client
     private var socket: URLSessionWebSocketTask?
+    private var saidAuto = false
 
     init(identity: String) throws {
         self.identity = identity
         self.client = try Client(identity: identity)
+    }
+
+    /// Fires `autoSay` the first time we reach a joined state.
+    private func sendAutoIfReady() {
+        guard !saidAuto, let text = autoSay, case .joined = status else { return }
+        saidAuto = true
+        draft = text
+        sendDraft()
     }
 
     var canSend: Bool {
@@ -63,6 +76,7 @@ final class ChatModel: ObservableObject {
                 try client.createGroup()
                 status = .joined(members: Int(client.memberCount()))
                 note("created the group")
+                sendAutoIfReady()
             } else {
                 // Everyone else offers a KeyPackage and waits for a Welcome.
                 try send(kind: .keyPackage, body: client.keyPackage())
@@ -89,6 +103,7 @@ final class ChatModel: ObservableObject {
         do {
             try send(kind: .application, body: client.send(text: text))
             // The relay never echoes a sender its own frame, so show it locally.
+            print("[\(identity)] sent: \(text)")
             lines.append(Line(author: identity, text: text, mine: true))
         } catch {
             fail(error)
@@ -139,6 +154,7 @@ final class ChatModel: ObservableObject {
                 try client.join(welcome: frame.body)
                 status = .joined(members: Int(client.memberCount()))
                 note("joined the group")
+                sendAutoIfReady()
 
             case .commit:
                 _ = try client.receive(wire: frame.body)
@@ -146,6 +162,7 @@ final class ChatModel: ObservableObject {
 
             case .application:
                 if let text = try client.receive(wire: frame.body) {
+                    print("[\(identity)] received: \(text)")
                     lines.append(Line(author: "them", text: text, mine: false))
                 }
             }
@@ -157,10 +174,12 @@ final class ChatModel: ObservableObject {
     // MARK: - Feedback
 
     private func note(_ text: String) {
+        print("[\(identity)] \(text)")
         lines.append(Line(author: "·", text: text, mine: false))
     }
 
     private func fail(_ error: Error) {
+        print("[\(identity)] error: \(error)")
         lines.append(Line(author: "!", text: "\(error)", mine: false))
     }
 }
