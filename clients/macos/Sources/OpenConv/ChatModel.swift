@@ -43,6 +43,14 @@ final class ChatModel: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var saidAuto = false
 
+    /// Only one member may commit per epoch. Two members admitting the same
+    /// joiner produce competing commits and fork the group, so for now the
+    /// member who created the group is the only one who admits anyone.
+    ///
+    /// The real fix is for the relay to serialise commits the way an MLS
+    /// delivery service does; until then this keeps the invariant obvious.
+    private var isHost = false
+
     init(identity: String) throws {
         self.identity = identity
         self.client = try Client(identity: identity)
@@ -70,6 +78,7 @@ final class ChatModel: ObservableObject {
         task.resume()
         receiveLoop()
 
+        isHost = hosting
         do {
             if hosting {
                 // Host opens the group and waits for others to announce.
@@ -142,10 +151,15 @@ final class ChatModel: ObservableObject {
             let frame = try decodeFrame(wire: data)
             switch frame.kind {
             case .keyPackage:
-                // Only a member already in the group can admit someone.
-                guard case .joined = status else { return }
+                // Only the host admits, and only once it has a group.
+                guard isHost, case .joined = status else { return }
                 let invite = try client.addMember(keyPackage: frame.body)
                 try send(kind: .welcome, body: invite.welcome)
+                // Admitting someone advances the epoch. Members who were
+                // already here must apply the commit or they fall out of
+                // sync and can no longer decrypt. The new member ignores it,
+                // having arrived at the new epoch via the Welcome.
+                try send(kind: .commit, body: invite.commit)
                 status = .joined(members: Int(client.memberCount()))
                 note("admitted a new member")
 

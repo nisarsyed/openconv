@@ -9,9 +9,12 @@ cd "$(dirname "$0")/.."
 
 LOG=$(mktemp -d)
 MESSAGE="hello from bob"
+# Carol joins last. Bob was already in the group when she was admitted, so he
+# only decrypts her message if he applied the commit that her join produced.
+LATE_MESSAGE="hello from carol"
 
 cleanup() {
-    kill ${ALICE:-} ${BOB:-} ${RELAY:-} 2>/dev/null
+    kill ${ALICE:-} ${BOB:-} ${CAROL:-} ${RELAY:-} 2>/dev/null
     wait 2>/dev/null
 }
 trap cleanup EXIT
@@ -33,17 +36,36 @@ ALICE=$!
 sleep 3
 "$APP" bob join "$MESSAGE" > "$LOG/bob.log" 2>&1 &
 BOB=$!
+sleep 5
+"$APP" carol join "$LATE_MESSAGE" > "$LOG/carol.log" 2>&1 &
+CAROL=$!
 sleep 8
 
 echo
 echo "--- alice ---"; cat "$LOG/alice.log"
 echo "--- bob ---";   cat "$LOG/bob.log"
+echo "--- carol ---"; cat "$LOG/carol.log"
 echo
 
-if grep -q "received: $MESSAGE" "$LOG/alice.log"; then
-    echo "PASS: message travelled from bob to alice, encrypted end to end"
+fail=0
+check() {
+    if grep -q "$2" "$LOG/$1.log"; then
+        echo "  ok   $3"
+    else
+        echo "  FAIL $3"
+        fail=1
+    fi
+}
+
+check alice "received: $MESSAGE"      "alice decrypts bob (2 members)"
+check alice "received: $LATE_MESSAGE" "alice decrypts carol (3 members)"
+check bob   "received: $LATE_MESSAGE" "bob decrypts carol after applying her join commit"
+
+echo
+if [ "$fail" -eq 0 ]; then
+    echo "PASS: messages travelled between all three, encrypted end to end"
     exit 0
 fi
-echo "FAIL: alice never received bob's message"
+echo "FAIL: see above"
 echo "--- relay ---"; cat "$LOG/relay.log"
 exit 1

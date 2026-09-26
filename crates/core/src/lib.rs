@@ -299,6 +299,30 @@ mod tests {
         assert!(eve.receive(&wire).is_err(), "outsider decrypted group traffic");
     }
 
+    /// Adding a third member advances the group epoch. Members who were
+    /// already present must apply the commit or they fall out of sync.
+    #[test]
+    fn existing_member_needs_the_commit_when_a_third_joins() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+
+        alice.create_group().unwrap();
+        let invite = alice.add_member(&bob.key_package().unwrap()).unwrap();
+        bob.join(&invite.welcome).unwrap();
+
+        // Alice admits Carol. This moves alice and carol to a new epoch.
+        let invite = alice.add_member(&carol.key_package().unwrap()).unwrap();
+        carol.join(&invite.welcome).unwrap();
+
+        // Bob must be given the commit, or he is left in the old epoch.
+        bob.receive(&invite.commit).unwrap();
+
+        let wire = alice.send("everyone still here?").unwrap();
+        assert_eq!(bob.receive(&wire).unwrap().as_deref(), Some("everyone still here?"));
+        assert_eq!(carol.receive(&wire).unwrap().as_deref(), Some("everyone still here?"));
+    }
+
     #[test]
     fn sending_before_joining_is_an_error() {
         let mut alice = Member::new("alice").unwrap();
