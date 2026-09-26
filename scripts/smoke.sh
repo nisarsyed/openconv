@@ -8,6 +8,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 LOG=$(mktemp -d)
+# Clients now persist state. Give each run its own data dir so a previous
+# run's group does not leak into this one.
+export OPENCONV_DATA_DIR="$LOG/data"
 MESSAGE="hello from bob"
 # Carol joins last. Bob was already in the group when she was admitted, so he
 # only decrypts her message if he applied the commit that her join produced.
@@ -23,6 +26,14 @@ echo "building..."
 cargo build -q -p openconv-server
 ./scripts/gen-bindings.sh >/dev/null
 (cd clients/macos && swift build >/dev/null 2>&1)
+
+# A relay left behind by an earlier run would squat the port and every
+# client would fail to connect, which looks like a protocol bug.
+if lsof -ti:8080 >/dev/null 2>&1; then
+    echo "port 8080 busy; clearing stale listeners"
+    lsof -ti:8080 | xargs kill -9 2>/dev/null
+    sleep 1
+fi
 
 echo "starting relay..."
 cargo run -q -p openconv-server > "$LOG/relay.log" 2>&1 &
@@ -56,6 +67,23 @@ check() {
         fail=1
     fi
 }
+
+# Persistence: each client should have written an encrypted vault.
+for who in alice bob carol; do
+    vault="$OPENCONV_DATA_DIR/$who.vault"
+    if [ ! -f "$vault" ]; then
+        echo "  FAIL $who wrote no vault"
+        fail=1
+    elif ! head -c 4 "$vault" | grep -q "OCV1"; then
+        echo "  FAIL $who's vault has no magic header"
+        fail=1
+    elif LC_ALL=C grep -qa "$who" "$vault"; then
+        echo "  FAIL $who's identity is readable in its vault"
+        fail=1
+    else
+        echo "  ok   $who persisted an encrypted vault"
+    fi
+done
 
 check alice "received: $MESSAGE"      "alice decrypts bob (2 members)"
 check alice "received: $LATE_MESSAGE" "alice decrypts carol (3 members)"

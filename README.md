@@ -50,6 +50,26 @@ just client bob       # 3: click Join
 Bob's client publishes a KeyPackage, Alice's admits him and returns a Welcome,
 and from there both can chat. Everything on the wire is MLS ciphertext.
 
+## State
+
+Each client keeps its MLS state — identity, group membership, ratchet state —
+in a single encrypted file, so a restart resumes where it left off.
+
+- **Encrypted at rest.** XChaCha20-Poly1305, written `0600` via a temp file and
+  rename so an interrupted save cannot truncate good state.
+- **The data key lives in the macOS Keychain**, not beside the vault.
+- **`OPENCONV_DATA_DIR` overrides the location** and switches the key to a file
+  inside that directory. That is for development and testing: an unsigned
+  binary changes code identity on every rebuild, and the Keychain then raises
+  an ACL prompt that is invisible to a headless run and hangs it. Real installs
+  are code-signed and use the Keychain.
+
+```sh
+# two independent instances, neither touching your real state
+OPENCONV_DATA_DIR=/tmp/a just client alice
+OPENCONV_DATA_DIR=/tmp/b just client bob
+```
+
 ## Checks
 
 ```sh
@@ -68,5 +88,17 @@ just check            # rust tests + swift bridge verification
 
 ## Status
 
-Thinnest vertical slice: two clients, one implicit group, encrypted messages
-end to end. No accounts, guilds, channels, persistence, or multi-device yet.
+Encrypted messaging between several clients in one implicit group, with state
+that survives a restart.
+
+Not yet: accounts or identity verification, guilds and channels, message
+history, multi-device, and offline delivery.
+
+Two known stopgaps, both marked in the code:
+
+- **Only the host admits new members.** Any member responding to a KeyPackage
+  produces competing commits at the same epoch and forks the group. The real
+  fix is for the relay to serialise commits the way an MLS delivery service
+  does.
+- **The whole MLS store is rewritten on every change.** Fine at this size;
+  implementing openmls's `StorageProvider` over SQLite is the scaling path.

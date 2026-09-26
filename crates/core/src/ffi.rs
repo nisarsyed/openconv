@@ -40,9 +40,18 @@ pub struct Client {
 
 #[uniffi::export]
 impl Client {
+    /// In-memory client. Nothing survives the process.
     #[uniffi::constructor]
     pub fn new(identity: String) -> Result<Arc<Self>> {
         let member = Member::new(&identity)?;
+        Ok(Arc::new(Self { inner: Mutex::new(member) }))
+    }
+
+    /// Client backed by an encrypted vault at `path`, restoring previous
+    /// state if there is any. The data key comes from the macOS Keychain.
+    #[uniffi::constructor]
+    pub fn open(path: String, identity: String) -> Result<Arc<Self>> {
+        let member = Member::open(&path, &identity)?;
         Ok(Arc::new(Self { inner: Mutex::new(member) }))
     }
 

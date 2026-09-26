@@ -53,7 +53,24 @@ final class ChatModel: ObservableObject {
 
     init(identity: String) throws {
         self.identity = identity
-        self.client = try Client(identity: identity)
+        let vault = Self.vaultPath(for: identity)
+        self.client = try Client.open(path: vault.path, identity: identity)
+    }
+
+    /// Where this identity's encrypted state lives.
+    ///
+    /// OPENCONV_DATA_DIR overrides the location so several instances — and
+    /// the smoke test — can run without sharing state.
+    static func vaultPath(for identity: String) -> URL {
+        let base: URL
+        if let override = ProcessInfo.processInfo.environment["OPENCONV_DATA_DIR"] {
+            base = URL(fileURLWithPath: override)
+        } else {
+            base = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("OpenConv")
+        }
+        return base.appendingPathComponent("\(identity).vault")
     }
 
     /// Fires `autoSay` the first time we reach a joined state.
