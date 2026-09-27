@@ -8,6 +8,23 @@ behind it, so the next decision does not get re-litigated from scratch.
 It is a plan, not a promise. Revise it when something is learned — but revise
 it here, rather than quietly doing something else.
 
+## How work is tracked
+
+This file holds the order and the reasoning. GitHub issues hold the execution
+detail for the milestone currently being worked, and are closed by commits.
+
+**Issues are filed at most one milestone ahead.** The repo has already run the
+other experiment: 86 issues were filed against v1, 85 of them were closed
+unbuilt when the architecture changed, and the one survivor described a
+refactor of files that no longer exist. They were not bad issues. They were
+filed further ahead than the decisions they depended on.
+
+So: decompose a milestone into issues when starting it, not before.
+
+Milestone 0 is tracked in the `0: Continuous integration` milestone
+(#94–#97). `gh` defaults to the enterprise host on this machine, so commands
+against this repo need `GH_HOST=github.com`.
+
 ## Where we are
 
 Encrypted group messaging works end to end: MLS via openmls, a blind relay

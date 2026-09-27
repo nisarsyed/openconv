@@ -2,5 +2,5 @@
 # behaviour. Bump deliberately rather than drifting with whatever is installed.
 [toolchain]
 channel = "1.92.0"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "rust-analyzer"]
 profile = "minimal"
