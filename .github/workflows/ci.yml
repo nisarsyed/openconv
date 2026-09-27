@@ -26,7 +26,7 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # rust-toolchain.toml pins the version and the components, so there is
       # nothing to choose here. This step just makes the install an explicit,
