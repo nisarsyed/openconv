@@ -1,0 +1,67 @@
+# cargo-deny policy. Run locally with `just deny`; CI runs the same thing.
+#
+# The point of this file is that the project is MIT, and without a check a
+# copyleft dependency would be added silently and only discovered when it
+# mattered. Switching from libsignal (AGPL-3.0) to openmls (MIT) is what made
+# the licence a free choice; this is what stops it being given back by
+# accident.
+
+[graph]
+# Only the platforms actually built. Without this, licences from
+# Windows-only dependencies would be judged despite never being linked.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+# Deny by default. Unfixable transitive advisories go in `ignore` below with
+# a dated comment saying why, never as a blanket relaxation.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Anything not listed fails the build. Adding to this list is a decision
+# about what the project may ship, so it should be argued in the PR.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "BSL-1.0",
+    "Unlicense",
+    # Required by unicode-ident, which every proc-macro in the tree depends
+    # on. Permissive; carries an attribution requirement only.
+    "Unicode-3.0",
+    # Weak, file-level copyleft. Allowed deliberately, not by oversight:
+    # UniFFI (the Rust<->Swift bridge) and hpke-rs (pulled in by openmls for
+    # HPKE) are both MPL-2.0, and both are load-bearing.
+    #
+    # MPL-2.0 obliges publishing modifications *to those files*. Linking them
+    # into a larger MIT work is fine, and the combined work still ships as
+    # MIT. So: do not fork or patch uniffi or hpke-rs in-tree without
+    # publishing the change under MPL-2.0. Vendoring either one is the thing
+    # that would turn this from a non-issue into an obligation.
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions are a fact of life in a tree this size and are not worth
+# failing over; they are worth seeing.
+multiple-versions = "warn"
+# A wildcard version is an unbounded promise about what gets pulled in.
+wildcards = "deny"
+# ...except between crates in this workspace. `openconv-core = { path = ... }`
+# carries no version because nothing here is published to crates.io, and a
+# path dependency cannot drift the way a registry wildcard can.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

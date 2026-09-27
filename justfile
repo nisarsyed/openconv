@@ -13,6 +13,11 @@ fmt-check:
     cargo fmt --all --check
     cd clients/macos && swift format lint --strict --recursive Sources/OpenConv Sources/BridgeCheck
 
+# Check dependency licences, advisories, bans and sources.
+# Needs `cargo install cargo-deny --locked`.
+deny:
+    cargo deny check
+
 # Lint both languages. Generated bindings are deliberately not linted.
 lint:
     cargo clippy --workspace --all-targets -- -D warnings

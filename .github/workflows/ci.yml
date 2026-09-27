@@ -52,3 +52,17 @@ jobs:
       # a real Keychain. The Swift half of the suite runs in its own workflow.
       - name: Test
         run: cargo test --workspace
+
+  # Separate job: it needs no Rust build, so it runs in parallel with the one
+  # above rather than waiting behind a compile.
+  deny:
+    name: Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The action ships a prebuilt binary. `cargo install cargo-deny` takes
+      # minutes and would dominate this job's runtime.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
