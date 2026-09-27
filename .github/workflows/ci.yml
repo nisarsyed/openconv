@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege. Nothing here needs to write to the repository, and a
+# workflow that cannot write cannot be turned into one that does by a change
+# to a file it builds.
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Smaller, faster caches: debug info is not useful on a runner.
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # rust-toolchain.toml pins the version and the components, so there is
+      # nothing to choose here. This step just makes the install an explicit,
+      # readable failure rather than a surprise inside the first cargo call.
+      - name: Install pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Cheapest check first: no compilation, so a formatting slip fails in
+      # seconds rather than after the dependency tree has been built.
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The Keychain test is #[ignore]d and stays that way: it needs macOS and
+      # a real Keychain. The Swift half of the suite runs in its own workflow.
+      - name: Test
+        run: cargo test --workspace

@@ -252,6 +252,10 @@ fn restrict(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Gated with its only user: on non-macOS builds `platform_key` is compiled
+/// out, and an ungated constant would be dead code — which `-D warnings`
+/// turns into a build failure.
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "com.openconv.vault";
 
 /// Development override: keep the data key in a file beside the vault instead

@@ -129,4 +129,10 @@ This is a from-scratch rewrite. The previous version — a Tauri/React client
 with libsignal — is archived at tag `archive/v1-final` and branch `archive/v1`,
 and is worth consulting only for prior art, never as a pattern to follow.
 
-There is no CI, so nothing above is mechanically enforced. Run `just check`.
+CI runs the Rust half — `cargo fmt --check`, `clippy -D warnings`, and
+`cargo test` — on every push and pull request. The Swift build and
+`BridgeCheck` are not in CI yet (#95), nor is the smoke test (#97), so
+`just check` locally still covers more than CI does.
+
+The workflow takes its toolchain from `rust-toolchain.toml`; don't pin a
+version in the workflow as well, or the two will drift.

@@ -153,10 +153,14 @@ Line Tools only. Don't "fix" it into a test target.
 
 ## Not yet done
 
-Honest list, so nobody assumes otherwise: no CI, so none of the above is
-mechanically enforced. `rust-version = "1.85"` is the edition floor and is
-unverified. `cargo-deny` is not wired up, which matters now the project is MIT
-and a copyleft dependency would go unnoticed.
+Honest list, so nobody assumes otherwise. CI enforces the Rust half only:
+formatting, clippy and tests. The Swift build and `BridgeCheck` are not in CI
+yet (#95), and neither is the smoke test (#97) — which is the test most likely
+to catch a real bug, so `just check` locally still matters.
+
+`rust-version = "1.85"` is the edition floor and is unverified. `cargo-deny`
+is not wired up (#96), which matters now the project is MIT and a copyleft
+dependency would go unnoticed.
 
 [api-guidelines]: https://rust-lang.github.io/api-guidelines/checklist.html
 [tokio-lints]: https://github.com/tokio-rs/tokio/blob/master/tokio/src/lib.rs
