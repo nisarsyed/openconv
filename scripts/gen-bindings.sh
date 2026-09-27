@@ -17,6 +17,11 @@ cargo run --quiet -p openconv-core --features cli --bin uniffi-bindgen -- \
   --language swift --out-dir "$GEN"
 
 # UniFFI emits three files; they belong to two different SwiftPM targets.
+#
+# Both destinations hold nothing but generated, gitignored files, so a fresh
+# clone does not contain them — git does not track empty directories. Locally
+# they survive from the last run, which is why this only ever failed in CI.
+mkdir -p "$OUT/OpenConvCore" "$OUT/openconv_coreFFI/include"
 cp "$GEN/openconv_core.swift"        "$OUT/OpenConvCore/"
 cp "$GEN/openconv_coreFFI.h"         "$OUT/openconv_coreFFI/include/"
 # SwiftPM synthesises the modulemap for a C target from include/, so the

@@ -23,9 +23,15 @@ cleanup() {
 trap cleanup EXIT
 
 echo "building..."
-cargo build -q -p openconv-server
-./scripts/gen-bindings.sh >/dev/null
-(cd clients/macos && swift build >/dev/null 2>&1)
+# Each of these is checked: a swallowed build failure surfaces later as an
+# absent binary and reads like a protocol bug, which is exactly how long this
+# took to diagnose the first time.
+cargo build -q -p openconv-server || { echo "FAIL: relay did not build"; exit 1; }
+./scripts/gen-bindings.sh >/dev/null || { echo "FAIL: binding generation failed"; exit 1; }
+(cd clients/macos && swift build >/dev/null) || { echo "FAIL: client did not build"; exit 1; }
+
+APP=clients/macos/.build/debug/OpenConv
+[ -x "$APP" ] || { echo "FAIL: $APP missing after a successful build"; exit 1; }
 
 # A relay left behind by an earlier run would squat the port and every
 # client would fail to connect, which looks like a protocol bug.
@@ -41,7 +47,6 @@ RELAY=$!
 sleep 3
 
 echo "launching clients..."
-APP=clients/macos/.build/debug/OpenConv
 "$APP" alice host > "$LOG/alice.log" 2>&1 &
 ALICE=$!
 sleep 3
