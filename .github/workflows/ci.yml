@@ -66,3 +66,58 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  swift:
+    name: Swift
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain versions
+        run: |
+          swift --version
+          xcode-select -p
+
+      - name: Install pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Bindings are generated, not committed. Building without this step
+      # would compile against whatever happened to be on disk — which on a
+      # fresh runner is nothing.
+      - name: Generate bindings
+        run: ./scripts/gen-bindings.sh
+
+      - name: Build client
+        working-directory: clients/macos
+        run: swift build
+
+      # Runtime verification of the FFI. A plain executable rather than a test
+      # target, because XCTest and swift-testing both need a full Xcode and
+      # this build deliberately targets Command Line Tools only.
+      - name: Bridge check
+        working-directory: clients/macos
+        run: swift run BridgeCheck
+
+      # Generated bindings are excluded on purpose; only hand-written sources.
+      - name: Format lint
+        working-directory: clients/macos
+        run: swift format lint --strict --recursive Sources/OpenConv Sources/BridgeCheck
+
+  # #97: does the three-client smoke test survive a runner with no desktop
+  # session? Non-blocking while that is being established — the result of this
+  # job decides whether it becomes a required check or moves to a schedule.
+  smoke:
+    name: Smoke (experimental)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Run smoke test
+        run: ./scripts/smoke.sh
