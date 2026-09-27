@@ -21,8 +21,7 @@ filed further ahead than the decisions they depended on.
 
 So: decompose a milestone into issues when starting it, not before.
 
-Milestone 0 is tracked in the `0: Continuous integration` milestone
-(#94–#97). `gh` defaults to the enterprise host on this machine, so commands
+Milestone 0 was tracked as #94–#97, all closed. `gh` defaults to the enterprise host on this machine, so commands
 against this repo need `GH_HOST=github.com`.
 
 ## Where we are
@@ -48,17 +47,26 @@ missing when "message history" was proposed as the next step: history is local
 state, and it would have been built against a relay that is about to change
 shape.
 
-## 0. Continuous integration
+## 0. Continuous integration — done
 
-Not a milestone — infrastructure, and small. `just check` currently runs only
-when someone remembers, which means the lint policy, the conventions, and the
-tests are all advisory.
+Four jobs on every push and pull request: Rust (fmt, clippy `-D warnings`,
+tests), Dependencies (`cargo deny`), Swift (bindings, build, `BridgeCheck`,
+format lint), and Smoke (three real clients through a real relay). CI now
+covers everything `just check` does.
 
-Needs a macOS runner for the Swift half. `cargo-deny` belongs here too: the
-project is MIT and a copyleft dependency would currently go unnoticed.
+Three things it found on the way in, all of which would have bitten later:
 
-**Done when** a pull request that breaks formatting, lints, tests, or the
-bridge fails before a human looks at it.
+- `KEYCHAIN_SERVICE` was dead code on non-macOS targets, which `-D warnings`
+  turns into a failed build.
+- `gen-bindings.sh` copied into directories that hold only gitignored files,
+  so it worked locally and failed on any fresh clone.
+- `smoke.sh` discarded its build output and carried on, so a failed build
+  reported itself as three clients that "wrote no vault".
+
+`cargo-deny` also settled a licensing question: UniFFI and hpke-rs are
+MPL-2.0 and both are load-bearing. Allowed deliberately — see `deny.toml` and
+the dependencies section of `CONTRIBUTING.md` for the obligation that comes
+with them.
 
 ## 1. Addressed, durable relay
 
