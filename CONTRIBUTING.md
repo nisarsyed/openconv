@@ -118,6 +118,22 @@ the signal an attacker would use to knock a client out of a session.
 **Validate anything off the network before trusting it.** `add_member` runs
 `KeyPackageIn::validate` rather than accepting the deserialised form.
 
+## Dependencies
+
+`cargo deny check` runs in CI and locally via `just deny`. It gates licences,
+advisories, wildcard versions, and registries. Anything not on the allow list
+in `deny.toml` fails the build, so adding a licence there is a decision about
+what the project may ship and should be argued in the PR.
+
+**One obligation worth knowing before you touch them.** UniFFI and hpke-rs are
+MPL-2.0 — weak, file-level copyleft — and both are load-bearing: UniFFI is the
+Rust↔Swift bridge, hpke-rs comes in through openmls. Linking them into this
+MIT work is fine and the combined product still ships as MIT.
+
+What is not fine is forking or vendoring either one in-tree and modifying it
+without publishing those changes under MPL-2.0. Consuming them from crates.io
+keeps this a non-issue; vendoring is what turns it into an obligation.
+
 ## Tests
 
 Group-protocol behaviour is tested with **at least three members**. Two
@@ -158,9 +174,7 @@ formatting, clippy and tests. The Swift build and `BridgeCheck` are not in CI
 yet (#95), and neither is the smoke test (#97) — which is the test most likely
 to catch a real bug, so `just check` locally still matters.
 
-`rust-version = "1.85"` is the edition floor and is unverified. `cargo-deny`
-is not wired up (#96), which matters now the project is MIT and a copyleft
-dependency would go unnoticed.
+`rust-version = "1.85"` is the edition floor and is unverified.
 
 [api-guidelines]: https://rust-lang.github.io/api-guidelines/checklist.html
 [tokio-lints]: https://github.com/tokio-rs/tokio/blob/master/tokio/src/lib.rs
