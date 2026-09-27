@@ -107,13 +107,16 @@ jobs:
         working-directory: clients/macos
         run: swift format lint --strict --recursive Sources/OpenConv Sources/BridgeCheck
 
-  # #97: does the three-client smoke test survive a runner with no desktop
-  # session? Non-blocking while that is being established — the result of this
-  # job decides whether it becomes a required check or moves to a schedule.
+  # The three-client end-to-end test: a real relay and three real SwiftUI
+  # clients, which is what caught the dropped commit and the forked group that
+  # every unit test missed.
+  #
+  # It does run on a hosted runner — the apps launch without a desktop session.
+  # It waits on conditions rather than sleeping, so it is fast and does not get
+  # less reliable as the runner gets busier.
   smoke:
-    name: Smoke (experimental)
+    name: Smoke
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - name: Install pinned toolchain

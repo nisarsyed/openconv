@@ -22,6 +22,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Wait for a condition rather than guessing at a duration. Fixed sleeps are
+# both slower than necessary here and unreliable on a loaded CI runner, where
+# the safe sleep and the fast one are far apart.
+#   wait_for <seconds> <description> <command...>
+wait_for() {
+    local timeout=$1 what=$2; shift 2
+    local deadline=$(( SECONDS + timeout ))
+    until "$@" >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            echo "FAIL: timed out after ${timeout}s waiting for $what"
+            return 1
+        fi
+        sleep 0.2
+    done
+}
+
+# The clients log their state transitions to stdout, which is what makes them
+# observable without a human watching a window.
+said() { grep -q "$2" "$LOG/$1.log" 2>/dev/null; }
+
 echo "building..."
 # Each of these is checked: a swallowed build failure surfaces later as an
 # absent binary and reads like a protocol bug, which is exactly how long this
@@ -44,18 +64,27 @@ fi
 echo "starting relay..."
 cargo run -q -p openconv-server > "$LOG/relay.log" 2>&1 &
 RELAY=$!
-sleep 3
+wait_for 60 "the relay to accept connections" \
+    curl -sf http://127.0.0.1:8080/healthz || exit 1
 
 echo "launching clients..."
 "$APP" alice host > "$LOG/alice.log" 2>&1 &
 ALICE=$!
-sleep 3
+wait_for 60 "alice to create the group" said alice "created the group" || exit 1
+
 "$APP" bob join "$MESSAGE" > "$LOG/bob.log" 2>&1 &
 BOB=$!
-sleep 5
+wait_for 60 "bob to join" said bob "joined the group" || exit 1
+
+# Carol joins last. Both alice and bob are in the group and will race to
+# admit her; the relay's ordering decides which commit wins.
 "$APP" carol join "$LATE_MESSAGE" > "$LOG/carol.log" 2>&1 &
 CAROL=$!
-sleep 8
+wait_for 60 "carol to join" said carol "joined the group" || exit 1
+
+# The assertions below are about delivery, so wait for the last message to
+# arrive rather than for a fixed interval.
+wait_for 60 "carol's message to reach bob" said bob "received: $LATE_MESSAGE" || exit 1
 
 echo
 echo "--- alice ---"; cat "$LOG/alice.log"
