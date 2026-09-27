@@ -169,12 +169,14 @@ Line Tools only. Don't "fix" it into a test target.
 
 ## Not yet done
 
-Honest list, so nobody assumes otherwise. CI enforces the Rust half only:
-formatting, clippy and tests. The Swift build and `BridgeCheck` are not in CI
-yet (#95), and neither is the smoke test (#97) — which is the test most likely
-to catch a real bug, so `just check` locally still matters.
+Honest list, so nobody assumes otherwise. `rust-version = "1.85"` is the
+edition floor and is unverified — nothing builds against it.
 
-`rust-version = "1.85"` is the edition floor and is unverified.
+The smoke test waits on conditions rather than sleeping, but it is still the
+most environment-dependent thing in CI: it launches three real applications
+and binds a fixed port. If it starts failing intermittently, fix it or move it
+to a schedule. Do not leave a flaky required check in place — it trains
+everyone to ignore red, which costs more than not running it.
 
 [api-guidelines]: https://rust-lang.github.io/api-guidelines/checklist.html
 [tokio-lints]: https://github.com/tokio-rs/tokio/blob/master/tokio/src/lib.rs
