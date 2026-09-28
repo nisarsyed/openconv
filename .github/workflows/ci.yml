@@ -61,11 +61,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The action ships a prebuilt binary. `cargo install cargo-deny` takes
-      # minutes and would dominate this job's runtime.
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # cargo-deny's own action is a Docker action and spends ~13s building
+      # the image before it does any work — longer than compiling and testing
+      # the whole workspace. This fetches a prebuilt binary instead.
+      - uses: taiki-e/install-action@v2
         with:
-          command: check
+          tool: cargo-deny
+
+      - run: cargo deny check
 
   # Swift and the smoke test share everything expensive — bindings, the Rust
   # staticlib, the Swift build — so they are one job. Run separately they each
