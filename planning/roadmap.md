@@ -8,6 +8,10 @@ behind it, so the next decision does not get re-litigated from scratch.
 It is a plan, not a promise. Revise it when something is learned — but revise
 it here, rather than quietly doing something else.
 
+Decisions already taken, with their reasoning, are in
+`architecture-notes.md`. This file is what to build; that one is why the shape
+is what it is.
+
 ## How work is tracked
 
 This file holds the order and the reasoning. GitHub issues hold the execution

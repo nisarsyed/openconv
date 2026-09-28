@@ -118,6 +118,11 @@ most often gotten wrong:
 
 ## Context
 
+`planning/architecture-notes.md` records decisions already taken and the
+reasoning — why MLS rather than Signal, where OpenConv sits against Matrix,
+why no Erlang/C/asm, retention, unsafe. Read it before reopening any of those;
+they were argued, not assumed.
+
 `planning/roadmap.md` is the milestone order and why. Check it before
 proposing what to build next — it exists because that decision was previously
 made per-session and drifted.
