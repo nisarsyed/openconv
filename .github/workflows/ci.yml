@@ -67,8 +67,11 @@ jobs:
         with:
           command: check
 
-  swift:
-    name: Swift
+  # Swift and the smoke test share everything expensive — bindings, the Rust
+  # staticlib, the Swift build — so they are one job. Run separately they each
+  # paid for a full build, on two macOS runners, to reach the same state.
+  macos:
+    name: macOS
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -85,9 +88,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Bindings are generated, not committed. Building without this step
-      # would compile against whatever happened to be on disk — which on a
-      # fresh runner is nothing.
+      # SwiftPM keeps its artifacts in .build and nothing else caches them, so
+      # without this every run pays a cold Swift build. Cold is ~32s against
+      # ~2s warm, and it was being paid twice.
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: clients/macos/.build
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('clients/macos/Package.swift', 'clients/macos/Sources/**/*.swift') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-
+
+      # Bindings are generated, not committed; a fresh runner has nothing to
+      # build against.
       - name: Generate bindings
         run: ./scripts/gen-bindings.sh
 
@@ -107,20 +120,8 @@ jobs:
         working-directory: clients/macos
         run: swift format lint --strict --recursive Sources/OpenConv Sources/BridgeCheck
 
-  # The three-client end-to-end test: a real relay and three real SwiftUI
-  # clients, which is what caught the dropped commit and the forked group that
-  # every unit test missed.
-  #
-  # It does run on a hosted runner — the apps launch without a desktop session.
-  # It waits on conditions rather than sleeping, so it is fast and does not get
-  # less reliable as the runner gets busier.
-  smoke:
-    name: Smoke
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Run smoke test
+      # Three real clients through a real relay — the test that caught the
+      # dropped commit and the forked group. Reuses the build above rather
+      # than repeating it.
+      - name: Smoke test
         run: ./scripts/smoke.sh
