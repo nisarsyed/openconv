@@ -86,9 +86,29 @@ This unlocks offline delivery, late joiners getting context, and multiple
 conversations. It also turns local history into a cache of something
 authoritative rather than the only copy.
 
-Retention becomes a real policy question here — how long the relay keeps
-frames is a privacy decision, not just a storage one. Decide it deliberately
-and write it down.
+Tracked as #103–#107.
+
+### Retention, decided
+
+**A 30 day window plus a per-channel size cap, both operator-configurable.**
+
+Not acknowledgement-based, which is the design that first suggests itself.
+Dropping a frame once every member has received it requires the relay to know
+who is in a channel, and it does not: MLS membership is client-side state and
+the relay sees connections, not rosters. Teaching it membership would hand the
+server a social graph to solve a storage problem, and the blind-relay rule
+outranks that.
+
+A window is also less limiting than it appears. MLS forward secrecy means a
+member who joins at epoch N cannot decrypt frames from earlier epochs however
+long they were kept, so retention only ever serves members already in the
+group who went offline. It buys nothing for new members or new devices.
+
+The number therefore answers exactly one question — how long may someone be
+offline and still catch up — and thirty days covers a holiday or a broken
+laptop. Seven is defensible and more privacy-maximising. Because this is
+self-hosted, the operator can set either; the documentation should say plainly
+that lowering it costs only the offline-delivery window.
 
 **Done when** a client can be closed, miss traffic, reopen, and catch up.
 
