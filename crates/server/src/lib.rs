@@ -26,8 +26,8 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::broadcast;
 
@@ -38,8 +38,15 @@ const BACKLOG: usize = 256;
 struct Relay {
     /// Every connection subscribes and receives every frame, sender included.
     tx: broadcast::Sender<Vec<u8>>,
-    /// Hands out sequence numbers. The ordering authority for the channel.
-    seq: Arc<AtomicU64>,
+    /// The ordering authority for the channel.
+    ///
+    /// A mutex rather than an atomic counter, because numbering a frame and
+    /// broadcasting it have to happen together. With a counter the two steps
+    /// can interleave: two concurrent frames get numbers 4 and 5, then the
+    /// sends race and every client receives 5 before 4. Clients then disagree
+    /// about which commit won its epoch, which is the one thing this relay
+    /// exists to decide.
+    seq: Arc<Mutex<u64>>,
 }
 
 /// Width of the sequence prefix the relay prepends to each frame.
@@ -58,7 +65,7 @@ pub fn router() -> Router {
     let (tx, _) = broadcast::channel(BACKLOG);
     let relay = Relay {
         tx,
-        seq: Arc::new(AtomicU64::new(0)),
+        seq: Arc::new(Mutex::new(0)),
     };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -71,7 +78,6 @@ async fn upgrade(ws: WebSocketUpgrade, State(relay): State<Relay>) -> impl IntoR
 }
 
 async fn handle(socket: WebSocket, relay: Relay) {
-    use std::sync::atomic::AtomicUsize;
     static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -110,9 +116,17 @@ async fn handle(socket: WebSocket, relay: Relay) {
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
                 Message::Binary(bytes) => {
-                    let n = seq.fetch_add(1, Ordering::SeqCst);
-                    tracing::debug!(id, seq = n, bytes = bytes.len(), "relaying");
-                    let _ = tx.send(stamp(n, &bytes));
+                    // Number and broadcast under one lock so delivery order
+                    // matches numbering. `send` only pushes into the channel
+                    // and does not await, so this never holds across a yield.
+                    let n = {
+                        let mut seq = seq.lock().expect("relay sequence poisoned");
+                        let n = *seq;
+                        *seq += 1;
+                        let _ = tx.send(stamp(n, &bytes));
+                        n
+                    };
+                    tracing::debug!(id, seq = n, bytes = bytes.len(), "relayed");
                 }
                 Message::Close(_) => break,
                 _ => {}

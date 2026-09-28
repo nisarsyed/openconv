@@ -16,11 +16,38 @@ MESSAGE="hello from bob"
 # only decrypts her message if he applied the commit that her join produced.
 LATE_MESSAGE="hello from carol"
 
+dump_logs() {
+    for who in alice bob carol relay; do
+        if [ -s "$LOG/$who.log" ]; then
+            echo "--- $who ---"; cat "$LOG/$who.log"
+        elif [ -f "$LOG/$who.log" ]; then
+            echo "--- $who --- (empty: process produced no output)"
+        fi
+    done
+    # A client that dies on exec or traps at startup leaves a crash report.
+    local reports=~/Library/Logs/DiagnosticReports
+    if [ -d "$reports" ]; then
+        for r in "$reports"/OpenConv*.ips; do
+            [ -e "$r" ] || continue
+            echo "--- crash report $(basename "$r") ---"
+            head -40 "$r"
+        done
+    fi
+}
+
 cleanup() {
     kill ${ALICE:-} ${BOB:-} ${CAROL:-} ${RELAY:-} 2>/dev/null
     wait 2>/dev/null
 }
 trap cleanup EXIT
+
+# Any exit before the assertions below is a failure worth explaining.
+die() {
+    echo "$1"
+    echo
+    dump_logs
+    exit 1
+}
 
 # Wait for a condition rather than guessing at a duration. Fixed sleeps are
 # both slower than necessary here and unreliable on a loaded CI runner, where
@@ -64,27 +91,29 @@ fi
 echo "starting relay..."
 cargo run -q -p openconv-server > "$LOG/relay.log" 2>&1 &
 RELAY=$!
-wait_for 60 "the relay to accept connections" \
-    curl -sf http://127.0.0.1:8080/healthz || exit 1
+wait_for 30 "the relay to accept connections" \
+    curl -sf http://127.0.0.1:8080/healthz || die "relay never came up"
 
 echo "launching clients..."
 "$APP" alice host > "$LOG/alice.log" 2>&1 &
 ALICE=$!
-wait_for 60 "alice to create the group" said alice "created the group" || exit 1
+wait_for 30 "alice to create the group" said alice "created the group" \
+    || die "alice never started"
 
 "$APP" bob join "$MESSAGE" > "$LOG/bob.log" 2>&1 &
 BOB=$!
-wait_for 60 "bob to join" said bob "joined the group" || exit 1
+wait_for 30 "bob to join" said bob "joined the group" || die "bob never joined"
 
 # Carol joins last. Both alice and bob are in the group and will race to
 # admit her; the relay's ordering decides which commit wins.
 "$APP" carol join "$LATE_MESSAGE" > "$LOG/carol.log" 2>&1 &
 CAROL=$!
-wait_for 60 "carol to join" said carol "joined the group" || exit 1
+wait_for 30 "carol to join" said carol "joined the group" || die "carol never joined"
 
 # The assertions below are about delivery, so wait for the last message to
 # arrive rather than for a fixed interval.
-wait_for 60 "carol's message to reach bob" said bob "received: $LATE_MESSAGE" || exit 1
+wait_for 30 "carol's message to reach bob" said bob "received: $LATE_MESSAGE" \
+    || die "carol's message never reached bob"
 
 echo
 echo "--- alice ---"; cat "$LOG/alice.log"

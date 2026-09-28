@@ -172,6 +172,11 @@ Line Tools only. Don't "fix" it into a test target.
 Honest list, so nobody assumes otherwise. `rust-version = "1.85"` is the
 edition floor and is unverified — nothing builds against it.
 
+There is no SwiftPM cache in CI, and it is not worth adding. `rust-cache`
+already covers the expensive half; caching `clients/macos/.build` on top of it
+measured at about four seconds, against the risk of serving stale build
+products.
+
 The smoke test waits on conditions rather than sleeping, but it is still the
 most environment-dependent thing in CI: it launches three real applications
 and binds a fixed port. If it starts failing intermittently, fix it or move it

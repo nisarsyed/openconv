@@ -91,16 +91,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # SwiftPM keeps its artifacts in .build and nothing else caches them, so
-      # without this every run pays a cold Swift build. Cold is ~32s against
-      # ~2s warm, and it was being paid twice.
-      - name: Cache SwiftPM build
-        uses: actions/cache@v4
-        with:
-          path: clients/macos/.build
-          key: swiftpm-${{ runner.os }}-${{ hashFiles('clients/macos/Package.swift', 'clients/macos/Sources/**/*.swift') }}
-          restore-keys: |
-            swiftpm-${{ runner.os }}-
+      # No SwiftPM cache on purpose: rust-cache above covers the expensive
+      # half, and caching clients/macos/.build on top of it measured at about
+      # four seconds.
 
       # Bindings are generated, not committed; a fresh runner has nothing to
       # build against.
