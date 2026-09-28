@@ -224,9 +224,17 @@ final class ChatModel: ObservableObject {
     /// and can no longer trust its view of the order, so say so loudly rather
     /// than letting it surface later as an undecryptable message.
     private func checkOrder(_ seq: UInt64) {
-        defer { lastSeq = seq }
-        guard let last = lastSeq, seq != last + 1 else { return }
-        note("missed \(seq - last - 1) frame(s) from the relay; state may be stale")
+        defer { lastSeq = max(lastSeq ?? seq, seq) }
+        guard let last = lastSeq else { return }
+
+        if seq > last + 1 {
+            note("missed \(seq - last - 1) frame(s) from the relay; state may be stale")
+        } else if seq <= last {
+            // Never expected: the relay numbers and broadcasts under one lock.
+            // Worth saying out loud rather than computing a negative gap —
+            // `seq - last - 1` on UInt64 underflows and traps the process.
+            note("frame \(seq) arrived after \(last); relay ordering is broken")
+        }
     }
 
     // MARK: - Feedback

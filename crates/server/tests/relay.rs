@@ -120,3 +120,75 @@ async fn two_clients_talk_through_the_relay() {
     };
     assert_eq!(text, "got it");
 }
+
+/// The relay's whole purpose beyond fan-out is deciding an order, and every
+/// client must see the same one. Numbering a frame and broadcasting it have
+/// to happen together: done separately, two concurrent frames get numbers in
+/// one order and reach clients in the other, and members disagree about which
+/// commit won its epoch.
+#[tokio::test]
+async fn concurrent_senders_produce_one_agreed_order() {
+    const SENDERS: usize = 4;
+    const PER_SENDER: usize = 25;
+    const TOTAL: usize = SENDERS * PER_SENDER;
+
+    let url = spawn_relay().await;
+
+    // Two observers that send nothing, so everything they see is someone
+    // else's traffic arriving in the relay's order.
+    let mut observers = Vec::new();
+    for _ in 0..2 {
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        observers.push(ws);
+    }
+
+    // Senders blast concurrently, which is what makes the numbering and the
+    // broadcast race.
+    let mut senders = Vec::new();
+    for _ in 0..SENDERS {
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        senders.push(ws);
+    }
+    let mut tasks = Vec::new();
+    for (s, mut ws) in senders.into_iter().enumerate() {
+        tasks.push(tokio::spawn(async move {
+            for i in 0..PER_SENDER {
+                let body = format!("{s}:{i}").into_bytes();
+                ws.send(Message::Binary(
+                    encode_frame(FrameKind::Application, &body).into(),
+                ))
+                .await
+                .unwrap();
+            }
+            // Hold the socket open until every observer has read.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }));
+    }
+
+    let mut transcripts = Vec::new();
+    for ws in &mut observers {
+        let mut seen = Vec::new();
+        for _ in 0..TOTAL {
+            let env = decode_envelope(&next(ws).await).unwrap();
+            seen.push((env.seq, env.body));
+        }
+        transcripts.push(seen);
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+
+    for (which, seen) in transcripts.iter().enumerate() {
+        let seqs: Vec<u64> = seen.iter().map(|(s, _)| *s).collect();
+        let expected: Vec<u64> = (0..TOTAL as u64).collect();
+        assert_eq!(
+            seqs, expected,
+            "observer {which} saw sequence numbers out of order or with gaps"
+        );
+    }
+
+    assert_eq!(
+        transcripts[0], transcripts[1],
+        "observers disagreed about the order of the same frames"
+    );
+}

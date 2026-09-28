@@ -91,16 +91,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Deliberately no SwiftPM cache. Caching clients/macos/.build restores
-      # executables that were ad-hoc code-signed when they were linked, and on
-      # arm64 macOS the kernel refuses to exec a binary whose signature no
-      # longer matches: every client dies with `Trace/BPT trap: 5` and the
-      # smoke test times out waiting for messages that were never sent.
-      #
-      # It cost about 30s per run and bought an intermittently red check whose
-      # failure looks like an application bug. Not worth it. If this is
-      # revisited, cache compilation products only and force a relink so the
-      # binaries are signed on the machine that runs them.
+      # No SwiftPM cache on purpose: rust-cache above covers the expensive
+      # half, and caching clients/macos/.build on top of it measured at about
+      # four seconds.
 
       # Bindings are generated, not committed; a fresh runner has nothing to
       # build against.
