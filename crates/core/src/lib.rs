@@ -879,4 +879,3 @@ mod tests {
         assert!(matches!(alice.send("nope"), Err(Error::NoGroup)));
     }
 }
-
