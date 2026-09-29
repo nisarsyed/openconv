@@ -96,12 +96,15 @@ same message set as everyone else".
 
 MIMI was read before #103 set the wire format (2026-09-29; see
 `architecture-notes.md`). It does not constrain the client↔relay protocol, but
-it does suggest four cheap choices here:
+it does suggest three cheap choices here:
 
 - the MLS group id as the channel id;
 - a non-channel path for KeyPackages and Welcomes;
-- an accepted timestamp stored beside the sequence;
-- a receiver epoch tolerance.
+- an accepted timestamp stored beside the sequence.
+
+(A fourth, a receiver epoch tolerance, was rejected while fixing #110. A
+member admitted by the racing commit never had the old epoch's keys, so
+tolerance would let some members read a message that others cannot.)
 
 ### Retention, decided
 

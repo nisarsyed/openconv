@@ -124,7 +124,9 @@ final class ChatModel: ObservableObject {
         draft = ""
         do {
             try send(kind: .application, body: client.send(text: text))
-            // The relay never echoes a sender its own frame, so show it locally.
+            // Shown now rather than when the relay echoes it back. If that
+            // echo lands behind a commit, the core hands back a resend; the
+            // text is unchanged, so this line stays as it is.
             print("[\(identity)] sent: \(text)")
             lines.append(Line(author: identity, text: text, mine: true))
         } catch {
@@ -216,6 +218,17 @@ final class ChatModel: ObservableObject {
             status = .joined(members: Int(client.memberCount()))
 
         case .echo:
+            break
+
+        case .resend(let message):
+            // Our message landed behind a commit, so everyone discarded it.
+            // This is the same text encrypted for the epoch they are in now.
+            try send(kind: .application, body: message)
+            print("[\(identity)] resent a message that crossed a commit")
+
+        case .stale:
+            // Someone else's message that crossed a commit. They resend it,
+            // so the copy that arrives next is the one to show.
             break
         }
     }

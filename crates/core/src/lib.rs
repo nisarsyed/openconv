@@ -74,9 +74,23 @@ pub struct Member {
     /// retried. Persisting it would mean reconciling a staged commit against
     /// an ordering this client has not yet seen.
     pending: Option<PendingAdd>,
-    /// Recently sent frames, so their echoes off the relay can be recognised
-    /// without putting sender identity on the wire.
-    sent: VecDeque<Vec<u8>>,
+    /// Recently sent messages, so their echoes off the relay can be
+    /// recognised without putting sender identity on the wire.
+    sent: VecDeque<Sent>,
+}
+
+/// A message sent and not yet seen coming back.
+///
+/// Holds the plaintext, because an echo arriving after a commit means the
+/// message has to be encrypted again. Deliberately no derived `Debug`: it
+/// would print message contents into any log line that formats one.
+struct Sent {
+    /// Exactly the bytes sent, used to spot this message coming back.
+    wire: Vec<u8>,
+    /// The epoch it was encrypted in.
+    epoch: u64,
+    /// What to resend if that epoch turns out to be stale.
+    text: String,
 }
 
 /// An add waiting to find out whether it won its epoch.
@@ -110,6 +124,18 @@ pub enum Event {
     Advanced,
     /// This client's own frame, echoed back by the relay.
     Echo,
+    /// This client's own message came back from the relay behind a commit it
+    /// was not encrypted for. Every receiver has discarded it as
+    /// [`Event::Stale`]. Send `message` — the same text, encrypted in the
+    /// current epoch — as an application frame.
+    Resend {
+        /// Deliver to the group in place of the stale original.
+        message: Vec<u8>,
+    },
+    /// Another member's message from an epoch this member has already left,
+    /// discarded unread. Its sender sees the same ordering and resends it
+    /// (see [`Event::Resend`]), so this is not a loss.
+    Stale,
 }
 
 /// Redacting by hand rather than deriving: this type holds identity keys and
@@ -315,7 +341,7 @@ impl Member {
         Ok(commit)
     }
 
-    /// Join a group from a `Welcome` produced by [`Member::add_member`].
+    /// Join a group from a `Welcome` released by [`Member::propose_add`].
     ///
     /// # Errors
     /// If the message is not a `Welcome`, or does not admit this member.
@@ -347,12 +373,17 @@ impl Member {
     /// If this member has no group, or encryption fails.
     pub fn send(&mut self, text: &str) -> Result<Vec<u8>> {
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+        let epoch = group.epoch().as_u64();
         // Encrypting ratchets the sender key, so the new state must be saved.
         let wire = group
             .create_message(&self.provider, &self.signer, text.as_bytes())
             .map_err(mls)?
             .tls_serialize_detached()?;
-        self.remember_sent(wire.clone());
+        self.remember_sent(Sent {
+            wire: wire.clone(),
+            epoch,
+            text: text.to_owned(),
+        });
         self.persist()?;
         Ok(wire)
     }
@@ -373,8 +404,23 @@ impl Member {
             self.persist()?;
             return Ok(Event::Admitted { welcome });
         }
-        if self.sent.iter().any(|sent| sent == wire) {
-            return Ok(Event::Echo);
+        if let Some(sent) = self.take_sent(wire) {
+            let group = self.group.as_ref().ok_or(Error::NoGroup)?;
+            if sent.epoch == group.epoch().as_u64() {
+                return Ok(Event::Echo);
+            }
+            // A commit was ordered between sending this and seeing it come
+            // back, so every member has left the epoch it was encrypted in
+            // and will discard it. They all saw the same order, so they all
+            // agree it is stale; encrypting it again in the current epoch is
+            // what gets it delivered.
+            //
+            // Keeping past-epoch secrets so receivers could still read it was
+            // considered and rejected: a member admitted by that commit never
+            // had the old epoch's keys, so some members would see the message
+            // and others would not.
+            let message = self.send(&sent.text)?;
+            return Ok(Event::Resend { message });
         }
 
         let msg = MlsMessageIn::tls_deserialize_exact(wire)?;
@@ -397,9 +443,15 @@ impl Member {
         }
 
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
-        // Frames from an epoch we have already left cannot be decrypted.
+        // Frames from an epoch we have already left cannot be decrypted. A
+        // stale commit lost its race and has nothing to apply. A stale
+        // message will be resent by its sender, and must not be reported as
+        // though nothing had arrived.
         if protocol.epoch() < group.epoch() {
-            return Ok(Event::Advanced);
+            return Ok(match protocol.content_type() {
+                ContentType::Application => Event::Stale,
+                ContentType::Commit | ContentType::Proposal => Event::Advanced,
+            });
         }
         let processed = group
             .process_message(&self.provider, protocol)
@@ -426,12 +478,21 @@ impl Member {
         Ok(event)
     }
 
-    /// Record a frame so the relay's echo of it can be recognised.
-    fn remember_sent(&mut self, wire: Vec<u8>) {
+    /// Record a message so the relay's echo of it can be recognised.
+    fn remember_sent(&mut self, sent: Sent) {
         if self.sent.len() == SENT_HISTORY {
             self.sent.pop_front();
         }
-        self.sent.push_back(wire);
+        self.sent.push_back(sent);
+    }
+
+    /// Claim the record of a sent message whose echo has arrived.
+    ///
+    /// Removed rather than just matched, so a message is resent at most once
+    /// per echo: a second copy of a stale echo must not send it twice.
+    fn take_sent(&mut self, wire: &[u8]) -> Option<Sent> {
+        let at = self.sent.iter().position(|sent| sent.wire == wire)?;
+        self.sent.remove(at)
     }
 
     /// Display name of this member.
@@ -624,6 +685,100 @@ mod tests {
         let wire = alice.send("did we survive that?").unwrap();
         assert_message(bob.receive(&wire).unwrap(), "did we survive that?");
         assert_message(carol.receive(&wire).unwrap(), "did we survive that?");
+    }
+
+    /// A message sent while another member's commit is in flight is encrypted
+    /// in an epoch everyone leaves before it arrives. It must reach everyone
+    /// anyway — including the member that commit admitted, who never had the
+    /// old epoch's keys at all.
+    #[test]
+    fn message_racing_a_commit_is_resent_to_everyone() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+
+        // Alice admits Carol while Bob, not having seen that commit, speaks.
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let raced = bob.send("crossed in the post").unwrap();
+
+        // The relay orders the commit first.
+        let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+            panic!("alice's commit was ordered first, so it should win");
+        };
+        carol.join(&welcome).unwrap();
+        assert!(matches!(bob.receive(&commit).unwrap(), Event::Advanced));
+
+        // Bob's message lands a stale epoch behind for everyone. Receivers
+        // discard it, and say so rather than claiming the group advanced.
+        assert!(matches!(alice.receive(&raced).unwrap(), Event::Stale));
+        assert!(matches!(carol.receive(&raced).unwrap(), Event::Stale));
+
+        // Bob sees his own message land after the commit and sends it again.
+        let Event::Resend { message } = bob.receive(&raced).unwrap() else {
+            panic!("bob's message landed after a commit, so it must be resent");
+        };
+        // Once. A second copy of the stale echo must not send it again.
+        assert!(matches!(bob.receive(&raced).unwrap(), Event::Stale));
+
+        assert_message(alice.receive(&message).unwrap(), "crossed in the post");
+        assert_message(carol.receive(&message).unwrap(), "crossed in the post");
+        assert!(matches!(bob.receive(&message).unwrap(), Event::Echo));
+    }
+
+    /// A resend can race a commit too. It has to keep going until it lands
+    /// in the epoch everyone is in, not give up after one attempt.
+    #[test]
+    fn a_resend_that_races_again_is_resent_again() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.join(&welcome).unwrap();
+        bob.receive(&commit).unwrap();
+
+        let mut attempt = bob.send("third time lucky").unwrap();
+        let mut newcomers = Vec::new();
+
+        // Twice over, Alice admits someone and her commit is ordered just
+        // ahead of Bob's latest attempt.
+        for name in ["dave", "erin"] {
+            let mut joiner = Member::new(name).unwrap();
+            let commit = alice.propose_add(&joiner.key_package().unwrap()).unwrap();
+            let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+                panic!("alice's commit was ordered first, so it should win");
+            };
+            for member in std::iter::once(&mut bob)
+                .chain(std::iter::once(&mut carol))
+                .chain(newcomers.iter_mut())
+            {
+                member.receive(&commit).unwrap();
+            }
+            joiner.join(&welcome).unwrap();
+            newcomers.push(joiner);
+
+            for member in [&mut alice, &mut carol] {
+                assert!(matches!(member.receive(&attempt).unwrap(), Event::Stale));
+            }
+            let Event::Resend { message } = bob.receive(&attempt).unwrap() else {
+                panic!("an attempt that landed after a commit must be resent");
+            };
+            attempt = message;
+        }
+
+        for member in [&mut alice, &mut carol]
+            .into_iter()
+            .chain(newcomers.iter_mut())
+        {
+            assert_message(member.receive(&attempt).unwrap(), "third time lucky");
+        }
+        assert!(matches!(bob.receive(&attempt).unwrap(), Event::Echo));
     }
 
     /// The relay echoes a sender its own frames; they must not be mistaken

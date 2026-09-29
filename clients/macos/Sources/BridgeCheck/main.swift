@@ -71,6 +71,39 @@ do {
     failures += 1
 }
 
+print("bridge: a message that crosses a commit is resent")
+do {
+    let alice = try Client(identity: "alice")
+    let bob = try Client(identity: "bob")
+    let carol = try Client(identity: "carol")
+    try alice.createGroup()
+    let first = try alice.proposeAdd(keyPackage: bob.keyPackage())
+    guard case .admitted(let welcome) = try alice.receive(wire: first) else {
+        throw BridgeError.unexpected("uncontested commit should have been admitted")
+    }
+    try bob.join(welcome: welcome)
+
+    // Alice admits Carol while Bob speaks; the commit is ordered first.
+    let commit = try alice.proposeAdd(keyPackage: carol.keyPackage())
+    let raced = try bob.send(text: "crossed in the post")
+    guard case .admitted(let welcome) = try alice.receive(wire: commit) else {
+        throw BridgeError.unexpected("alice's commit was ordered first")
+    }
+    try carol.join(welcome: welcome)
+    _ = try bob.receive(wire: commit)
+
+    check("receivers report the stale copy", try alice.receive(wire: raced) == .stale)
+    guard case .resend(let again) = try bob.receive(wire: raced) else {
+        throw BridgeError.unexpected("bob's stale message should come back as a resend")
+    }
+    check(
+        "the resend reaches the new member",
+        messageText(try carol.receive(wire: again)) == "crossed in the post")
+} catch {
+    print("  FAIL setup — \(error)")
+    failures += 1
+}
+
 print("bridge: framing")
 do {
     let body = Data([9, 8, 7])

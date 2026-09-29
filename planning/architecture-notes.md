@@ -251,7 +251,9 @@ is a channel whose server sees membership, and the UI should say so.
 - **Epoch races on application messages.** The hub rejects an application
   message from a stale epoch with `epochTooOld` plus the current epoch, and
   the sender re-encrypts. Room policy carries an explicit `epoch_tolerance`.
-  OpenConv has neither: see "Messages racing a commit" under Still open.
+  OpenConv now does the blind equivalent of the first (#110): the sender
+  notices its own echo landing behind a commit and resends. It deliberately
+  does not do the second — see "Messages racing a commit" below.
 - **Explicit accept/reject for commits.** `wrongEpoch` / `notAllowed`
   responses, rather than inferring a win from an echo. OpenConv's echo-match
   is the blind equivalent and remains the right choice for a relay that does
@@ -433,12 +435,38 @@ member is stranded, not merely behind. So #105/#106 need two things:
   all. Once you are in a group you cannot leave and cannot be removed. A real
   protocol hole, noticed 2026-09-28, not yet tracked as an issue. MIMI's leave
   flow (`SelfRemove` proposals, committed by the next committer) is the model.
-- **Messages racing a commit are silently lost.** openmls keeps no past-epoch
-  secrets by default (`MaxEpochs(0)`), and `Member::receive` returns
-  `Event::Advanced` for a frame from an earlier epoch. An application message
-  ordered after a concurrent commit is dropped by every receiver, while its
-  sender gets `Echo` and believes it was delivered. Verified 2026-09-29 with a
-  two-member test. Tracked as #110; it blocks #105's done condition.
+
+---
+
+## Messages racing a commit — fixed in #110
+
+openmls keeps no past-epoch secrets by default (`MaxEpochs(0)`), and
+`Member::receive` used to return `Event::Advanced` for any frame from an
+earlier epoch. An application message ordered after a concurrent commit was
+dropped by every receiver, while its sender got `Echo` and believed it was
+delivered.
+
+**The fix is sender retry, and only that.** Every client processes frames in
+the relay's order, so when a sender's echo arrives behind a commit, all
+members agree the frame is stale:
+
+- receivers return `Event::Stale`;
+- the sender re-encrypts the same text in the current epoch and gets
+  `Event::Resend` to send;
+- a resend that races again is resent again.
+
+This keeps the relay blind and costs no forward secrecy.
+
+**Receiver tolerance (`max_past_epochs`) was considered and rejected**, though
+it is MIMI's `epoch_tolerance` and the obvious first fix. A member admitted
+*by* the racing commit never had the old epoch's keys. With tolerance, some
+members would read the message and the newcomer would not. The sender would
+have to resend for them anyway, and everyone else would then see it twice.
+
+What this does not cover: a sender that quits or restarts between sending and
+seeing its echo. The record of what it sent is not persisted, so that message
+can still be lost. #105 is where that becomes likely, since catch-up widens
+the window.
 
 ---
 
