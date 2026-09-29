@@ -40,6 +40,13 @@ pub enum Error {
     /// A relayed frame was empty or carried an unknown tag.
     #[error("malformed frame")]
     MalformedFrame,
+    /// The relay envelope around a frame was malformed, or an address could
+    /// not be encoded.
+    #[error("envelope: {0}")]
+    Wire(#[from] openconv_wire::Error),
+    /// Text that should have been a channel id was not one.
+    #[error("not a channel id")]
+    InvalidChannelId,
     /// Reading or writing persisted state failed.
     #[error("store: {0}")]
     Store(String),
@@ -100,6 +107,8 @@ struct PendingAdd {
     commit: Vec<u8>,
     /// Held until the commit is confirmed; useless if the commit loses.
     welcome: Vec<u8>,
+    /// Where the `Welcome` goes: the joiner's `KeyPackageRef`.
+    mailbox: Vec<u8>,
 }
 
 /// How many recently sent frames to remember. Only needs to outlive a round
@@ -115,6 +124,9 @@ pub enum Event {
     Admitted {
         /// Deliver to the member being added.
         welcome: Vec<u8>,
+        /// The address to deliver it to: the new member's mailbox, which
+        /// they subscribed to before publishing their `KeyPackage`.
+        mailbox: Vec<u8>,
     },
     /// A staged add lost its epoch to another member's commit, which has been
     /// applied instead. The joiner was probably admitted by that commit, so
@@ -267,6 +279,38 @@ impl Member {
             .build()
     }
 
+    /// The address a `Welcome` for `key_package` will be sent to.
+    ///
+    /// A joiner subscribes to this before publishing the `KeyPackage`, and
+    /// the member that admits them addresses the `Welcome` here. It is the
+    /// `KeyPackageRef`: a hash, so it identifies the offer without naming
+    /// anyone, and the same one the `Welcome` itself carries.
+    ///
+    /// # Errors
+    /// If `key_package` is not a valid `KeyPackage`.
+    pub fn mailbox(&self, key_package: &[u8]) -> Result<Vec<u8>> {
+        let kp = self.validate_key_package(key_package)?;
+        Ok(kp
+            .hash_ref(self.provider.crypto())
+            .map_err(mls)?
+            .as_slice()
+            .to_vec())
+    }
+
+    /// Parse and verify a `KeyPackage` from the network. It is hostile input
+    /// until this passes.
+    fn validate_key_package(&self, key_package: &[u8]) -> Result<KeyPackage> {
+        let msg = MlsMessageIn::tls_deserialize_exact(key_package)?;
+        let MlsMessageBodyIn::KeyPackage(kp) = msg.extract() else {
+            return Err(Error::UnexpectedMessage {
+                expected: "KeyPackage",
+            });
+        };
+        // Verifies the signature and lifetime before we trust it.
+        kp.validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(mls)
+    }
+
     /// A published `KeyPackage`, which anyone can use to add this member to a
     /// group. Safe to hand to the server.
     ///
@@ -316,16 +360,12 @@ impl Member {
             return Err(Error::AddInFlight);
         }
 
-        let msg = MlsMessageIn::tls_deserialize_exact(key_package)?;
-        let MlsMessageBodyIn::KeyPackage(kp) = msg.extract() else {
-            return Err(Error::UnexpectedMessage {
-                expected: "KeyPackage",
-            });
-        };
-        // Verifies the signature and lifetime before we trust it.
-        let kp = kp
-            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-            .map_err(mls)?;
+        let kp = self.validate_key_package(key_package)?;
+        let mailbox = kp
+            .hash_ref(self.provider.crypto())
+            .map_err(mls)?
+            .as_slice()
+            .to_vec();
 
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         let (commit, welcome, _) = group
@@ -336,6 +376,7 @@ impl Member {
         self.pending = Some(PendingAdd {
             commit: commit.clone(),
             welcome: welcome.tls_serialize_detached()?,
+            mailbox,
         });
         self.persist()?;
         Ok(commit)
@@ -398,11 +439,13 @@ impl Member {
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = self.pending.take_if(|p| p.commit == wire) {
-            let welcome = pending.welcome;
             let group = self.group.as_mut().ok_or(Error::NoGroup)?;
             group.merge_pending_commit(&self.provider).map_err(mls)?;
             self.persist()?;
-            return Ok(Event::Admitted { welcome });
+            return Ok(Event::Admitted {
+                welcome: pending.welcome,
+                mailbox: pending.mailbox,
+            });
         }
         if let Some(sent) = self.take_sent(wire) {
             let group = self.group.as_ref().ok_or(Error::NoGroup)?;
@@ -501,6 +544,18 @@ impl Member {
         String::from_utf8_lossy(self.credential.credential.serialized_content()).into_owned()
     }
 
+    /// The channel this member's group lives on, if it has joined one.
+    ///
+    /// It is the MLS group id: random, and already carried in the clear on
+    /// every message the group sends, so using it as the relay address
+    /// discloses nothing a separate id would have hidden.
+    #[must_use]
+    pub fn channel(&self) -> Option<Vec<u8>> {
+        self.group
+            .as_ref()
+            .map(|g| g.group_id().as_slice().to_vec())
+    }
+
     /// Number of members currently in the group.
     #[must_use]
     pub fn member_count(&self) -> usize {
@@ -543,51 +598,114 @@ impl FrameKind {
 }
 
 /// Prefix a payload with its frame tag.
-#[must_use]
-pub fn encode_frame(kind: FrameKind, body: &[u8]) -> Vec<u8> {
+fn encode_frame(kind: FrameKind, body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(body.len() + 1);
     v.push(kind.tag());
     v.extend_from_slice(body);
     v
 }
 
-/// Width of the sequence number the relay prepends to every frame.
-const SEQ_LEN: usize = 8;
+/// Split a frame into its kind and payload.
+fn decode_frame(wire: &[u8]) -> Result<(FrameKind, Vec<u8>)> {
+    let (&tag, body) = wire.split_first().ok_or(Error::MalformedFrame)?;
+    let kind = FrameKind::from_tag(tag).ok_or(Error::MalformedFrame)?;
+    Ok((kind, body.to_vec()))
+}
 
-/// A frame as the relay delivers it: its sequence number, then the frame.
+/// A request asking the relay to deliver `kind` and `body` to everyone
+/// subscribed to `to`.
+///
+/// # Errors
+/// If `to` is empty or longer than an address can be.
+pub fn encode_publish(to: &[u8], kind: FrameKind, body: &[u8]) -> Result<Vec<u8>> {
+    Ok(openconv_wire::Request::Publish {
+        to: openconv_wire::Address::new(to.to_vec())?,
+        payload: encode_frame(kind, body),
+    }
+    .encode()?)
+}
+
+/// A request to start receiving whatever is published to `addresses`.
+///
+/// # Errors
+/// If any address is empty or too long, or there are more than 255.
+pub fn encode_subscribe(addresses: &[Vec<u8>]) -> Result<Vec<u8>> {
+    let addresses = addresses
+        .iter()
+        .map(|a| openconv_wire::Address::new(a.clone()))
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(openconv_wire::Request::Subscribe(addresses).encode()?)
+}
+
+/// A frame as the relay delivers it.
 #[derive(Debug)]
 pub struct Envelope {
-    /// The relay's position for this frame. Monotonic per channel, and the
-    /// same for every client, which is what decides competing commits.
+    /// The address it was published to: a channel, or this client's mailbox.
+    pub address: Vec<u8>,
+    /// The relay's position for this frame. Monotonic per address, and the
+    /// same for every subscriber, which is what decides competing commits.
     pub seq: u64,
+    /// When the relay accepted it, in milliseconds since the Unix epoch. For
+    /// display only; order by `seq`.
+    pub accepted_ms: u64,
     /// What the frame carries.
     pub kind: FrameKind,
     /// The payload behind the tag.
     pub body: Vec<u8>,
 }
 
-/// Split a frame delivered by the relay into sequence number, kind, payload.
+/// Split a delivery from the relay into its address, position, kind and
+/// payload.
 ///
 /// # Errors
-/// If the frame is too short, or carries an unknown tag.
-pub fn decode_envelope(wire: &[u8]) -> Result<Envelope> {
-    if wire.len() < SEQ_LEN {
-        return Err(Error::MalformedFrame);
-    }
-    let (seq, frame) = wire.split_at(SEQ_LEN);
-    let seq = u64::from_be_bytes(seq.try_into().map_err(|_| Error::MalformedFrame)?);
-    let (kind, body) = decode_frame(frame)?;
-    Ok(Envelope { seq, kind, body })
+/// If the envelope is malformed, or the frame inside it is empty or carries
+/// an unknown tag.
+pub fn decode_delivery(wire: &[u8]) -> Result<Envelope> {
+    let delivery = openconv_wire::Delivery::decode(wire)?;
+    let (kind, body) = decode_frame(&delivery.payload)?;
+    Ok(Envelope {
+        address: delivery.address.into_bytes(),
+        seq: delivery.seq,
+        accepted_ms: delivery.accepted_ms,
+        kind,
+        body,
+    })
 }
 
-/// Split a client frame into its kind and payload.
+/// A channel id as text, for sharing out of band until there are invites.
+/// Lowercase hex.
+#[must_use]
+pub fn format_channel_id(channel: &[u8]) -> String {
+    use std::fmt::Write;
+    channel.iter().fold(String::new(), |mut out, b| {
+        // Writing to a String cannot fail.
+        let _ = write!(out, "{b:02x}");
+        out
+    })
+}
+
+/// Parse a channel id from [`format_channel_id`]'s text. Surrounding
+/// whitespace is ignored, since this usually arrives by copy and paste.
 ///
 /// # Errors
-/// If the frame is empty or carries an unknown tag.
-pub fn decode_frame(wire: &[u8]) -> Result<(FrameKind, Vec<u8>)> {
-    let (&tag, body) = wire.split_first().ok_or(Error::MalformedFrame)?;
-    let kind = FrameKind::from_tag(tag).ok_or(Error::MalformedFrame)?;
-    Ok((kind, body.to_vec()))
+/// If the text is not an even-length run of hex digits of a valid address
+/// length.
+pub fn parse_channel_id(text: &str) -> Result<Vec<u8>> {
+    let text = text.trim();
+    if text.is_empty()
+        || !text.len().is_multiple_of(2)
+        || text.len() / 2 > openconv_wire::MAX_ADDRESS_LEN
+    {
+        return Err(Error::InvalidChannelId);
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            text.get(i..i + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .ok_or(Error::InvalidChannelId)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -607,7 +725,7 @@ mod tests {
     /// competes: the proposer's own commit comes back first, confirming it.
     fn admit(host: &mut Member, joiner: &mut Member) {
         let commit = host.propose_add(&joiner.key_package().unwrap()).unwrap();
-        let Event::Admitted { welcome } = host.receive(&commit).unwrap() else {
+        let Event::Admitted { welcome, .. } = host.receive(&commit).unwrap() else {
             panic!("uncontested commit should have been admitted");
         };
         joiner.join(&welcome).unwrap();
@@ -651,7 +769,7 @@ mod tests {
 
         // The relay orders Alice's first, and delivers both to everyone in
         // that order.
-        let Event::Admitted { welcome } = alice.receive(&alice_commit).unwrap() else {
+        let Event::Admitted { welcome, .. } = alice.receive(&alice_commit).unwrap() else {
             panic!("alice's commit was ordered first, so it should win");
         };
         carol.join(&welcome).unwrap();
@@ -704,7 +822,7 @@ mod tests {
         let raced = bob.send("crossed in the post").unwrap();
 
         // The relay orders the commit first.
-        let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
             panic!("alice's commit was ordered first, so it should win");
         };
         carol.join(&welcome).unwrap();
@@ -737,7 +855,7 @@ mod tests {
         alice.create_group().unwrap();
         admit(&mut alice, &mut bob);
         let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
-        let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
             panic!("uncontested commit should have been admitted");
         };
         carol.join(&welcome).unwrap();
@@ -751,7 +869,7 @@ mod tests {
         for name in ["dave", "erin"] {
             let mut joiner = Member::new(name).unwrap();
             let commit = alice.propose_add(&joiner.key_package().unwrap()).unwrap();
-            let Event::Admitted { welcome } = alice.receive(&commit).unwrap() else {
+            let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
                 panic!("alice's commit was ordered first, so it should win");
             };
             for member in std::iter::once(&mut bob)
@@ -779,6 +897,117 @@ mod tests {
             assert_message(member.receive(&attempt).unwrap(), "third time lucky");
         }
         assert!(matches!(bob.receive(&attempt).unwrap(), Event::Echo));
+    }
+
+    /// Routing only works if the admitter addresses the `Welcome` to exactly
+    /// the mailbox the joiner subscribed to — and that has to be the
+    /// `KeyPackageRef` MLS encrypted the `Welcome` for, or the right member
+    /// receives a `Welcome` meant for someone else.
+    #[test]
+    fn welcome_is_addressed_to_the_joiners_mailbox() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+
+        let offer = carol.key_package().unwrap();
+        let subscribed = carol.mailbox(&offer).unwrap();
+
+        // Bob admits, not the creator: any member's Welcome must route.
+        let commit = bob.propose_add(&offer).unwrap();
+        let Event::Admitted { welcome, mailbox } = bob.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        assert_eq!(mailbox, subscribed);
+
+        let msg = MlsMessageIn::tls_deserialize_exact(&welcome).unwrap();
+        let MlsMessageBodyIn::Welcome(welcome) = msg.extract() else {
+            panic!("expected a Welcome");
+        };
+        assert!(
+            welcome
+                .secrets()
+                .iter()
+                .any(|s| s.new_member().as_slice() == mailbox.as_slice()),
+            "the Welcome is not encrypted for the mailbox it is addressed to"
+        );
+
+        // Two offers from one member are two mailboxes, so a Welcome for an
+        // old offer cannot land in a newer one's inbox.
+        let other = carol.key_package().unwrap();
+        assert_ne!(carol.mailbox(&other).unwrap(), subscribed);
+    }
+
+    /// Every member must agree on the channel, or they publish into
+    /// different rooms. It is the group id, so it is shared by construction;
+    /// this checks nobody made it something else.
+    #[test]
+    fn every_member_is_on_the_same_channel() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        assert_eq!(alice.channel(), None);
+
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.join(&welcome).unwrap();
+
+        let channel = alice.channel().unwrap();
+        assert_eq!(channel.len(), 16, "expected openmls's random group id");
+        assert_eq!(bob.channel().as_ref(), Some(&channel));
+        assert_eq!(carol.channel().as_ref(), Some(&channel));
+
+        // A second group is a second channel.
+        let mut dave = Member::new("dave").unwrap();
+        dave.create_group().unwrap();
+        assert_ne!(dave.channel().unwrap(), channel);
+    }
+
+    #[test]
+    fn channel_ids_round_trip_through_text() {
+        let channel = vec![0x00, 0x0f, 0xa5, 0xff];
+        let text = format_channel_id(&channel);
+        assert_eq!(text, "000fa5ff");
+        assert_eq!(parse_channel_id(&text).unwrap(), channel);
+        assert_eq!(parse_channel_id("  000FA5FF\n").unwrap(), channel);
+
+        for bad in ["", "abc", "zz", "0x00", &"00".repeat(256)] {
+            assert!(
+                matches!(parse_channel_id(bad), Err(Error::InvalidChannelId)),
+                "{bad:?} should not parse"
+            );
+        }
+    }
+
+    /// The core builds requests and the relay parses them with the same
+    /// crate, but check the frame tag survives the trip inside the payload.
+    #[test]
+    fn requests_are_what_the_relay_decodes() {
+        let wire = encode_publish(b"room", FrameKind::Commit, b"body").unwrap();
+        let openconv_wire::Request::Publish { to, payload } =
+            openconv_wire::Request::decode(&wire).unwrap()
+        else {
+            panic!("expected a publish");
+        };
+        assert_eq!(to.as_bytes(), b"room");
+        assert_eq!(
+            decode_frame(&payload).unwrap(),
+            (FrameKind::Commit, b"body".to_vec())
+        );
+
+        assert!(matches!(
+            encode_publish(&[], FrameKind::Commit, b"body"),
+            Err(Error::Wire(_))
+        ));
+        assert!(matches!(
+            encode_subscribe(&[b"room".to_vec(), vec![]]),
+            Err(Error::Wire(_))
+        ));
     }
 
     /// The relay echoes a sender its own frames; they must not be mistaken
@@ -834,11 +1063,25 @@ mod tests {
     /// and take the client down.
     #[test]
     fn malformed_frames_are_rejected_not_fatal() {
-        let short = &[0u8, 1, 2][..]; // shorter than the sequence prefix
-        let unknown_tag = &[0, 0, 0, 0, 0, 0, 0, 1, 0xff][..];
-        assert!(decode_envelope(short).is_err());
-        assert!(decode_envelope(unknown_tag).is_err());
-        assert!(decode_frame(&[]).is_err());
+        let delivery = |payload: &[u8]| {
+            openconv_wire::Delivery {
+                address: openconv_wire::Address::new(vec![1; 16]).unwrap(),
+                seq: 0,
+                accepted_ms: 0,
+                payload: payload.to_vec(),
+            }
+            .encode()
+        };
+        // A broken envelope, then a sound envelope around a broken frame.
+        assert!(matches!(decode_delivery(&[1, 2, 3]), Err(Error::Wire(_))));
+        assert!(matches!(
+            decode_delivery(&delivery(&[0xff, 1])),
+            Err(Error::MalformedFrame)
+        ));
+        assert!(matches!(
+            decode_delivery(&delivery(&[])),
+            Err(Error::MalformedFrame)
+        ));
     }
 
     /// The same for the crypto path: hostile bytes must surface as errors,

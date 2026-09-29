@@ -1,12 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/server"]
+members = ["crates/core", "crates/server", "crates/wire"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/nisarsyed/openconv"
+# Nothing here is published to crates.io. Saying so is also what lets
+# cargo-deny accept the crates' path dependencies on each other.
+publish = false
 # openmls 0.9 declares 1.91, so nothing lower can build this workspace. Not
 # verified by CI, so treat it as a floor rather than a tested guarantee.
 rust-version = "1.91"

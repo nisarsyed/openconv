@@ -13,7 +13,7 @@ just lint               # clippy -D warnings, plus swift format lint
 just fmt                # format both languages
 just bindings           # regenerate Swift bindings from crates/core/src/ffi.rs
 just relay              # start the relay on 127.0.0.1:8080
-just client alice       # launch a client (then click Host or Join in the UI)
+just client alice       # launch a client (click Host, or paste a channel id and Join)
 ```
 
 Single test: `cargo test -p openconv-core group_state_survives_a_restart`
@@ -30,11 +30,11 @@ Three pieces, two languages, one FFI seam:
 
 ```
   SwiftUI app  ──uniffi──▶  openconv-core (Rust)
-  (clients/macos)           MLS group state, encrypt/decrypt, wire framing
-       │
-       │ WebSocket, opaque frames
-       ▼
-  openconv-server (Rust/Axum) — blind relay
+  (clients/macos)           MLS group state, encrypt/decrypt, frame tags
+       │                          │
+       │ WebSocket                └─ openconv-wire: the relay envelope
+       ▼                          ┌─ (address, sequence), shared by both
+  openconv-server (Rust/Axum) — blind relay, routes by address
 ```
 
 **The build chain is not obvious and bites if missed.** `crates/core` compiles
@@ -62,12 +62,22 @@ at one epoch and fork the group, which surfaces as `AEAD decryption failed`
 much later. Follow it through `Member::propose_add` and `Member::receive`,
 `ChatModel.handle`/`apply`, and `crates/server/tests/relay.rs`.
 
-**The relay never parses payloads**, but it does order them. `crates/server`
-moves opaque bytes and prepends an 8-byte sequence number without looking past
-it. Every client sees the same order, which is what resolves commit races.
-Frames are echoed back to their sender too, so a sender learns where its own
-frame landed; clients recognise their own frames by exact byte match, which
-keeps sender identity off the wire.
+**The relay never parses payloads**, but it does route and order them. A
+client subscribes to addresses and publishes to an address; the relay reads
+that envelope (`crates/wire`) and nothing past it. An address is either a
+channel — the MLS group id — or a joiner's mailbox, their `KeyPackageRef`,
+where their `Welcome` is delivered. The relay cannot tell which.
+
+Each address has its own sequence, numbered and delivered under that
+address's lock, and every subscriber sees the same order: that is what
+resolves commit races. A publisher subscribed to the address gets its own
+frame back, so it learns where the frame landed; clients recognise their own
+frames by exact byte match, which keeps sender identity off the wire.
+
+Joining: learn the channel id out of band, subscribe to the channel and your
+mailbox in one request, then publish your `KeyPackage` to the channel. The one
+request matters — the relay handles a connection's requests in order, so the
+subscription exists before anyone can answer.
 
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.

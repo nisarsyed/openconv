@@ -112,6 +112,33 @@ disinterested, not only on cryptography. And **a channel id does not have to
 be the thing that hides channel identity**, because the MLS `group_id` is
 already on every frame. See #103 under MIMI below.
 
+### What routing added (#103)
+
+Routing is the point of #103, and it has a cost worth stating plainly. **The
+relay now knows which connections share a channel.** Under broadcast, every
+client received everything, which hid who was talking to whom behind the
+relay's own ignorance. A routing relay has to know who wants what.
+
+What it learns is connection-level, not identity-level:
+
+- It sees that the connections subscribed to address A are these, and that
+  some other connection published to A. By IP address, that is a social graph.
+- It does not learn names or roster, and cannot tell a channel from a
+  mailbox.
+- Anyone who knows a channel id can subscribe to it, so subscribers are not
+  the same thing as members.
+
+What would reduce it, if it matters later:
+
+- clients subscribing to decoy addresses;
+- a relay reached over Tor or a mixnet, so connections don't map to people;
+- fetching by cursor rather than holding subscriptions (#105 makes that
+  possible).
+
+None of these is planned. For a self-hosted relay whose operator is part of
+the community, the trade is reasonable — but it is a trade, and the notes
+should not claim otherwise.
+
 ---
 
 ## Discord-level functionality under E2E
