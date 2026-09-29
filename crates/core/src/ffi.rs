@@ -53,6 +53,15 @@ pub enum ClientEvent {
     Advanced,
     /// This client's own frame, echoed back by the relay.
     Echo,
+    /// This client's own message landed behind a commit and every receiver
+    /// discarded it. Send `message` as an application frame in its place.
+    Resend {
+        /// The same text, encrypted in the current epoch.
+        message: Vec<u8>,
+    },
+    /// Another member's message from an epoch already left. Its sender
+    /// resends it, so there is nothing to display and nothing lost.
+    Stale,
 }
 
 impl From<crate::Event> for ClientEvent {
@@ -63,6 +72,8 @@ impl From<crate::Event> for ClientEvent {
             crate::Event::AddSuperseded => Self::AddSuperseded,
             crate::Event::Advanced => Self::Advanced,
             crate::Event::Echo => Self::Echo,
+            crate::Event::Resend { message } => Self::Resend { message },
+            crate::Event::Stale => Self::Stale,
         }
     }
 }

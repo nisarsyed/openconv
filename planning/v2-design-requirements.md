@@ -30,7 +30,7 @@ at the point it becomes real rather than tracked as open work now.
   `Member::receive` returns an error and leaves group state untouched; keep it
   that way. Any future "recover from bad state" path must be explicit and
   user-visible, never automatic on failure.
-- **Validate KeyPackages before trusting them.** `add_member` runs
+- **Validate KeyPackages before trusting them.** `propose_add` runs
   `KeyPackageIn::validate` (signature, lifetime, protocol version) rather than
   accepting the deserialized form. A KeyPackage arrives from the network and is
   hostile input.
