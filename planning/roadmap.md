@@ -90,7 +90,18 @@ This unlocks offline delivery, late joiners getting context, and multiple
 conversations. It also turns local history into a cache of something
 authoritative rather than the only copy.
 
-Tracked as #103–#107.
+Tracked as #103–#107, plus #110 — messages sent concurrently with a commit
+are silently dropped, which has to be fixed before catch-up can deliver "the
+same message set as everyone else".
+
+MIMI was read before #103 set the wire format (2026-09-29; see
+`architecture-notes.md`). It does not constrain the client↔relay protocol, but
+it does suggest four cheap choices here:
+
+- the MLS group id as the channel id;
+- a non-channel path for KeyPackages and Welcomes;
+- an accepted timestamp stored beside the sequence;
+- a receiver epoch tolerance.
 
 ### Retention, decided
 
@@ -114,12 +125,26 @@ laptop. Seven is defensible and more privacy-maximising. Because this is
 self-hosted, the operator can set either; the documentation should say plainly
 that lowering it costs only the offline-delivery window.
 
+**Evicting a commit strands a member; evicting a message only loses it.** A
+member who misses a commit can process nothing after it. A size cap can evict
+commits well inside the 30-day window, so on a busy channel the real catch-up
+window is whichever limit is hit first. The relay therefore has to tell a
+returning client whose cursor is below the retention floor. It can do that
+without parsing anything. The client then needs a recovery path: another
+member removes and re-adds it (openmls `fork-resolution`). That belongs in #105
+and #106, not after them.
+
 **Done when** a client can be closed, miss traffic, reopen, and catch up.
 
 ## 2. History and transcript UI
 
 Cheap once (1) exists, because the frames can be fetched and decrypted. Local
 store keyed by channel, a transcript that survives restart, and pagination.
+
+Decide here whether message content is the MIMI content format
+(`draft-ietf-mimi-content`: CBOR, stable message ids, replies, edits,
+reactions) or deliberately not. Today a message is bare UTF-8. The transcript
+schema is where that choice becomes expensive to change.
 
 Schema carries a channel id from the first version even though it is obvious —
 the point of doing this after (1) is that the shape is already known.
@@ -132,6 +157,9 @@ MLS credentials are currently unverified `BasicCredential`s: anyone can claim
 any name, and nothing stops an impostor joining. This is the deepest gap for a
 product whose pitch is privacy, and it changes the trust model, so it comes
 before anything that builds on membership.
+
+The credential form should be able to carry a URI identifier, which is how
+MIMI names users and clients.
 
 Includes accounts, verified credentials, and a way for two people to confirm
 they are talking to who they think — a safety-number equivalent.
@@ -172,10 +200,14 @@ the product shape is settled.
 
 ## Known debt, carried
 
-- The whole MLS store is rewritten on every send and receive. Measured at 6.5x
-  overhead per message, and the store grows with group size — 26 KiB at two
-  members, 197 KiB at fifty. Implementing openmls's `StorageProvider` over
-  SQLite is the fix. The trigger is milestone (1), which multiplies the cost by
-  the number of channels. See `crates/core/examples/measure.rs`.
-- `rust-version = "1.85"` is unverified without CI.
+- The whole MLS store is rewritten on every send and receive. Re-measured
+  2026-09-29 at 7.4x overhead per message. A persisted send already takes
+  1.21 ms at fifty members, and the store grows with group size: 26 KiB at two
+  members, 197 KiB at fifty. The fix no longer means writing 72 trait methods.
+  `openmls_sqlite_storage` 0.3 is published and matches our `openmls_traits`
+  0.6. What remains is encryption at rest, which that crate does not provide.
+  The trigger is milestone (1), which multiplies the cost by the number of
+  channels. Tracked as #107; see `crates/core/examples/measure.rs`.
+- `rust-version` was `1.85`, which could never have built: openmls 0.9
+  declares 1.91. Corrected to 1.91; still not verified by CI.
 - The relay's lag-disconnect path has no test.
