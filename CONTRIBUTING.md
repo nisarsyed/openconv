@@ -16,8 +16,22 @@ sprinkling `#![allow]` through source files.
 
 The `rust` group follows [tokio's][tokio-lints]: `missing_docs`,
 `missing_debug_implementations`, `unreachable_pub`, `unused_must_use`, and
-`rust_2018_idioms`. `unsafe_code` is `forbid` — nothing here needs it, and the
-FFI layer is generated rather than hand-written.
+`rust_2018_idioms`.
+
+`unsafe_code` is `deny`, not `forbid`. `forbid` cannot be overridden anywhere,
+which makes it a wall rather than a high bar, and FFI, SIMD and some zero-copy
+work genuinely need unsafe. `deny` lets a specific block opt in, and opting in
+costs the three lints that come with it:
+
+- `undocumented_unsafe_blocks`: every block carries a `// SAFETY:` comment.
+- `multiple_unsafe_ops_per_block`: one operation per block, so the comment is
+  specific.
+- `unsafe_op_in_unsafe_fn`: an `unsafe fn` body is not implicitly an unsafe
+  block.
+
+The block also needs an `#[allow(unsafe_code)]` with a reason. Reach for it
+when a measurement says to, not on assumption. There is no unsafe in the tree
+today.
 
 `clippy::pedantic` runs at `warn`. Two additions borrowed from [axum][axum-lints]:
 `print_stdout` and `dbg_macro`, because a relay and a crypto core have no
@@ -115,7 +129,7 @@ Two definitions drift; this one nearly did.
 the signal an attacker would use to knock a client out of a session.
 `Member::receive` returns an error and leaves group state untouched.
 
-**Validate anything off the network before trusting it.** `add_member` runs
+**Validate anything off the network before trusting it.** `propose_add` runs
 `KeyPackageIn::validate` rather than accepting the deserialised form.
 
 ## Dependencies
@@ -169,8 +183,8 @@ Line Tools only. Don't "fix" it into a test target.
 
 ## Not yet done
 
-Honest list, so nobody assumes otherwise. `rust-version = "1.85"` is the
-edition floor and is unverified — nothing builds against it.
+Honest list, so nobody assumes otherwise. `rust-version = "1.91"` is the floor
+openmls 0.9 declares, and is unverified — nothing builds against it.
 
 There is no SwiftPM cache in CI, and it is not worth adding. `rust-cache`
 already covers the expensive half; caching `clients/macos/.build` on top of it
