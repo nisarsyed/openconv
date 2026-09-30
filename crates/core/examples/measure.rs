@@ -15,7 +15,7 @@ use std::time::Instant;
 
 fn admit(host: &mut Member, joiner: &mut Member) -> Vec<u8> {
     let commit = host.propose_add(&joiner.key_package().unwrap()).unwrap();
-    let Event::Admitted { welcome } = host.receive(&commit).unwrap() else {
+    let Event::Admitted { welcome, .. } = host.receive(&commit).unwrap() else {
         panic!("should have been admitted");
     };
     joiner.join(&welcome).unwrap();

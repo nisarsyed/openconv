@@ -14,8 +14,10 @@ struct OpenConvApp: App {
 
         // Identity is a launch argument so two instances can run side by side:
         //   swift run OpenConv alice
-        // An optional second argument (host|join) connects on launch, which
-        // is what makes the app driveable without a human clicking.
+        // Further arguments connect on launch, which is what makes the app
+        // driveable without a human clicking:
+        //   OpenConv alice host [message]
+        //   OpenConv bob join <channel> [message]
         let args = Array(CommandLine.arguments.dropFirst())
         let name = args.first ?? "me"
         let autoConnect = args.dropFirst().first
@@ -29,10 +31,15 @@ struct OpenConvApp: App {
         _model = StateObject(wrappedValue: model)
         if let autoConnect, let url = URL(string: Self.defaultRelay) {
             let hosting = autoConnect == "host"
-            // Optional third argument: a message to send once in the group.
-            model.autoSay = args.dropFirst(2).first
+            // A joiner names the channel next; then, for either, an optional
+            // message to send once in the group.
+            let rest = Array(args.dropFirst(2))
+            let channel = hosting ? nil : rest.first
+            model.autoSay = hosting ? rest.first : rest.dropFirst().first
             // Defer until the run loop is up so the socket has somewhere to live.
-            Task { @MainActor in model.connect(to: url, hosting: hosting) }
+            Task { @MainActor in
+                model.connect(to: url, hosting: hosting, channelText: channel)
+            }
         }
         // Running as a bare SwiftPM executable rather than a bundled .app,
         // so ask AppKit for a normal windowed application.

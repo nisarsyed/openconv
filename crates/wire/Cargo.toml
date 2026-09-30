@@ -1,0 +1,15 @@
+[package]
+name = "openconv-wire"
+version.workspace = true
+edition.workspace = true
+description = "The relay envelope: how clients address frames and how the relay delivers them"
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }

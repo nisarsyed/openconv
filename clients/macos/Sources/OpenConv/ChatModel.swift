@@ -23,6 +23,12 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Failures of this model's own, as opposed to ones the core throws.
+    enum ChatError: Error {
+        /// Asked to publish to the group before there was a channel for it.
+        case noChannel
+    }
+
     struct Line: Identifiable {
         let id = UUID()
         let author: String
@@ -43,10 +49,18 @@ final class ChatModel: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var saidAuto = false
 
-    /// Highest relay sequence seen. The relay numbers every frame, so a gap
-    /// means frames were missed and this client's view of the order — and
-    /// therefore of who won a commit race — can no longer be trusted.
-    private var lastSeq: UInt64?
+    /// The channel this client publishes to: its group's, or the one it is
+    /// asking to join.
+    private var channel: Data?
+
+    /// The channel as shareable text, once there is one.
+    @Published private(set) var channelText: String?
+
+    /// Highest relay sequence seen, per address. The relay numbers each
+    /// address's frames separately, so a gap on one means frames were missed
+    /// there and this client's view of that order — and therefore of who won
+    /// a commit race — can no longer be trusted.
+    private var lastSeq: [Data: UInt64] = [:]
 
     init(identity: String) throws {
         self.identity = identity
@@ -85,29 +99,61 @@ final class ChatModel: ObservableObject {
 
     // MARK: - Connection
 
-    func connect(to url: URL, hosting: Bool) {
+    /// Connect, then host a new group or ask to join `channelText`'s.
+    ///
+    /// A client restored with a group already rejoins that group's channel,
+    /// whichever was asked for. Hosting again would start a second group and
+    /// strand everyone on the first.
+    func connect(to url: URL, hosting: Bool, channelText: String? = nil) {
         status = .connecting
+        lastSeq = [:]
         let task = URLSession.shared.webSocketTask(with: url)
         socket = task
         task.resume()
         receiveLoop()
 
         do {
-            if hosting {
-                // Host opens the group and waits for others to announce.
+            if let existing = client.channel() {
+                try enter(existing)
+                note("rejoined the group")
+                sendAutoIfReady()
+            } else if hosting {
+                // Host opens the group and waits for others to ask in.
                 try client.createGroup()
-                status = .joined(members: Int(client.memberCount()))
+                guard let created = client.channel() else { throw ChatError.noChannel }
+                try enter(created)
                 note("created the group")
                 sendAutoIfReady()
             } else {
-                // Everyone else offers a KeyPackage and waits for a Welcome.
-                try send(kind: .keyPackage, body: client.keyPackage())
+                // Everyone else offers a KeyPackage on the channel they were
+                // given, and waits for a Welcome in their own mailbox. Both
+                // are subscribed first, in one request: the relay handles a
+                // connection's requests in order, so the subscription is in
+                // place before anyone can reply to the offer.
+                let wanted = try parseChannelId(text: channelText ?? "")
+                let offer = try client.keyPackage()
+                let mailbox = try client.mailbox(keyPackage: offer)
+                try subscribe([mailbox, wanted])
+                channel = wanted
+                self.channelText = formatChannelId(channel: wanted)
+                try publish(to: wanted, kind: .keyPackage, body: offer)
                 status = .waitingForGroup
-                note("announced key package")
+                note("asked to join")
             }
         } catch {
             fail(error)
         }
+    }
+
+    /// Start using a channel this client is a member of.
+    private func enter(_ joined: Data) throws {
+        try subscribe([joined])
+        channel = joined
+        let text = formatChannelId(channel: joined)
+        channelText = text
+        status = .joined(members: Int(client.memberCount()))
+        // Logged so the headless smoke test can hand it to the next client.
+        print("[\(identity)] channel \(text)")
     }
 
     func disconnect() {
@@ -134,9 +180,23 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Publish to this client's channel. Throws rather than dropping the
+    /// frame, so a message shown as sent was really handed to the socket.
     private func send(kind: FrameKind, body: Data) throws {
-        let frame = encodeFrame(kind: kind, body: body)
-        socket?.send(.data(frame)) { [weak self] error in
+        guard let channel else { throw ChatError.noChannel }
+        try publish(to: channel, kind: kind, body: body)
+    }
+
+    private func publish(to address: Data, kind: FrameKind, body: Data) throws {
+        write(try encodePublish(to: address, kind: kind, body: body))
+    }
+
+    private func subscribe(_ addresses: [Data]) throws {
+        write(try encodeSubscribe(addresses: addresses))
+    }
+
+    private func write(_ request: Data) {
+        socket?.send(.data(request)) { [weak self] error in
             guard let error else { return }
             Task { @MainActor in self?.fail(error) }
         }
@@ -163,8 +223,8 @@ final class ChatModel: ObservableObject {
 
     private func handle(_ data: Data) {
         do {
-            let frame = try decodeEnvelope(wire: data)
-            checkOrder(frame.seq)
+            let frame = try decodeDelivery(wire: data)
+            checkOrder(frame.address, frame.seq)
 
             switch frame.kind {
             case .keyPackage:
@@ -177,7 +237,8 @@ final class ChatModel: ObservableObject {
             case .welcome:
                 guard case .waitingForGroup = status else { return }
                 try client.join(welcome: frame.body)
-                status = .joined(members: Int(client.memberCount()))
+                guard let joined = client.channel() else { throw ChatError.noChannel }
+                try enter(joined)
                 note("joined the group")
                 sendAutoIfReady()
 
@@ -200,10 +261,11 @@ final class ChatModel: ObservableObject {
             print("[\(identity)] received: \(text)")
             lines.append(Line(author: "them", text: text, mine: false))
 
-        case .admitted(let welcome):
+        case .admitted(let welcome, let mailbox):
             // Our commit was ordered first, so the add stands and the new
-            // member can be let in.
-            try send(kind: .welcome, body: welcome)
+            // member can be let in. The Welcome goes to their mailbox, not
+            // the channel: they are not a member of it yet.
+            try publish(to: mailbox, kind: .welcome, body: welcome)
             status = .joined(members: Int(client.memberCount()))
             note("admitted a new member")
 
@@ -233,17 +295,18 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// The relay numbers every frame. A gap means this client missed traffic
-    /// and can no longer trust its view of the order, so say so loudly rather
-    /// than letting it surface later as an undecryptable message.
-    private func checkOrder(_ seq: UInt64) {
-        defer { lastSeq = max(lastSeq ?? seq, seq) }
-        guard let last = lastSeq else { return }
+    /// The relay numbers each address's frames. A gap means this client
+    /// missed traffic there and can no longer trust its view of the order, so
+    /// say so loudly rather than letting it surface later as an
+    /// undecryptable message.
+    private func checkOrder(_ address: Data, _ seq: UInt64) {
+        defer { lastSeq[address] = max(lastSeq[address] ?? seq, seq) }
+        guard let last = lastSeq[address] else { return }
 
         if seq > last + 1 {
             note("missed \(seq - last - 1) frame(s) from the relay; state may be stale")
         } else if seq <= last {
-            // Never expected: the relay numbers and broadcasts under one lock.
+            // Never expected: the relay numbers and delivers under one lock.
             // Worth saying out loud rather than computing a negative gap —
             // `seq - last - 1` on UInt64 underflows and traps the process.
             note("frame \(seq) arrived after \(last); relay ordering is broken")
