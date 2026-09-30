@@ -262,10 +262,7 @@ impl Member {
         vault.save(&Snapshot {
             identity: self.identity(),
             signature_public_key: self.signer.to_public_vec(),
-            group_id: self
-                .group
-                .as_ref()
-                .map(|g| g.group_id().as_slice().to_vec()),
+            group_id: self.channel(),
             storage: store::dump(self.provider.storage())?,
         })
     }
@@ -290,6 +287,11 @@ impl Member {
     /// If `key_package` is not a valid `KeyPackage`.
     pub fn mailbox(&self, key_package: &[u8]) -> Result<Vec<u8>> {
         let kp = self.validate_key_package(key_package)?;
+        self.key_package_ref(&kp)
+    }
+
+    /// A validated `KeyPackage`'s reference: the joiner's mailbox.
+    fn key_package_ref(&self, kp: &KeyPackage) -> Result<Vec<u8>> {
         Ok(kp
             .hash_ref(self.provider.crypto())
             .map_err(mls)?
@@ -361,11 +363,7 @@ impl Member {
         }
 
         let kp = self.validate_key_package(key_package)?;
-        let mailbox = kp
-            .hash_ref(self.provider.crypto())
-            .map_err(mls)?
-            .as_slice()
-            .to_vec();
+        let mailbox = self.key_package_ref(&kp)?;
 
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         let (commit, welcome, _) = group
@@ -692,9 +690,12 @@ pub fn format_channel_id(channel: &[u8]) -> String {
 /// length.
 pub fn parse_channel_id(text: &str) -> Result<Vec<u8>> {
     let text = text.trim();
+    // Checked up front because `from_str_radix` accepts a leading `+`, so
+    // "+f" would otherwise parse as a byte.
     if text.is_empty()
         || !text.len().is_multiple_of(2)
         || text.len() / 2 > openconv_wire::MAX_ADDRESS_LEN
+        || !text.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Err(Error::InvalidChannelId);
     }
@@ -976,7 +977,7 @@ mod tests {
         assert_eq!(parse_channel_id(&text).unwrap(), channel);
         assert_eq!(parse_channel_id("  000FA5FF\n").unwrap(), channel);
 
-        for bad in ["", "abc", "zz", "0x00", &"00".repeat(256)] {
+        for bad in ["", "abc", "zz", "0x00", "+f+f", &"00".repeat(256)] {
             assert!(
                 matches!(parse_channel_id(bad), Err(Error::InvalidChannelId)),
                 "{bad:?} should not parse"

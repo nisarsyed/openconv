@@ -214,6 +214,33 @@ async fn malformed_requests_close_only_that_connection() {
     assert_eq!(next(&mut member).await.body, b"still here");
 }
 
+/// A connection needs a channel and a mailbox; one asking for far more is
+/// broken or hostile, and is closed rather than served. Re-subscribing to an
+/// address already held does not count against the limit.
+#[tokio::test]
+async fn too_many_subscriptions_close_the_connection() {
+    let url = spawn_relay().await;
+
+    let mut modest = connect(&url).await;
+    let room: &[u8] = b"room";
+    for _ in 0..100 {
+        send(&mut modest, encode_subscribe(&[room.to_vec()]).unwrap()).await;
+    }
+    publish(&mut modest, b"room", FrameKind::Application, b"still here").await;
+    assert_eq!(next(&mut modest).await.body, b"still here");
+
+    let mut greedy = connect(&url).await;
+    let many: Vec<Vec<u8>> = (0..65u8).map(|i| vec![i + 1]).collect();
+    send(&mut greedy, encode_subscribe(&many).unwrap()).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), greedy.next())
+        .await
+        .expect("relay kept a client over its subscription limit");
+    assert!(
+        matches!(closed, None | Some(Ok(Message::Close(_)) | Err(_))),
+        "expected the connection to end, got {closed:?}"
+    );
+}
+
 /// The relay's whole purpose beyond routing is deciding an order, and every
 /// subscriber must see the same one. Numbering a frame and delivering it have
 /// to happen together: done separately, two concurrent frames get numbers in

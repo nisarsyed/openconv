@@ -127,15 +127,22 @@ struct Relay {
 }
 
 impl Relay {
-    fn subscribe(&self, id: usize, subscriber: &Subscriber, address: Address) {
+    /// Add a connection to each of `addresses`, taking the map's lock once
+    /// for the whole request.
+    fn subscribe(&self, id: usize, subscriber: &Subscriber, addresses: Vec<Address>) {
+        if addresses.is_empty() {
+            return;
+        }
         let mut channels = self.channels.lock().expect("relay state poisoned");
-        channels
-            .entry(address)
-            .or_default()
-            .lock()
-            .expect("channel state poisoned")
-            .subscribers
-            .insert(id, subscriber.clone());
+        for address in addresses {
+            channels
+                .entry(address)
+                .or_default()
+                .lock()
+                .expect("channel state poisoned")
+                .subscribers
+                .insert(id, subscriber.clone());
+        }
     }
 
     fn publish(&self, address: &Address, payload: Vec<u8>) -> Option<u64> {
@@ -236,14 +243,17 @@ async fn handle(socket: WebSocket, relay: Relay) {
                     let mut subscribed = inbound_subscribed
                         .lock()
                         .expect("subscription set poisoned");
+                    let mut added = Vec::new();
                     for address in addresses {
                         if subscribed.len() == MAX_SUBSCRIPTIONS && !subscribed.contains(&address) {
                             tracing::warn!(id, "too many subscriptions; disconnecting");
                             return;
                         }
-                        subscribed.insert(address.clone());
-                        inbound_relay.subscribe(id, &me, address);
+                        if subscribed.insert(address.clone()) {
+                            added.push(address);
+                        }
                     }
+                    inbound_relay.subscribe(id, &me, added);
                 }
                 Ok(Request::Publish { to, payload }) => {
                     let bytes = payload.len();
@@ -262,10 +272,17 @@ async fn handle(socket: WebSocket, relay: Relay) {
     });
 
     // Either direction ending tears down the connection.
-    tokio::select! {
-        _ = &mut outbound => inbound.abort(),
-        _ = &mut inbound => outbound.abort(),
-    }
+    let outbound_ended = tokio::select! {
+        _ = &mut outbound => true,
+        _ = &mut inbound => false,
+    };
+    // Wait for the other side to actually stop. `abort` only takes effect at
+    // the task's next yield, so without this an inbound task still running
+    // could subscribe after the set below is taken, and that subscription
+    // would never be removed.
+    let other = if outbound_ended { inbound } else { outbound };
+    other.abort();
+    let _ = other.await;
     let subscribed = std::mem::take(&mut *subscribed.lock().expect("subscription set poisoned"));
     relay.unsubscribe_all(id, &subscribed);
     tracing::info!(id, "client disconnected");

@@ -3,8 +3,9 @@
 # clients in one channel and a fourth in another, and asserts messages travel
 # within a channel and never between them.
 #
-# The clients take an optional `host|join` argument and a message to send
-# once in the group, which is what makes them driveable without a human.
+# The clients take an optional `host` or `join <channel>` argument and a
+# message to send once in the group, which is what makes them driveable
+# without a human.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

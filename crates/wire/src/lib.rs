@@ -46,6 +46,9 @@ pub enum Error {
     /// A subscribe listed more addresses than fit its count byte.
     #[error("at most {max} addresses per subscribe, got {0}", max = u8::MAX)]
     TooManyAddresses(usize),
+    /// Bytes followed the last field of a message that has no payload.
+    #[error("{0} unexpected trailing bytes")]
+    TrailingBytes(usize),
 }
 
 /// Convenience alias for this crate's fallible operations.
@@ -149,6 +152,11 @@ impl Request {
             SUBSCRIBE => {
                 let count = r.byte()?;
                 let addresses = (0..count).map(|_| r.address()).collect::<Result<_>>()?;
+                // A subscribe has no payload, so anything after the last
+                // address is malformed rather than something to ignore.
+                if !r.0.is_empty() {
+                    return Err(Error::TrailingBytes(r.0.len()));
+                }
                 Ok(Self::Subscribe(addresses))
             }
             PUBLISH => {
@@ -326,6 +334,11 @@ mod tests {
             Err(Error::Truncated)
         );
         assert_eq!(Delivery::decode(&[0x02]), Err(Error::UnknownTag(0x02)));
+        // A subscribe with bytes after its last address.
+        assert_eq!(
+            Request::decode(&[SUBSCRIBE, 1, 1, b'a', 0xff]),
+            Err(Error::TrailingBytes(1))
+        );
     }
 
     #[test]

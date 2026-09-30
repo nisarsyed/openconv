@@ -23,6 +23,12 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Failures of this model's own, as opposed to ones the core throws.
+    enum ChatError: Error {
+        /// Asked to publish to the group before there was a channel for it.
+        case noChannel
+    }
+
     struct Line: Identifiable {
         let id = UUID()
         let author: String
@@ -114,7 +120,7 @@ final class ChatModel: ObservableObject {
             } else if hosting {
                 // Host opens the group and waits for others to ask in.
                 try client.createGroup()
-                guard let created = client.channel() else { return }
+                guard let created = client.channel() else { throw ChatError.noChannel }
                 try enter(created)
                 note("created the group")
                 sendAutoIfReady()
@@ -174,9 +180,10 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// Publish to this client's channel.
+    /// Publish to this client's channel. Throws rather than dropping the
+    /// frame, so a message shown as sent was really handed to the socket.
     private func send(kind: FrameKind, body: Data) throws {
-        guard let channel else { return }
+        guard let channel else { throw ChatError.noChannel }
         try publish(to: channel, kind: kind, body: body)
     }
 
@@ -230,7 +237,7 @@ final class ChatModel: ObservableObject {
             case .welcome:
                 guard case .waitingForGroup = status else { return }
                 try client.join(welcome: frame.body)
-                guard let joined = client.channel() else { return }
+                guard let joined = client.channel() else { throw ChatError.noChannel }
                 try enter(joined)
                 note("joined the group")
                 sendAutoIfReady()
