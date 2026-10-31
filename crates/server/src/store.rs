@@ -114,6 +114,10 @@ const SCHEMA_V1: &str = "
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
+    /// Payload bytes stored across every address, so the relay-wide cap is
+    /// checked without a scan. Summed once on open, then kept in step with
+    /// every commit that adds or deletes frames.
+    total: u64,
 }
 
 impl Store {
@@ -167,7 +171,12 @@ impl Store {
         conn.execute_batch(
             "CREATE TEMP TABLE pins (address BLOB PRIMARY KEY, seq INTEGER NOT NULL)",
         )?;
-        Ok(Self { conn })
+        let total: i64 =
+            conn.query_row("SELECT COALESCE(SUM(bytes), 0) FROM sequences", [], |r| {
+                r.get(0)
+            })?;
+        let total = u64::try_from(total).map_err(|_| Error::Corrupt)?;
+        Ok(Self { conn, total })
     }
 
     /// Number a frame and store it, returning it as subscribers should
@@ -207,6 +216,7 @@ impl Store {
         let accepted = i64::try_from(accepted_ms).map_err(|_| Error::OutOfRange)?;
         let tx = self.conn.transaction()?;
         let mut deliveries = Vec::with_capacity(frames.len());
+        let mut added = 0u64;
         {
             let mut next = tx.prepare_cached(
                 "INSERT INTO sequences (address, next_seq, bytes) VALUES (?1, 1, ?2)
@@ -222,6 +232,7 @@ impl Store {
                 let size = i64::try_from(payload.len()).map_err(|_| Error::OutOfRange)?;
                 let seq: i64 = next.query_row(params![address.as_bytes(), size], |r| r.get(0))?;
                 insert.execute(params![address.as_bytes(), seq, accepted, payload])?;
+                added += payload.len() as u64;
                 deliveries.push(Delivery {
                     address,
                     seq: u64::try_from(seq).map_err(|_| Error::Corrupt)?,
@@ -231,6 +242,7 @@ impl Store {
             }
         }
         tx.commit()?;
+        self.total += added;
         Ok(deliveries)
     }
 
@@ -376,7 +388,56 @@ impl Store {
             }
         }
         tx.commit()?;
+        let freed: i64 = freed.values().sum();
+        self.total = self.total.saturating_sub(u64::try_from(freed).unwrap_or(0));
         Ok(count)
+    }
+
+    /// Payload bytes stored across every address.
+    #[must_use]
+    pub fn total_bytes(&self) -> u64 {
+        self.total
+    }
+
+    /// Delete the oldest frames across every address until the store holds
+    /// at most `target` bytes, or until pins stop it. Returns how many went.
+    ///
+    /// Oldest by acceptance time, so a flood of new addresses pushes out
+    /// whatever has been stored longest, wherever it is. That is a real loss
+    /// (members away that long cannot catch up), but a bounded one, where a
+    /// full disk would stop the relay storing anything at all.
+    ///
+    /// # Errors
+    /// If the read or delete fails.
+    pub fn trim_total(&mut self, target: u64) -> Result<u64> {
+        let mut excess = self.total.saturating_sub(target);
+        if excess == 0 {
+            return Ok(0);
+        }
+        // The acceptance time up to which enough goes. Frames accepted in
+        // the same millisecond go together, so this can free a little more.
+        let mut through = None;
+        {
+            let mut oldest = self.conn.prepare_cached(
+                "SELECT accepted_ms, length(payload) FROM frames ORDER BY accepted_ms",
+            )?;
+            let mut rows = oldest.query([])?;
+            while let Some(row) = rows.next()? {
+                let (at, size): (i64, i64) = (row.get(0)?, row.get(1)?);
+                excess = excess.saturating_sub(u64::try_from(size).map_err(|_| Error::Corrupt)?);
+                if excess == 0 {
+                    through = Some(at);
+                    break;
+                }
+            }
+        }
+        let through = through.unwrap_or(i64::MAX);
+        self.delete_where(
+            "accepted_ms <= ?1 AND seq < COALESCE(
+                 (SELECT seq FROM temp.pins WHERE pins.address = frames.address),
+                 9223372036854775807)",
+            params![through],
+        )
     }
 
     /// The oldest sequence number still stored for `address`, or the next one
@@ -653,6 +714,61 @@ mod tests {
         assert_eq!(stored_seqs(&store, &room), [6, 7, 8, 9]);
         assert_eq!(store.bytes(&room).unwrap(), 400);
         assert_eq!(store.trim(&room, 450).unwrap(), 0, "already under target");
+    }
+
+    /// The relay-wide total follows every change, and survives reopening.
+    #[test]
+    fn the_relay_wide_total_tracks_every_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.db");
+        let (room, other) = (addr(b"room"), addr(b"other"));
+        {
+            let mut store = Store::open(&path).unwrap();
+            ten_frames(&mut store, &room);
+            ten_frames(&mut store, &other);
+            assert_eq!(store.total_bytes(), 2000);
+            store.trim(&room, 500).unwrap();
+            store.expire(2).unwrap();
+            let expected = store.bytes(&room).unwrap() + store.bytes(&other).unwrap();
+            assert_eq!(store.total_bytes(), expected);
+        }
+        let store = Store::open(&path).unwrap();
+        let expected = store.bytes(&room).unwrap() + store.bytes(&other).unwrap();
+        assert_eq!(
+            store.total_bytes(),
+            expected,
+            "the total was lost on reopening"
+        );
+    }
+
+    /// Over the relay-wide cap, the oldest frames go first wherever they
+    /// are, and pins still hold.
+    #[test]
+    fn trim_total_takes_the_oldest_across_addresses() {
+        let mut store = Store::in_memory().unwrap();
+        let (room, other) = (addr(b"room"), addr(b"other"));
+        for i in 0..10u8 {
+            // Interleaved in time: room at even milliseconds, other at odd.
+            store
+                .append(room.clone(), u64::from(i) * 2, vec![0; 100])
+                .unwrap();
+            store
+                .append(other.clone(), u64::from(i) * 2 + 1, vec![0; 100])
+                .unwrap();
+        }
+        store.trim_total(1000).unwrap();
+        assert_eq!(store.total_bytes(), 1000);
+        assert_eq!(stored_seqs(&store, &room), [5, 6, 7, 8, 9]);
+        assert_eq!(stored_seqs(&store, &other), [5, 6, 7, 8, 9]);
+
+        store.set_pins(&[(room.clone(), 5)]).unwrap();
+        store.trim_total(0).unwrap();
+        assert_eq!(
+            stored_seqs(&store, &room),
+            [5, 6, 7, 8, 9],
+            "a pin was ignored"
+        );
+        assert!(stored_seqs(&store, &other).is_empty());
     }
 
     /// A store written before byte totals existed gets them computed when it
