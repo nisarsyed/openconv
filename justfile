@@ -44,8 +44,8 @@ relay:
     cargo run -p openconv-server
 
 # Launch a client. The first one hosts; pass a name to tell them apart.
-#   just client alice     (then click Host)
-#   just client bob       (then click Join)
+#   just client alice     (then click Host, and copy the channel id it shows)
+#   just client bob       (then paste that channel id and click Join)
 client name="me": bindings
     cd clients/macos && swift run OpenConv {{name}}
 

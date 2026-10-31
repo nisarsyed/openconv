@@ -45,6 +45,8 @@ pub enum ClientEvent {
     Admitted {
         /// Deliver to the member being added.
         welcome: Vec<u8>,
+        /// Publish it to this address: the new member's mailbox.
+        mailbox: Vec<u8>,
     },
     /// A staged add lost its epoch to another member's commit, which has been
     /// applied instead.
@@ -68,7 +70,7 @@ impl From<crate::Event> for ClientEvent {
     fn from(e: crate::Event) -> Self {
         match e {
             crate::Event::Message(text) => Self::Message { text },
-            crate::Event::Admitted { welcome } => Self::Admitted { welcome },
+            crate::Event::Admitted { welcome, mailbox } => Self::Admitted { welcome, mailbox },
             crate::Event::AddSuperseded => Self::AddSuperseded,
             crate::Event::Advanced => Self::Advanced,
             crate::Event::Echo => Self::Echo,
@@ -126,6 +128,21 @@ impl Client {
     /// If the group cannot be created or its state cannot be saved.
     pub fn create_group(&self) -> Result<()> {
         Ok(self.lock().create_group()?)
+    }
+
+    /// The address a `Welcome` for `key_package` will be sent to. Subscribe
+    /// to it before publishing the `KeyPackage`.
+    ///
+    /// # Errors
+    /// If `key_package` is not a valid `KeyPackage`.
+    pub fn mailbox(&self, key_package: Vec<u8>) -> Result<Vec<u8>> {
+        Ok(self.lock().mailbox(&key_package)?)
+    }
+
+    /// The channel this client's group lives on, once it is in one.
+    #[must_use]
+    pub fn channel(&self) -> Option<Vec<u8>> {
+        self.lock().channel()
     }
 
     /// Stage admitting a member from their published `KeyPackage`, returning
@@ -189,32 +206,65 @@ impl Client {
     }
 }
 
-/// Prefix a payload with its frame tag.
-#[must_use]
-#[uniffi::export]
-pub fn encode_frame(kind: FrameKind, body: Vec<u8>) -> Vec<u8> {
-    crate::encode_frame(kind, &body)
-}
-
-/// Split a frame delivered by the relay into sequence number, kind, payload.
+/// A request publishing `kind` and `body` to everyone subscribed to `to`.
 ///
 /// # Errors
-/// If the frame is too short, or carries an unknown tag.
+/// If `to` is not a valid address.
 #[uniffi::export]
-pub fn decode_envelope(wire: Vec<u8>) -> Result<DecodedFrame> {
-    let env = crate::decode_envelope(&wire)?;
+pub fn encode_publish(to: Vec<u8>, kind: FrameKind, body: Vec<u8>) -> Result<Vec<u8>> {
+    Ok(crate::encode_publish(&to, kind, &body)?)
+}
+
+/// A request to receive whatever is published to `addresses`.
+///
+/// # Errors
+/// If any address is invalid, or there are more than 255.
+#[uniffi::export]
+pub fn encode_subscribe(addresses: Vec<Vec<u8>>) -> Result<Vec<u8>> {
+    Ok(crate::encode_subscribe(&addresses)?)
+}
+
+/// Split a delivery from the relay into its parts.
+///
+/// # Errors
+/// If the envelope is malformed, or the frame inside it is.
+#[uniffi::export]
+pub fn decode_delivery(wire: Vec<u8>) -> Result<DecodedFrame> {
+    let env = crate::decode_delivery(&wire)?;
     Ok(DecodedFrame {
+        address: env.address,
         seq: env.seq,
+        accepted_ms: env.accepted_ms,
         kind: env.kind,
         body: env.body,
     })
 }
 
-/// A frame split into its parts.
+/// A channel id as shareable text.
+#[must_use]
+#[uniffi::export]
+pub fn format_channel_id(channel: Vec<u8>) -> String {
+    crate::format_channel_id(&channel)
+}
+
+/// Parse a channel id from shared text.
+///
+/// # Errors
+/// If the text is not a channel id.
+#[uniffi::export]
+pub fn parse_channel_id(text: String) -> Result<Vec<u8>> {
+    Ok(crate::parse_channel_id(&text)?)
+}
+
+/// A delivery split into its parts.
 #[derive(Debug, uniffi::Record)]
 pub struct DecodedFrame {
-    /// The relay's ordering position for this frame.
+    /// Where it was published: a channel, or this client's mailbox.
+    pub address: Vec<u8>,
+    /// The relay's position for this frame on that address.
     pub seq: u64,
+    /// When the relay accepted it, in milliseconds since the Unix epoch.
+    pub accepted_ms: u64,
     /// What the frame carries.
     pub kind: FrameKind,
     /// The payload behind the tag.

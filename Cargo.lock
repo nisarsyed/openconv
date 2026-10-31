@@ -1659,6 +1659,7 @@ name = "openconv-core"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
+ "openconv-wire",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
@@ -1678,10 +1679,18 @@ dependencies = [
  "axum",
  "futures-util",
  "openconv-core",
+ "openconv-wire",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "openconv-wire"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

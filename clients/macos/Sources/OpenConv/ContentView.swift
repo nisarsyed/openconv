@@ -3,10 +3,15 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var model: ChatModel
     @State private var relay = "ws://127.0.0.1:8080/ws"
+    /// Pasted in by someone joining; shared by whoever created the group.
+    @State private var joinChannel = ""
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let channel = model.channelText {
+                channelBar(channel)
+            }
             Divider()
             transcript
             Divider()
@@ -32,12 +37,31 @@ struct ContentView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 190)
                 Button("Host") { connect(hosting: true) }
+                TextField("channel to join", text: $joinChannel)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 150)
                 Button("Join") { connect(hosting: false) }
+                    .disabled(joinChannel.trimmingCharacters(in: .whitespaces).isEmpty)
             } else {
                 Button("Disconnect") { model.disconnect() }
             }
         }
         .padding(10)
+    }
+
+    /// The channel id, selectable so it can be copied to whoever joins next.
+    private func channelBar(_ channel: String) -> some View {
+        HStack(spacing: 6) {
+            Text("channel").foregroundStyle(.secondary)
+            Text(channel)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+            Spacer()
+        }
+        .font(.caption)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
     }
 
     private var transcript: some View {
@@ -89,6 +113,6 @@ struct ContentView: View {
 
     private func connect(hosting: Bool) {
         guard let url = URL(string: relay) else { return }
-        model.connect(to: url, hosting: hosting)
+        model.connect(to: url, hosting: hosting, channelText: joinChannel)
     }
 }

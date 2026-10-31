@@ -2,9 +2,10 @@
 name = "openconv-server"
 version.workspace = true
 edition.workspace = true
-description = "Blind WebSocket relay: fans out opaque frames without parsing them"
+description = "Blind WebSocket relay: routes opaque frames by address without parsing them"
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 
 [lints]
@@ -16,6 +17,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures-util = "0.3"
+openconv-wire = { path = "../wire" }
 
 [dev-dependencies]
 openconv-core = { path = "../core" }

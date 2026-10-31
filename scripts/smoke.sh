@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# End-to-end check against the real app: boots the relay, launches two
-# clients, and asserts a message travels from one to the other.
+# End-to-end check against the real app: boots the relay, launches three
+# clients in one channel and a fourth in another, and asserts messages travel
+# within a channel and never between them.
 #
-# The clients take an optional `host|join` argument and a message to send
-# once in the group, which is what makes them driveable without a human.
+# The clients take an optional `host` or `join <channel>` argument and a
+# message to send once in the group, which is what makes them driveable
+# without a human.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,9 +17,11 @@ MESSAGE="hello from bob"
 # Carol joins last. Bob was already in the group when she was admitted, so he
 # only decrypts her message if he applied the commit that her join produced.
 LATE_MESSAGE="hello from carol"
+# Dave hosts a channel of his own. Nobody in alice's should ever hear him.
+OTHER_MESSAGE="hello from dave"
 
 dump_logs() {
-    for who in alice bob carol relay; do
+    for who in alice bob carol dave relay; do
         if [ -s "$LOG/$who.log" ]; then
             echo "--- $who ---"; cat "$LOG/$who.log"
         elif [ -f "$LOG/$who.log" ]; then
@@ -36,7 +40,7 @@ dump_logs() {
 }
 
 cleanup() {
-    kill ${ALICE:-} ${BOB:-} ${CAROL:-} ${RELAY:-} 2>/dev/null
+    kill ${ALICE:-} ${BOB:-} ${CAROL:-} ${DAVE:-} ${RELAY:-} 2>/dev/null
     wait 2>/dev/null
 }
 trap cleanup EXIT
@@ -99,14 +103,23 @@ echo "launching clients..."
 ALICE=$!
 wait_for 30 "alice to create the group" said alice "created the group" \
     || die "alice never started"
+# Joiners learn the channel out of band; here, from alice's log.
+CHANNEL=$(sed -n 's/^\[alice\] channel \([0-9a-f]*\)$/\1/p' "$LOG/alice.log" | head -1)
+[ -n "$CHANNEL" ] || die "alice never logged her channel"
 
-"$APP" bob join "$MESSAGE" > "$LOG/bob.log" 2>&1 &
+# Dave starts his own channel alongside, so both carry traffic at once.
+"$APP" dave host "$OTHER_MESSAGE" > "$LOG/dave.log" 2>&1 &
+DAVE=$!
+wait_for 30 "dave to create his group" said dave "created the group" \
+    || die "dave never started"
+
+"$APP" bob join "$CHANNEL" "$MESSAGE" > "$LOG/bob.log" 2>&1 &
 BOB=$!
 wait_for 30 "bob to join" said bob "joined the group" || die "bob never joined"
 
 # Carol joins last. Both alice and bob are in the group and will race to
 # admit her; the relay's ordering decides which commit wins.
-"$APP" carol join "$LATE_MESSAGE" > "$LOG/carol.log" 2>&1 &
+"$APP" carol join "$CHANNEL" "$LATE_MESSAGE" > "$LOG/carol.log" 2>&1 &
 CAROL=$!
 wait_for 30 "carol to join" said carol "joined the group" || die "carol never joined"
 
@@ -119,6 +132,7 @@ echo
 echo "--- alice ---"; cat "$LOG/alice.log"
 echo "--- bob ---";   cat "$LOG/bob.log"
 echo "--- carol ---"; cat "$LOG/carol.log"
+echo "--- dave ---";  cat "$LOG/dave.log"
 echo
 
 fail=0
@@ -151,6 +165,25 @@ done
 check alice "received: $MESSAGE"      "alice decrypts bob (2 members)"
 check alice "received: $LATE_MESSAGE" "alice decrypts carol (3 members)"
 check bob   "received: $LATE_MESSAGE" "bob decrypts carol after applying her join commit"
+
+# Isolation. Checking that nobody *decrypts* dave would prove nothing: a
+# relay that leaked his frames would only make the others log errors. What a
+# leak really does is show dave bob's and carol's requests to join, which he
+# would then admit into his own group. So: dave spoke, dave admitted nobody,
+# and nobody hit an error.
+check dave "sent: $OTHER_MESSAGE" "dave spoke in his own channel"
+if grep -q "admitted a new member" "$LOG/dave.log"; then
+    echo "  FAIL dave admitted someone from another channel"
+    fail=1
+else
+    echo "  ok   dave saw no requests to join another channel"
+fi
+for who in alice bob carol dave; do
+    if grep -q "error:" "$LOG/$who.log"; then
+        echo "  FAIL $who logged an error"
+        fail=1
+    fi
+done
 
 echo
 if [ "$fail" -eq 0 ]; then
