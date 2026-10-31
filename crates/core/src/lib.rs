@@ -60,8 +60,8 @@ pub enum Error {
     #[error("saved state is unreadable: {0}")]
     CorruptState(&'static str),
     /// The relay delivered a frame past the one this client expected next,
-    /// so frames in between were missed. Never expected: catch-up and live
-    /// delivery are designed to meet without a gap.
+    /// so frames in between were missed. [`Member::deliver`] recovers from
+    /// this itself by resuming; the variant remains for callers below it.
     #[error("missed frames: expected {expected}, got {got}")]
     Gap {
         /// The sequence number this client expected.
@@ -76,8 +76,39 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Wraps any openmls error into our own, so callers never depend on
 /// openmls error types leaking through the FFI boundary.
+///
+/// A storage failure inside openmls becomes [`Error::Store`], not
+/// [`Error::Mls`], because the two mean opposite things to
+/// [`Member::deliver`]: a frame openmls rejected will be rejected every time
+/// and is stepped over, while one that failed to save must be retried.
+/// openmls's storage variants do not expose the underlying error as a source,
+/// and their messages vary, but every one in 0.9 says "storage". That is
+/// what this matches, and `a_frame_that_fails_to_save_is_retried_not_skipped`
+/// pins it: an openmls upgrade that changes the wording fails that test
+/// rather than silently skipping frames.
 fn mls<E: std::fmt::Display>(e: E) -> Error {
-    Error::Mls(e.to_string())
+    let message = e.to_string();
+    if message.to_ascii_lowercase().contains("storage") {
+        Error::Store(message)
+    } else {
+        Error::Mls(message)
+    }
+}
+
+impl Error {
+    /// Whether this failure is a property of the frame being applied, so it
+    /// would fail the same way every time, rather than of this client's
+    /// circumstances (its disk, its store), which may pass.
+    fn is_frame_fault(&self) -> bool {
+        matches!(
+            self,
+            Self::Codec(_)
+                | Self::MalformedFrame
+                | Self::UnexpectedMessage { .. }
+                | Self::Wire(_)
+                | Self::Mls(_)
+        )
+    }
 }
 
 /// One participant on one device.
@@ -102,6 +133,9 @@ pub struct Member {
     /// Addresses caught up on since this client last connected. Join
     /// requests are only answered live; see [`Member::deliver`].
     live: HashSet<Vec<u8>>,
+    /// Addresses this client has asked the relay to resume, after finding a
+    /// gap, and not yet heard are live again.
+    resuming: HashSet<Vec<u8>>,
 }
 
 /// A message sent and not yet seen coming back.
@@ -254,6 +288,7 @@ impl Member {
             pending: None,
             sent: VecDeque::new(),
             live: HashSet::new(),
+            resuming: HashSet::new(),
         })
     }
 
@@ -319,6 +354,7 @@ impl Member {
             pending,
             sent,
             live: HashSet::new(),
+            resuming: HashSet::new(),
         })
     }
 
@@ -685,6 +721,7 @@ impl Member {
     /// If the store cannot be read, or a saved address is invalid.
     pub fn connect(&mut self) -> Result<Vec<Vec<u8>>> {
         self.live.clear();
+        self.resuming.clear();
         let mut requests = Vec::new();
         for follow in self.db.follows()? {
             requests.push(
@@ -738,10 +775,18 @@ impl Member {
     /// answered only if the joiner is not already a member, since someone
     /// online may well have admitted them meanwhile.
     ///
+    /// A frame that fails is handled by why it failed. One that is malformed,
+    /// or that openmls rejects, would fail the same way every time, since the
+    /// relay's order is fixed, so it is stepped over: otherwise anyone able
+    /// to publish garbage to a channel could wedge every member of it. One
+    /// that fails to save (a full disk, say) leaves the cursor where it was.
+    /// The next frame then arrives past it, and this client resumes from the
+    /// cursor, which fetches the failed frame again and retries it. Skipping
+    /// a commit for that reason would leave this client an epoch behind for
+    /// good.
+    ///
     /// # Errors
-    /// If the message is malformed, frames were missed, or a frame could not
-    /// be applied. A frame that cannot be applied is stepped over: the
-    /// relay's order is fixed, so it would fail the same way every time.
+    /// If the message is malformed, or a frame could not be applied.
     pub fn deliver(&mut self, wire: &[u8]) -> Result<Vec<Effect>> {
         match Inbound::decode(wire)? {
             Inbound::Delivery(delivery) => {
@@ -753,10 +798,17 @@ impl Member {
                     return Ok(Vec::new());
                 }
                 if delivery.seq > next {
-                    return Err(Error::Gap {
-                        expected: next,
-                        got: delivery.seq,
-                    });
+                    // Frames were missed: one failed to save, or the relay
+                    // skipped some. Ask for them again from the cursor, once;
+                    // anything that arrives meanwhile is in those pages too.
+                    if !self.resuming.insert(address.clone()) {
+                        return Ok(Vec::new());
+                    }
+                    let resume = Request::Resume {
+                        address: Address::new(address)?,
+                        from: next,
+                    };
+                    return Ok(vec![Effect::Send(resume.encode()?)]);
                 }
                 let seq = delivery.seq;
                 let applied = self.atomically(|m| {
@@ -764,7 +816,9 @@ impl Member {
                     m.db.advance(&address, seq + 1)?;
                     Ok(effects)
                 });
-                if applied.is_err() {
+                if let Err(error) = &applied
+                    && error.is_frame_fault()
+                {
                     self.db.atomically(|| self.db.advance(&address, seq + 1))?;
                 }
                 applied
@@ -785,6 +839,7 @@ impl Member {
                     };
                     return Ok(vec![Effect::Send(more.encode()?)]);
                 }
+                self.resuming.remove(&address);
                 self.live.insert(address.clone());
                 let mut effects = vec![Effect::Live {
                     address: address.clone(),
@@ -1754,10 +1809,11 @@ mod tests {
         );
     }
 
-    /// A frame beyond the next expected one means frames were missed. It is
-    /// refused, and the cursor stays put so the missing ones can be fetched.
+    /// A frame beyond the next expected one means frames were missed. The
+    /// client asks for them again from its cursor, once, and ignores what
+    /// arrives meanwhile, since the resumed pages will carry it.
     #[test]
-    fn a_gap_is_refused_without_moving_the_cursor() {
+    fn a_gap_resumes_from_the_cursor_once() {
         let mut alice = Member::new("alice").unwrap();
         let mut bob = Member::new("bob").unwrap();
         alice.create_group().unwrap();
@@ -1765,14 +1821,89 @@ mod tests {
         let channel = alice.channel().unwrap();
         let ahead = delivery(&channel, 5, FrameKind::Application, &bob.send("x").unwrap());
 
-        assert!(matches!(
-            alice.deliver(&ahead),
-            Err(Error::Gap {
-                expected: 0,
-                got: 5
-            })
-        ));
+        let effects = alice.deliver(&ahead).unwrap();
+        let [Effect::Send(request)] = effects.as_slice() else {
+            panic!("a gap should ask the relay to resume");
+        };
+        let expected = Request::Resume {
+            address: Address::new(channel.clone()).unwrap(),
+            from: 0,
+        };
+        assert_eq!(request, &expected.encode().unwrap());
         assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
+        assert!(alice.deliver(&ahead).unwrap().is_empty(), "resumed twice");
+    }
+
+    /// A frame that fails because this client could not save it is not a bad
+    /// frame. Skipping it would be permanent, and for a commit that means
+    /// being an epoch behind for good. The cursor must stay, so the frame is
+    /// fetched and applied once saving works again. Uses openmls's own
+    /// storage writes failing, which is what pins the classification in
+    /// `mls()`.
+    #[test]
+    fn a_frame_that_fails_to_save_is_retried_not_skipped() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let channel = alice.channel().unwrap();
+        let commit = bob.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = bob.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.join(&welcome).unwrap();
+        let wire = delivery(&channel, 0, FrameKind::Commit, &commit);
+
+        alice.db.fail_group_writes(true);
+        let failed = alice.deliver(&wire);
+        assert!(
+            matches!(failed, Err(Error::Store(_))),
+            "a save failure was not classed as one: {failed:?}"
+        );
+        alice.db.fail_group_writes(false);
+        assert_eq!(
+            alice.db.cursor(&channel).unwrap(),
+            Some(0),
+            "the commit was skipped"
+        );
+
+        assert!(matches!(
+            alice.deliver(&wire).unwrap().as_slice(),
+            [Effect::Advanced]
+        ));
+        assert_eq!(alice.member_count(), 3);
+        let hello = carol.send("hello").unwrap();
+        assert_message(alice.receive(&hello).unwrap(), "hello");
+    }
+
+    /// A frame openmls rejects on its merits fails the same way every time,
+    /// so it is stepped over rather than blocking everything behind it.
+    #[test]
+    fn a_frame_openmls_rejects_is_stepped_over() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let channel = alice.channel().unwrap();
+        let mut forged = bob.send("tampered").unwrap();
+        let last = forged.len() - 1;
+        forged[last] ^= 0xff;
+
+        assert!(matches!(
+            alice.deliver(&delivery(&channel, 0, FrameKind::Application, &forged)),
+            Err(Error::Mls(_))
+        ));
+        assert_eq!(alice.db.cursor(&channel).unwrap(), Some(1));
+        let next = delivery(
+            &channel,
+            1,
+            FrameKind::Application,
+            &bob.send("fine").unwrap(),
+        );
+        assert!(
+            matches!(alice.deliver(&next).unwrap().as_slice(), [Effect::Message(t)] if t == "fine")
+        );
     }
 
     /// A client that restarts between staging an add and seeing its commit

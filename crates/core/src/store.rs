@@ -307,6 +307,24 @@ impl Database {
         })
     }
 
+    /// Make openmls's writes of group state fail, or work again, while this
+    /// module's own tables keep working: a save failure inside openmls, as
+    /// a full disk partway through applying a commit would cause.
+    #[cfg(test)]
+    pub(crate) fn fail_group_writes(&self, fail: bool) {
+        let sql = if fail {
+            "CREATE TRIGGER no_insert BEFORE INSERT ON openmls_group_data
+                 BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;
+             CREATE TRIGGER no_update BEFORE UPDATE ON openmls_group_data
+                 BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;"
+        } else {
+            "DROP TRIGGER no_insert; DROP TRIGGER no_update;"
+        };
+        self.conn
+            .execute_batch(sql)
+            .expect("toggle simulated failure");
+    }
+
     /// Whether this database outlives the process.
     pub(crate) fn is_persistent(&self) -> bool {
         self.path.is_some()
