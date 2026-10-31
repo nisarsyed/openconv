@@ -1,6 +1,6 @@
 //! Binary entry point for the OpenConv relay.
 
-use openconv_server::store::Store;
+use openconv_server::{Retention, config, store::Store};
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -36,11 +36,28 @@ async fn main() {
         );
     }
 
+    // How long frames are kept and how much per address: see `Retention`.
+    // Malformed values stop the relay rather than being guessed at.
+    let mut retention = Retention::default();
+    if let Ok(text) = std::env::var("OPENCONV_RETENTION") {
+        retention.window = config::parse_duration(&text)
+            .expect("OPENCONV_RETENTION must be a duration such as 30d, 24h or 90m");
+    }
+    if let Ok(text) = std::env::var("OPENCONV_CHANNEL_CAP") {
+        retention.channel_cap = config::parse_size(&text)
+            .expect("OPENCONV_CHANNEL_CAP must be a size such as 64MiB or 512KiB");
+    }
+    tracing::info!(
+        window_secs = retention.window.as_secs(),
+        channel_cap = retention.channel_cap,
+        "retention"
+    );
+
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!(%addr, "relay listening");
     axum::serve(
         listener,
-        openconv_server::router(store).expect("start the relay writer"),
+        openconv_server::router(store, retention).expect("start the relay writer"),
     )
     .await
     .expect("serve");

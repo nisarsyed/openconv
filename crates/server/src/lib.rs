@@ -42,6 +42,7 @@
 //! live subscription it registers after the last page cannot have a frame
 //! slip between them: nothing is published while the writer is busy serving.
 
+pub mod config;
 pub mod store;
 
 use axum::{
@@ -62,7 +63,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use store::Store;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -85,6 +86,47 @@ const MAX_BATCH: usize = 256;
 /// Stored frames sent per catch-up page. Well under [`BACKLOG`], so a page
 /// plus its notice fits a connection's queue with room for live traffic.
 const PAGE_SIZE: usize = 128;
+
+/// How long a catch-up in progress holds retention back after its last
+/// page. A client asks for the next page as soon as it has applied one, so
+/// this only has to outlast a slow round trip; a client that stops asking
+/// stops pinning storage once it passes.
+const PIN_GRACE: Duration = Duration::from_secs(120);
+
+/// How long frames are kept, and how much each address may hold (#106).
+///
+/// Only members already in a group who were offline are served by retention:
+/// a new member cannot read frames from before it joined however long they
+/// are kept. So `window` answers one question, how long someone may be away
+/// and still catch up, and lowering it costs nothing else. `channel_cap`
+/// bounds disk use, but on a busy address it can bite before the window
+/// does, and then it is what limits the time away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    /// Frames older than this are deleted.
+    pub window: Duration,
+    /// An address over this many payload bytes loses its oldest frames.
+    pub channel_cap: u64,
+}
+
+impl Default for Retention {
+    /// Thirty days, which covers a holiday or a broken laptop, and 64 MiB per
+    /// address, which holds a month of a busy group chat.
+    fn default() -> Self {
+        Self {
+            window: Duration::from_secs(30 * 24 * 60 * 60),
+            channel_cap: 64 * 1024 * 1024,
+        }
+    }
+}
+
+impl Retention {
+    /// How often expired frames are swept: often enough that nothing
+    /// outlives the window by much, and at most once a minute.
+    fn sweep_every(self) -> Duration {
+        (self.window / 10).clamp(Duration::from_millis(50), Duration::from_secs(60))
+    }
+}
 
 /// A connection, as an address sees it.
 #[derive(Clone)]
@@ -131,6 +173,9 @@ type Landed = Result<(u64, usize), WriteError>;
 enum Job {
     Publish(Publish),
     Resume(Resume),
+    /// Delete frames past the retention window. Queued by a timer, so
+    /// eviction is ordered with everything else the writer does.
+    Sweep,
 }
 
 /// A publish waiting for the writer.
@@ -159,17 +204,35 @@ struct Relay {
 }
 
 impl Relay {
-    /// Start the writer over `store`.
-    fn start(store: Store) -> std::io::Result<Self> {
+    /// Start the writer over `store`, and the timer that sweeps it.
+    fn start(store: Store, retention: Retention) -> std::io::Result<Self> {
         let (writes, queue) = mpsc::channel(WRITE_QUEUE);
         let routes = Routes::default();
-        let writer_routes = routes.clone();
-        // A thread rather than a blocking task: it lives as long as the relay,
-        // and it ends by itself once every connection and the router have
-        // dropped their senders.
+        let state = Writer {
+            store,
+            routes: routes.clone(),
+            retention,
+            pins: HashMap::new(),
+        };
+        // Threads rather than blocking tasks: they live as long as the
+        // relay, and end by themselves once every connection and the router
+        // have dropped their senders. The timer holds only a weak handle, so
+        // it cannot keep the writer alive.
         std::thread::Builder::new()
             .name("relay-writer".into())
-            .spawn(move || write_loop(store, queue, &writer_routes))?;
+            .spawn(move || write_loop(state, queue))?;
+        let timer = writes.downgrade();
+        std::thread::Builder::new()
+            .name("relay-sweeper".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(retention.sweep_every());
+                    let Some(writes) = timer.upgrade() else { break };
+                    if writes.blocking_send(Job::Sweep).is_err() {
+                        break;
+                    }
+                }
+            })?;
         Ok(Self { writes, routes })
     }
 
@@ -241,31 +304,91 @@ impl Relay {
     }
 }
 
+/// The writer thread's state.
+struct Writer {
+    store: Store,
+    routes: Routes,
+    retention: Retention,
+    /// Catch-ups in progress, by connection and address: where the next page
+    /// starts, and when the last one was sent. Retention keeps everything
+    /// from there, so a client cannot be stranded between pages.
+    pins: HashMap<(usize, Address), (u64, Instant)>,
+}
+
+impl Writer {
+    /// Tell the store what to hold back, dropping catch-ups that have gone
+    /// quiet for longer than [`PIN_GRACE`].
+    fn apply_pins(&mut self) {
+        self.pins.retain(|_, (_, at)| at.elapsed() < PIN_GRACE);
+        let mut lowest: HashMap<&Address, u64> = HashMap::new();
+        for ((_, address), (seq, _)) in &self.pins {
+            let pin = lowest.entry(address).or_insert(*seq);
+            *pin = (*pin).min(*seq);
+        }
+        let pins: Vec<_> = lowest.into_iter().map(|(a, s)| (a.clone(), s)).collect();
+        if let Err(error) = self.store.set_pins(&pins) {
+            tracing::warn!(%error, "could not set retention pins");
+        }
+    }
+
+    /// Delete everything past the retention window.
+    fn sweep(&mut self) {
+        self.apply_pins();
+        let window = u64::try_from(self.retention.window.as_millis()).unwrap_or(u64::MAX);
+        match self.store.expire(now_ms().saturating_sub(window)) {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(count, "expired frames past the retention window"),
+            Err(error) => tracing::warn!(%error, "could not expire frames"),
+        }
+    }
+
+    /// Bring each of `addresses` back under the size cap if it went over,
+    /// trimming to nine tenths so a busy address is not trimmed every batch.
+    fn enforce_cap(&mut self, addresses: &HashSet<Address>) {
+        let cap = self.retention.channel_cap;
+        let mut pinned = false;
+        for address in addresses {
+            if self.store.bytes(address).is_ok_and(|bytes| bytes <= cap) {
+                continue;
+            }
+            if !pinned {
+                self.apply_pins();
+                pinned = true;
+            }
+            match self.store.trim(address, cap / 10 * 9) {
+                Ok(count) => tracing::info!(count, "trimmed an address over its size cap"),
+                Err(error) => tracing::warn!(%error, "could not trim an address"),
+            }
+        }
+    }
+}
+
 /// The writer: take whatever publishes are waiting, commit them together,
-/// serve resumes in turn, and repeat until every sender has gone.
+/// serve resumes and sweeps in turn, and repeat until every sender has gone.
 ///
 /// Jobs are handled in the order they were queued. A run of publishes
-/// becomes one batch; a resume behind them waits for that batch to commit,
-/// so it sees them in the store.
-fn write_loop(mut store: Store, mut queue: mpsc::Receiver<Job>, routes: &Routes) {
+/// becomes one batch; a job behind them waits for that batch to commit, so a
+/// resume sees them in the store.
+fn write_loop(mut writer: Writer, mut queue: mpsc::Receiver<Job>) {
     let mut batch = Vec::with_capacity(MAX_BATCH);
     let mut held = None;
     while let Some(job) = held.take().or_else(|| queue.blocking_recv()) {
         match job {
-            Job::Resume(resume) => serve(&store, routes, resume),
+            Job::Resume(resume) => serve(&mut writer, resume),
+            Job::Sweep => writer.sweep(),
             Job::Publish(first) => {
                 batch.push(first);
                 while batch.len() < MAX_BATCH {
                     match queue.try_recv() {
                         Ok(Job::Publish(next)) => batch.push(next),
-                        Ok(resume) => {
-                            held = Some(resume);
+                        Ok(other) => {
+                            held = Some(other);
                             break;
                         }
                         Err(_) => break,
                     }
                 }
-                commit(&mut store, routes, &mut batch);
+                commit(&mut writer, &mut batch);
             }
         }
     }
@@ -273,15 +396,15 @@ fn write_loop(mut store: Store, mut queue: mpsc::Receiver<Job>, routes: &Routes)
 
 /// Send one page of catch-up to a connection, and subscribe it if that page
 /// was the last. See the wire crate's module docs for the exchange.
-fn serve(store: &Store, routes: &Routes, resume: Resume) {
-    let result = page(store, routes, &resume);
+fn serve(writer: &mut Writer, resume: Resume) {
+    let result = page(writer, &resume);
     if result.is_err() {
         resume.subscriber.kick.notify_one();
     }
     let _ = resume.served.send(result);
 }
 
-fn page(store: &Store, routes: &Routes, resume: &Resume) -> Result<(), WriteError> {
+fn page(writer: &mut Writer, resume: &Resume) -> Result<(), WriteError> {
     let Resume {
         id,
         subscriber,
@@ -289,6 +412,7 @@ fn page(store: &Store, routes: &Routes, resume: &Resume) -> Result<(), WriteErro
         from,
         ..
     } = resume;
+    let store = &writer.store;
     let read = |e| WriteError::Store(Arc::new(e));
     let next = store.next_seq(address).map_err(read)?;
     let floor = store.floor(address).map_err(read)?;
@@ -298,7 +422,9 @@ fn page(store: &Store, routes: &Routes, resume: &Resume) -> Result<(), WriteErro
             .try_send(Bytes::from(inbound.encode()))
             .map_err(|_| WriteError::Lagged)
     };
+    let pin = (*id, address.clone());
     if *from < floor || *from > next {
+        writer.pins.remove(&pin);
         return push(Inbound::Unavailable {
             address: address.clone(),
             floor,
@@ -315,12 +441,16 @@ fn page(store: &Store, routes: &Routes, resume: &Resume) -> Result<(), WriteErro
     if live {
         // Registered here, between reading the last page and the next job,
         // so the first live frame this connection gets is `next`.
-        routes
+        writer
+            .routes
             .lock()
             .expect("routing state poisoned")
             .entry(address.clone())
             .or_default()
             .insert(*id, subscriber.clone());
+        writer.pins.remove(&pin);
+    } else {
+        writer.pins.insert(pin, (reached, Instant::now()));
     }
     push(Inbound::Page {
         address: address.clone(),
@@ -330,17 +460,18 @@ fn page(store: &Store, routes: &Routes, resume: &Resume) -> Result<(), WriteErro
 }
 
 /// Number and store `batch` in one transaction, and only then deliver it, in
-/// sequence order, and tell each publisher where its frame landed.
+/// sequence order, and tell each publisher where its frame landed. Then keep
+/// the addresses it touched under their size cap.
 ///
 /// Storing first is what makes delivery a promise: a subscriber never
 /// receives a frame that a crash could lose. If the store refuses the batch,
 /// none of it is delivered and every publisher in it is told so.
-fn commit(store: &mut Store, routes: &Routes, batch: &mut Vec<Publish>) {
+fn commit(writer: &mut Writer, batch: &mut Vec<Publish>) {
     let (frames, replies): (Vec<_>, Vec<_>) = batch
         .drain(..)
         .map(|p| ((p.address, p.payload), p.landed))
         .unzip();
-    let deliveries = match store.append_batch(frames, now_ms()) {
+    let deliveries = match writer.store.append_batch(frames, now_ms()) {
         Ok(deliveries) => deliveries,
         Err(error) => {
             let error = Arc::new(error);
@@ -358,11 +489,15 @@ fn commit(store: &mut Store, routes: &Routes, batch: &mut Vec<Publish>) {
             (d.address, d.seq, frame)
         })
         .collect();
-    let mut routes = routes.lock().expect("routing state poisoned");
-    for ((address, seq, frame), landed) in frames.into_iter().zip(replies) {
-        let reached = deliver(&mut routes, &address, &frame);
-        let _ = landed.send(Ok((seq, reached)));
+    let touched: HashSet<Address> = frames.iter().map(|(a, _, _)| a.clone()).collect();
+    {
+        let mut routes = writer.routes.lock().expect("routing state poisoned");
+        for ((address, seq, frame), landed) in frames.into_iter().zip(replies) {
+            let reached = deliver(&mut routes, &address, &frame);
+            let _ = landed.send(Ok((seq, reached)));
+        }
     }
+    writer.enforce_cap(&touched);
 }
 
 /// Hand a frame to everyone subscribed to `address`, dropping any connection
@@ -408,16 +543,17 @@ fn admit(subscribed: &Mutex<HashSet<Address>>, addresses: Vec<Address>) -> Optio
     Some(added)
 }
 
-/// Build the relay router over `store`, starting the thread that writes to
-/// it. Exposed so tests can serve it on an ephemeral port.
+/// Build the relay router over `store`, keeping frames as `retention` says,
+/// and start the threads that write to it and sweep it. Exposed so tests can
+/// serve it on an ephemeral port.
 ///
 /// # Errors
-/// If the writer thread cannot be started.
-pub fn router(store: Store) -> std::io::Result<Router> {
+/// If the writer or sweeper thread cannot be started.
+pub fn router(store: Store, retention: Retention) -> std::io::Result<Router> {
     Ok(Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/ws", get(upgrade))
-        .with_state(Relay::start(store)?))
+        .with_state(Relay::start(store, retention)?))
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(relay): State<Relay>) -> impl IntoResponse {
@@ -554,6 +690,16 @@ mod tests {
         rx
     }
 
+    /// The writer's state over `store`, with default retention.
+    fn writer(store: Store) -> Writer {
+        Writer {
+            store,
+            routes: Routes::default(),
+            retention: Retention::default(),
+            pins: HashMap::new(),
+        }
+    }
+
     /// A batch as the writer would take it off its queue.
     fn batch(frames: &[(&Address, &[u8])]) -> (Vec<Publish>, Vec<oneshot::Receiver<Landed>>) {
         frames
@@ -574,13 +720,12 @@ mod tests {
     /// publisher learns its own frame's number.
     #[test]
     fn a_batch_is_delivered_in_order_once_stored() {
-        let mut store = Store::in_memory().unwrap();
-        let routes = Routes::default();
+        let mut w = writer(Store::in_memory().unwrap());
         let (room, other) = (addr(b"room"), addr(b"other"));
-        let mut rx = subscriber(&routes, 0, &room);
+        let mut rx = subscriber(&w.routes, 0, &room);
         let (mut publishes, replies) = batch(&[(&room, b"a"), (&other, b"x"), (&room, b"b")]);
 
-        commit(&mut store, &routes, &mut publishes);
+        commit(&mut w, &mut publishes);
 
         let landed: Vec<_> = replies
             .into_iter()
@@ -642,13 +787,13 @@ mod tests {
     #[test]
     fn catch_up_comes_in_pages_and_ends_live() {
         let mut store = Store::in_memory().unwrap();
-        let routes = Routes::default();
         let room = addr(b"room");
         for i in 0..300u32 {
             store
                 .append(room.clone(), 0, i.to_be_bytes().to_vec())
                 .unwrap();
         }
+        let mut w = writer(store);
 
         let mut from = 0;
         let mut pages = 0;
@@ -657,7 +802,7 @@ mod tests {
             // goes live fails this test rather than hanging it.
             assert!(pages < 10, "still not live after {pages} pages");
             let (job, mut rx, mut reply) = resume(&room, from);
-            serve(&store, &routes, job);
+            serve(&mut w, job);
             reply.try_recv().unwrap().unwrap();
             let inbound = drain(&mut rx);
             let (seqs, notice) = seqs_and_notice(&inbound);
@@ -667,7 +812,7 @@ mod tests {
             let Some(Inbound::Page { next, live, .. }) = notice else {
                 panic!("a page must end with a Page notice, got {notice:?}");
             };
-            let subscribed = routes.lock().unwrap().contains_key(&room);
+            let subscribed = w.routes.lock().unwrap().contains_key(&room);
             assert_eq!(subscribed, *live, "live only once the last page is sent");
             from = *next;
             if *live {
@@ -682,16 +827,16 @@ mod tests {
     #[test]
     fn cursors_outside_the_store_are_unavailable() {
         let mut store = Store::in_memory().unwrap();
-        let routes = Routes::default();
         let room = addr(b"room");
         for i in 0..5u8 {
             store.append(room.clone(), 0, vec![i]).unwrap();
         }
         store.forget_before(&room, 2);
+        let mut w = writer(store);
 
         for from in [0, 1, 6] {
             let (job, mut rx, mut reply) = resume(&room, from);
-            serve(&store, &routes, job);
+            serve(&mut w, job);
             reply.try_recv().unwrap().unwrap();
             assert_eq!(
                 drain(&mut rx),
@@ -704,14 +849,119 @@ mod tests {
             );
         }
         assert!(
-            routes.lock().unwrap().is_empty(),
+            w.routes.lock().unwrap().is_empty(),
             "an unavailable cursor subscribed"
         );
 
         // At the floor is fine.
         let (job, mut rx, _reply) = resume(&room, 2);
-        serve(&store, &routes, job);
+        serve(&mut w, job);
         assert_eq!(seqs_and_notice(&drain(&mut rx)).0, [2, 3, 4]);
+    }
+
+    /// 300 frames on `room`, all accepted long ago, behind a writer.
+    fn old_frames(room: &Address) -> Writer {
+        let mut store = Store::in_memory().unwrap();
+        for i in 0..300u32 {
+            store
+                .append(room.clone(), 0, i.to_be_bytes().to_vec())
+                .unwrap();
+        }
+        writer(store)
+    }
+
+    /// A sweep that runs between two pages of a client's catch-up must leave
+    /// the next page there. Otherwise the client is stranded mid-catch-up by
+    /// nothing more than timing.
+    #[test]
+    fn eviction_cannot_strand_a_catch_up_in_progress() {
+        let room = addr(b"room");
+        let mut w = old_frames(&room);
+        let (job, mut rx, _reply) = resume(&room, 0);
+        serve(&mut w, job);
+        let Some(Inbound::Page {
+            next: 128,
+            live: false,
+            ..
+        }) = drain(&mut rx).pop()
+        else {
+            panic!("expected a first page ending at 128");
+        };
+
+        w.sweep();
+        assert_eq!(
+            w.store.floor(&room).unwrap(),
+            128,
+            "the sweep took the next page"
+        );
+        let (job, mut rx, _reply) = resume(&room, 128);
+        serve(&mut w, job);
+        let (seqs, _) = seqs_and_notice(&drain(&mut rx));
+        assert_eq!(seqs.first(), Some(&128), "the next page was not served");
+    }
+
+    /// A sweep only takes what is past the window.
+    #[test]
+    fn a_sweep_keeps_frames_inside_the_window() {
+        let mut store = Store::in_memory().unwrap();
+        let room = addr(b"room");
+        store.append(room.clone(), 0, b"old".to_vec()).unwrap();
+        store
+            .append(room.clone(), now_ms(), b"new".to_vec())
+            .unwrap();
+        let mut w = writer(store);
+        w.sweep();
+        let kept: Vec<_> = w
+            .store
+            .since(&room, 0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.payload)
+            .collect();
+        assert_eq!(kept, [b"new".to_vec()]);
+    }
+
+    /// A client that stops asking for pages stops holding storage back once
+    /// the grace period passes, and is told what it missed if it returns.
+    #[test]
+    fn a_catch_up_that_goes_quiet_stops_pinning() {
+        let room = addr(b"room");
+        let mut w = old_frames(&room);
+        let (job, mut rx, _reply) = resume(&room, 0);
+        serve(&mut w, job);
+        drain(&mut rx);
+        for (_, at) in w.pins.values_mut() {
+            *at -= PIN_GRACE + Duration::from_secs(1);
+        }
+
+        w.sweep();
+        assert!(w.pins.is_empty());
+        let (job, mut rx, _reply) = resume(&room, 128);
+        serve(&mut w, job);
+        assert!(matches!(
+            drain(&mut rx).as_slice(),
+            [Inbound::Unavailable { .. }]
+        ));
+    }
+
+    /// An address that goes over its cap is trimmed after the batch that
+    /// took it over, down to nine tenths of the cap, oldest first.
+    #[test]
+    fn an_address_over_its_cap_is_trimmed_after_a_batch() {
+        let mut w = writer(Store::in_memory().unwrap());
+        w.retention.channel_cap = 1000;
+        let room = addr(b"room");
+        for _ in 0..15 {
+            let payload = [0u8; 100];
+            let (mut publishes, _replies) = batch(&[(&room, &payload)]);
+            commit(&mut w, &mut publishes);
+            assert!(
+                w.store.bytes(&room).unwrap() <= 1000,
+                "over the cap after a batch"
+            );
+        }
+        assert!(w.store.floor(&room).unwrap() > 0, "nothing was trimmed");
+        assert_eq!(w.store.next_seq(&room).unwrap(), 15);
     }
 
     /// Delivery is a promise that the frame is stored. A batch the store
@@ -719,14 +969,14 @@ mod tests {
     /// or a crash could lose something a subscriber has already acted on.
     #[test]
     fn a_batch_that_cannot_be_stored_is_delivered_to_nobody() {
-        let mut store = Store::in_memory().unwrap();
+        let store = Store::in_memory().unwrap();
         store.fail_writes();
-        let routes = Routes::default();
+        let mut w = writer(store);
         let room = addr(b"room");
-        let mut rx = subscriber(&routes, 0, &room);
+        let mut rx = subscriber(&w.routes, 0, &room);
         let (mut publishes, replies) = batch(&[(&room, b"a"), (&room, b"b"), (&room, b"c")]);
 
-        commit(&mut store, &routes, &mut publishes);
+        commit(&mut w, &mut publishes);
 
         for mut reply in replies {
             assert!(matches!(

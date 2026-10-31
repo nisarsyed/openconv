@@ -38,9 +38,12 @@ The relay routes frames by channel and stores them durably (#104), and a
 client that was away catches up on what it missed when it reconnects (#105):
 messages, commits, and join requests nobody was online to answer.
 
-What that is not yet: **one implicit conversation**, and no retention limit
-(#106), so a busy relay's storage grows without bound. There is no identity
-beyond a self-declared name.
+Frames are kept for 30 days and at most 64 MiB per channel, both
+operator-configurable (#106). A member away longer is told so; re-adding it
+is #112, the one item left in milestone 1.
+
+What that is not yet: **one implicit conversation**, and no identity beyond a
+self-declared name.
 
 ## The ordering principle
 
