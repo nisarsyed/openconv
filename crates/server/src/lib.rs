@@ -101,21 +101,51 @@ const PIN_GRACE: Duration = Duration::from_secs(120);
 /// and still catch up, and lowering it costs nothing else. `channel_cap`
 /// bounds disk use, but on a busy address it can bite before the window
 /// does, and then it is what limits the time away.
+///
+/// Retention bounds history, not abuse. Until identity (milestone 3), anyone
+/// who can reach the relay can publish to any address, including made-up
+/// ones, so the per-address cap alone does not bound disk. `relay_cap` does:
+/// over it, the oldest frames anywhere go first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Retention {
     /// Frames older than this are deleted.
     pub window: Duration,
     /// An address over this many payload bytes loses its oldest frames.
     pub channel_cap: u64,
+    /// The store over this many payload bytes, across every address, loses
+    /// its oldest frames wherever they are.
+    pub relay_cap: u64,
 }
 
 impl Default for Retention {
-    /// Thirty days, which covers a holiday or a broken laptop, and 64 MiB per
-    /// address, which holds a month of a busy group chat.
+    /// Thirty days, which covers a holiday or a broken laptop; 64 MiB per
+    /// address, which holds a month of a busy group chat; and 4 GiB in all.
     fn default() -> Self {
         Self {
             window: Duration::from_secs(30 * 24 * 60 * 60),
             channel_cap: 64 * 1024 * 1024,
+            relay_cap: 4 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
+/// Everything an operator can set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    /// How long frames are kept, and how much.
+    pub retention: Retention,
+    /// The largest WebSocket message a client may send. A larger one closes
+    /// the connection. MLS messages run from a few hundred bytes to a few
+    /// KiB, so 1 MiB is generous, and it stops a single frame from filling a
+    /// channel's cap and pushing out all of its history.
+    pub max_frame: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            retention: Retention::default(),
+            max_frame: 1024 * 1024,
         }
     }
 }
@@ -198,6 +228,8 @@ struct Resume {
 struct Relay {
     /// The writer's queue. See the module docs for why there is one writer.
     writes: mpsc::Sender<Job>,
+    /// See [`Config::max_frame`].
+    max_frame: usize,
     /// Changed by connections as they subscribe and leave; read by the writer
     /// as it delivers.
     routes: Routes,
@@ -205,7 +237,8 @@ struct Relay {
 
 impl Relay {
     /// Start the writer over `store`, and the timer that sweeps it.
-    fn start(store: Store, retention: Retention) -> std::io::Result<Self> {
+    fn start(store: Store, config: Config) -> std::io::Result<Self> {
+        let retention = config.retention;
         let (writes, queue) = mpsc::channel(WRITE_QUEUE);
         let routes = Routes::default();
         let state = Writer {
@@ -233,7 +266,11 @@ impl Relay {
                     }
                 }
             })?;
-        Ok(Self { writes, routes })
+        Ok(Self {
+            writes,
+            max_frame: config.max_frame,
+            routes,
+        })
     }
 
     /// Add a connection to each of `addresses`, taking the lock once for the
@@ -343,7 +380,8 @@ impl Writer {
     }
 
     /// Bring each of `addresses` back under the size cap if it went over,
-    /// trimming to nine tenths so a busy address is not trimmed every batch.
+    /// and the whole store under the relay-wide cap, trimming to nine tenths
+    /// of each so a busy relay is not trimmed every batch.
     fn enforce_cap(&mut self, addresses: &HashSet<Address>) {
         let cap = self.retention.channel_cap;
         let mut pinned = false;
@@ -358,6 +396,18 @@ impl Writer {
             match self.store.trim(address, cap / 10 * 9) {
                 Ok(count) => tracing::info!(count, "trimmed an address over its size cap"),
                 Err(error) => tracing::warn!(%error, "could not trim an address"),
+            }
+        }
+        let relay_cap = self.retention.relay_cap;
+        if self.store.total_bytes() > relay_cap {
+            if !pinned {
+                self.apply_pins();
+            }
+            match self.store.trim_total(relay_cap / 10 * 9) {
+                Ok(count) => {
+                    tracing::warn!(count, "relay over its total cap; dropped the oldest frames");
+                }
+                Err(error) => tracing::warn!(%error, "could not trim the relay"),
             }
         }
     }
@@ -543,21 +593,25 @@ fn admit(subscribed: &Mutex<HashSet<Address>>, addresses: Vec<Address>) -> Optio
     Some(added)
 }
 
-/// Build the relay router over `store`, keeping frames as `retention` says,
+/// Build the relay router over `store`, configured by `config`,
 /// and start the threads that write to it and sweep it. Exposed so tests can
 /// serve it on an ephemeral port.
 ///
 /// # Errors
 /// If the writer or sweeper thread cannot be started.
-pub fn router(store: Store, retention: Retention) -> std::io::Result<Router> {
+pub fn router(store: Store, config: Config) -> std::io::Result<Router> {
     Ok(Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/ws", get(upgrade))
-        .with_state(Relay::start(store, retention)?))
+        .with_state(Relay::start(store, config)?))
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(relay): State<Relay>) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle(socket, relay))
+    // A larger message ends the connection: the read fails, and `handle`
+    // treats a failed read like any other way a client goes away.
+    ws.max_message_size(relay.max_frame)
+        .max_frame_size(relay.max_frame)
+        .on_upgrade(|socket| handle(socket, relay))
 }
 
 async fn handle(socket: WebSocket, relay: Relay) {
@@ -962,6 +1016,31 @@ mod tests {
         }
         assert!(w.store.floor(&room).unwrap() > 0, "nothing was trimmed");
         assert_eq!(w.store.next_seq(&room).unwrap(), 15);
+    }
+
+    /// Frames sprayed across many addresses, each well under its own cap,
+    /// still cannot take the relay past its total cap: that is the bound on
+    /// disk while anyone can publish anywhere.
+    #[test]
+    fn a_spray_across_addresses_stays_under_the_relay_cap() {
+        let mut w = writer(Store::in_memory().unwrap());
+        w.retention.relay_cap = 1000;
+        for i in 0..50u32 {
+            let address = addr(format!("made-up-{i}").as_bytes());
+            let payload = [0u8; 100];
+            let (mut publishes, _replies) = batch(&[(&address, &payload)]);
+            commit(&mut w, &mut publishes);
+            assert!(
+                w.store.total_bytes() <= 1000,
+                "over the relay cap after {i}"
+            );
+        }
+        let newest = addr(b"made-up-49");
+        assert_eq!(
+            w.store.bytes(&newest).unwrap(),
+            100,
+            "the newest frame went first"
+        );
     }
 
     /// Delivery is a promise that the frame is stored. A batch the store

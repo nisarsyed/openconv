@@ -1,6 +1,6 @@
 //! Binary entry point for the OpenConv relay.
 
-use openconv_server::{Retention, config, store::Store};
+use openconv_server::{Config, config, store::Store};
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -36,28 +36,40 @@ async fn main() {
         );
     }
 
-    // How long frames are kept and how much per address: see `Retention`.
+    // How long frames are kept, how much, and how large one may be: see
+    // `Config` and `Retention`.
     // Malformed values stop the relay rather than being guessed at.
-    let mut retention = Retention::default();
+    let mut settings = Config::default();
     if let Ok(text) = std::env::var("OPENCONV_RETENTION") {
-        retention.window = config::parse_duration(&text)
+        settings.retention.window = config::parse_duration(&text)
             .expect("OPENCONV_RETENTION must be a duration such as 30d, 24h or 90m");
     }
     if let Ok(text) = std::env::var("OPENCONV_CHANNEL_CAP") {
-        retention.channel_cap = config::parse_size(&text)
+        settings.retention.channel_cap = config::parse_size(&text)
             .expect("OPENCONV_CHANNEL_CAP must be a size such as 64MiB or 512KiB");
     }
+    if let Ok(text) = std::env::var("OPENCONV_RELAY_CAP") {
+        settings.retention.relay_cap = config::parse_size(&text)
+            .expect("OPENCONV_RELAY_CAP must be a size such as 4GiB or 512MiB");
+    }
+    if let Ok(text) = std::env::var("OPENCONV_MAX_FRAME") {
+        settings.max_frame = config::parse_size(&text)
+            .and_then(|n| usize::try_from(n).ok())
+            .expect("OPENCONV_MAX_FRAME must be a size such as 1MiB or 256KiB");
+    }
     tracing::info!(
-        window_secs = retention.window.as_secs(),
-        channel_cap = retention.channel_cap,
-        "retention"
+        window_secs = settings.retention.window.as_secs(),
+        channel_cap = settings.retention.channel_cap,
+        relay_cap = settings.retention.relay_cap,
+        max_frame = settings.max_frame,
+        "limits"
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!(%addr, "relay listening");
     axum::serve(
         listener,
-        openconv_server::router(store, retention).expect("start the relay writer"),
+        openconv_server::router(store, settings).expect("start the relay writer"),
     )
     .await
     .expect("serve");

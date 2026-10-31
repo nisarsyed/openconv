@@ -21,18 +21,18 @@ async fn spawn_relay() -> String {
 /// Boot a relay over `store`, returning its URL and the task serving it, so a
 /// test can stop it.
 async fn spawn_relay_on(store: Store) -> (String, tokio::task::JoinHandle<()>) {
-    spawn_relay_with(store, openconv_server::Retention::default()).await
+    spawn_relay_with(store, openconv_server::Config::default()).await
 }
 
-/// Boot a relay over `store` with its own retention policy.
+/// Boot a relay over `store` with its own configuration.
 async fn spawn_relay_with(
     store: Store,
-    retention: openconv_server::Retention,
+    config: openconv_server::Config,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        axum::serve(listener, openconv_server::router(store, retention).unwrap())
+        axum::serve(listener, openconv_server::router(store, config).unwrap())
             .await
             .unwrap();
     });
@@ -750,11 +750,14 @@ async fn members_carry_on_through_a_relay_whose_store_was_reset() {
 /// served whatever is left as though nothing were missing.
 #[tokio::test]
 async fn a_member_away_past_retention_is_told_so() {
-    let retention = openconv_server::Retention {
-        window: Duration::from_millis(300),
-        ..openconv_server::Retention::default()
+    let config = openconv_server::Config {
+        retention: openconv_server::Retention {
+            window: Duration::from_millis(300),
+            ..openconv_server::Retention::default()
+        },
+        ..openconv_server::Config::default()
     };
-    let (url, _server) = spawn_relay_with(Store::in_memory().unwrap(), retention).await;
+    let (url, _server) = spawn_relay_with(Store::in_memory().unwrap(), config).await;
     let dir = tempfile::tempdir().unwrap();
 
     let mut alice = Member::new("alice").unwrap();
@@ -785,5 +788,40 @@ async fn a_member_away_past_retention_is_told_so() {
     assert!(
         matches!(effects.as_slice(), [Effect::Unavailable { .. }]),
         "expected to be told the frames are gone, got {effects:?}"
+    );
+}
+
+/// A message over the size limit closes the connection that sent it, and
+/// nothing else. Without the limit, one frame could fill a channel's cap and
+/// push out all of its history.
+#[tokio::test]
+async fn an_oversized_message_closes_only_that_connection() {
+    let config = openconv_server::Config {
+        max_frame: 1024,
+        ..openconv_server::Config::default()
+    };
+    let (url, _server) = spawn_relay_with(Store::in_memory().unwrap(), config).await;
+    let mut member = connect(&url).await;
+    subscribe(&mut member, &[b"room"]).await;
+
+    let mut flooder = connect(&url).await;
+    publish(&mut flooder, b"room", FrameKind::Application, &[0; 2000]).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), flooder.next())
+        .await
+        .expect("the relay kept an oversized sender connected");
+    assert!(
+        matches!(closed, None | Some(Ok(Message::Close(_)) | Err(_))),
+        "expected the connection to end, got {closed:?}"
+    );
+    assert!(
+        stays_quiet(&mut member).await,
+        "the oversized frame was relayed"
+    );
+
+    publish(&mut member, b"room", FrameKind::Application, &[0; 900]).await;
+    assert_eq!(
+        next(&mut member).await.body.len(),
+        900,
+        "a frame under the limit failed"
     );
 }

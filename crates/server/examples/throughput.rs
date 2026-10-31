@@ -36,7 +36,7 @@ async fn frames_per_second(publishers: usize) -> f64 {
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
-            openconv_server::router(store, openconv_server::Retention::default()).unwrap(),
+            openconv_server::router(store, openconv_server::Config::default()).unwrap(),
         )
         .await
         .unwrap();

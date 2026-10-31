@@ -107,6 +107,18 @@ longer than the limit is told it cannot catch up, rather than being shown a
 history with holes in it. Rejoining it means another member re-adding it,
 which is #112.
 
+**Retention limits history, not abuse.** Until identity exists (milestone 3),
+anyone who can reach the relay can publish to any address, including made-up
+ones, and a per-channel cap does nothing against frames spread across
+thousands of them. Two limits bound that: **4 GiB of frames in all**
+(`OPENCONV_RELAY_CAP`), over which the oldest frames anywhere go first, and **1
+MiB per message** (`OPENCONV_MAX_FRAME`), over which the connection is closed.
+The first keeps the disk from filling, which would stop the relay storing
+anything; its cost is that a flood can push out real history, shortening the
+offline window for everyone. Neither stops a determined flood, so a relay
+reachable from the open internet should sit behind something that limits who
+can connect until there are accounts.
+
 ## Checks
 
 ```sh
