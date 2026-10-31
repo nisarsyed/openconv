@@ -204,6 +204,31 @@ do {
     failures += 1
 }
 
+// Membership crosses the bridge: the roster, and requests to remove and leave.
+do {
+    let alice = try Client(identity: "alice")
+    let bob = try Client(identity: "bob")
+    try alice.createGroup()
+    let commit = try alice.proposeAdd(keyPackage: bob.keyPackage())
+    guard case .admitted(let welcome, _) = try alice.receive(wire: commit) else {
+        throw BridgeError.unexpected("bob was not admitted")
+    }
+    try bob.join(welcome: welcome)
+    let roster = bob.members().map { "\($0.name)\($0.me ? "*" : "")" }
+    check("the roster crosses, marking the asker", roster == ["alice", "bob*"])
+    guard let alicePlace = bob.members().first(where: { $0.name == "alice" }) else {
+        throw BridgeError.unexpected("alice missing from the roster")
+    }
+    check(
+        "a removal is a publish request",
+        try bob.removeMember(index: alicePlace.index).first == 0x02)
+    let leaving = try Client(identity: "leaver")
+    check("leaving without a group throws", (try? leaving.leave()) == nil)
+} catch {
+    print("  FAIL membership — \(error)")
+    failures += 1
+}
+
 do {
     let lonely = try Client(identity: "lonely")
     // No group yet, so this must throw rather than trap.

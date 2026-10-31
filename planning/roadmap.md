@@ -39,8 +39,9 @@ client that was away catches up on what it missed when it reconnects (#105):
 messages, commits, and join requests nobody was online to answer.
 
 Frames are kept for 30 days and at most 64 MiB per channel, both
-operator-configurable (#106). A member away longer is told so; re-adding it
-is #112, the one item left in milestone 1.
+operator-configurable (#106). Members can be removed and can leave, and one
+away longer than the relay keeps frames is re-added automatically (#112).
+Milestone 1 is done.
 
 What that is not yet: **one implicit conversation**, and no identity beyond a
 self-declared name.
@@ -78,7 +79,7 @@ MPL-2.0 and both are load-bearing. Allowed deliberately — see `deny.toml` and
 the dependencies section of `CONTRIBUTING.md` for the obligation that comes
 with them.
 
-## 1. Addressed, durable relay
+## 1. Addressed, durable relay — done
 
 The foundational one, and the reason it comes before anything user-visible.
 

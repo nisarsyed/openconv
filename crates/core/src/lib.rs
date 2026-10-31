@@ -8,6 +8,8 @@ use openmls::prelude::{tls_codec::*, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
 use openmls_traits::OpenMlsProvider;
+use openmls_traits::crypto::OpenMlsCrypto;
+use openmls_traits::signatures::Signer;
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 
@@ -53,9 +55,9 @@ pub enum Error {
     /// Reading or writing persisted state failed.
     #[error("store: {0}")]
     Store(String),
-    /// Another add is already staged and waiting on the relay's ordering.
-    #[error("an add is already in flight")]
-    AddInFlight,
+    /// Another commit is already staged and waiting on the relay's ordering.
+    #[error("a change to the group is already in flight")]
+    CommitInFlight,
     /// The vault decrypted but its contents do not form a usable client.
     #[error("saved state is unreadable: {0}")]
     CorruptState(&'static str),
@@ -126,7 +128,11 @@ pub struct Member {
     /// Persisted. openmls keeps its half (the staged commit) in the store, so
     /// a client that restarted mid-add would otherwise meet its own commit
     /// in catch-up without recognising it, and be unable to process it.
-    pending: Option<PendingAdd>,
+    pending: Option<PendingCommit>,
+    /// This client's request to leave, and the epoch it was made in, until a
+    /// member commits it. Made again in each new epoch, since a proposal is
+    /// bound to the epoch it was made in.
+    leaving: Option<(Vec<u8>, u64)>,
     /// Recently sent messages, so their echoes off the relay can be
     /// recognised without putting sender identity on the wire.
     sent: VecDeque<Sent>,
@@ -153,15 +159,27 @@ struct Sent {
     text: String,
 }
 
-/// An add waiting to find out whether it won its epoch.
+/// A commit waiting to find out whether it won its epoch.
 #[derive(Debug, Clone)]
-struct PendingAdd {
+struct PendingCommit {
     /// Exactly the bytes sent, used to spot this commit coming back.
     commit: Vec<u8>,
-    /// Held until the commit is confirmed; useless if the commit loses.
-    welcome: Vec<u8>,
-    /// Where the `Welcome` goes: the joiner's `KeyPackageRef`.
-    mailbox: Vec<u8>,
+    /// For a commit that adds someone: the `Welcome`, held until the commit
+    /// is confirmed, and the mailbox it goes to (the joiner's
+    /// `KeyPackageRef`). A removal has none.
+    welcome: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+/// A member of the group, as the app lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Roster {
+    /// Its position in the group: what [`Member::remove_member`] takes.
+    pub index: u32,
+    /// The display name its credential carries. Self-declared until
+    /// identity exists (milestone 3).
+    pub name: String,
+    /// Whether this is the client asking.
+    pub me: bool,
 }
 
 /// How many recently sent frames to remember. Only needs to outlive a round
@@ -173,7 +191,8 @@ const SENT_HISTORY: usize = 32;
 pub enum Event {
     /// A decrypted application message.
     Message(String),
-    /// A staged add won its epoch. Send this `Welcome` to the new member.
+    /// A staged commit that adds someone won its epoch. Send this `Welcome`
+    /// to the new member.
     Admitted {
         /// Deliver to the member being added.
         welcome: Vec<u8>,
@@ -181,10 +200,17 @@ pub enum Event {
         /// they subscribed to before publishing their `KeyPackage`.
         mailbox: Vec<u8>,
     },
-    /// A staged add lost its epoch to another member's commit, which has been
-    /// applied instead. The joiner was probably admitted by that commit, so
-    /// this is a notice rather than something to retry blindly.
-    AddSuperseded,
+    /// A staged commit that adds nobody (a removal) won its epoch.
+    Committed,
+    /// A staged commit lost its epoch to another member's commit, which has
+    /// been applied instead. What it did was probably done by that commit
+    /// too, so this is a notice rather than something to retry blindly.
+    Superseded,
+    /// Another member's proposal (a request to leave) was queued, for the
+    /// next commit to include.
+    Proposed,
+    /// A commit removed this member. The group can no longer be read.
+    Removed,
     /// Group state moved forward; nothing to display.
     Advanced,
     /// This client's own frame, echoed back by the relay.
@@ -214,9 +240,15 @@ pub enum Effect {
     Joined,
     /// This client's add won its epoch; the new member has been let in.
     Admitted,
-    /// This client's add lost to another member's commit, which was applied
-    /// instead. The joiner was probably admitted by it.
-    AddSuperseded,
+    /// This client's change to the group lost to another member's commit,
+    /// which was applied instead, and probably did the same.
+    Superseded,
+    /// This client was removed from the group, or its request to leave was
+    /// committed. It no longer reads or sends to the channel.
+    Removed,
+    /// This client was stranded (see [`Effect::Unavailable`]) and has asked
+    /// the group to add it back, with a request only it can make.
+    Rejoining,
     /// Group state moved on, membership possibly with it.
     Advanced,
     /// Caught up on `address`; frames from here on are live.
@@ -294,6 +326,7 @@ impl Member {
             credential,
             group: None,
             pending: None,
+            leaving: None,
             sent: VecDeque::new(),
             live: HashSet::new(),
             resuming: HashSet::new(),
@@ -341,12 +374,9 @@ impl Member {
         };
 
         let pending = db
-            .pending_add()?
-            .map(|(commit, welcome, mailbox)| PendingAdd {
-                commit,
-                welcome,
-                mailbox,
-            });
+            .pending_commit()?
+            .map(|(commit, welcome)| PendingCommit { commit, welcome });
+        let leaving = db.leaving()?;
         let sent = db
             .sent()?
             .into_iter()
@@ -360,6 +390,7 @@ impl Member {
             credential,
             group,
             pending,
+            leaving,
             sent,
             live: HashSet::new(),
             resuming: HashSet::new(),
@@ -500,14 +531,14 @@ impl Member {
     /// members can stage a commit at the same epoch, and only the one the
     /// relay orders first may take effect. [`Member::receive`] resolves it,
     /// yielding [`Event::Admitted`] with the `Welcome` if this commit won or
-    /// [`Event::AddSuperseded`] if it lost.
+    /// [`Event::Superseded`] if it lost.
     ///
     /// # Errors
     /// If the key package is invalid, this member has no group, or another
-    /// add is already staged.
+    /// commit is already staged.
     pub fn propose_add(&mut self, key_package: &[u8]) -> Result<Vec<u8>> {
         if self.pending.is_some() {
-            return Err(Error::AddInFlight);
+            return Err(Error::CommitInFlight);
         }
 
         let kp = self.validate_key_package(key_package)?;
@@ -525,16 +556,103 @@ impl Member {
             .add_members(&provider, &self.signer, &[kp])
             .map_err(mls)?;
 
-        let pending = PendingAdd {
+        self.stage(PendingCommit {
             commit: commit.tls_serialize_detached()?,
-            welcome: welcome.tls_serialize_detached()?,
-            mailbox,
-        };
+            welcome: Some((welcome.tls_serialize_detached()?, mailbox)),
+        })
+    }
+
+    /// Record a staged commit, here and in the store, and return it to send.
+    fn stage(&mut self, pending: PendingCommit) -> Result<Vec<u8>> {
+        let welcome = pending
+            .welcome
+            .as_ref()
+            .map(|(w, m)| (w.as_slice(), m.as_slice()));
         self.db
-            .set_pending_add(Some((&pending.commit, &pending.welcome, &pending.mailbox)))?;
+            .set_pending_commit(Some((&pending.commit, welcome)))?;
         let commit = pending.commit.clone();
         self.pending = Some(pending);
         Ok(commit)
+    }
+
+    /// Stage removing the member at `index` (see [`Member::members`]).
+    ///
+    /// Like an add, the commit is not applied until the relay's ordering
+    /// confirms it: [`Member::receive`] yields [`Event::Committed`] if it won
+    /// and [`Event::Superseded`] if another commit got there first. Any member
+    /// may remove any other; roles that restrict this come with milestone 4.
+    ///
+    /// # Errors
+    /// If there is no group, another commit is staged, or `index` is not
+    /// another member's.
+    pub fn remove_member(&mut self, index: u32) -> Result<Vec<u8>> {
+        if self.pending.is_some() {
+            return Err(Error::CommitInFlight);
+        }
+        self.atomically(|m| {
+            m.db.flush_on_commit();
+            let provider = m.db.provider(&m.crypto);
+            let group = m.group.as_mut().ok_or(Error::NoGroup)?;
+            let (commit, _, _) = group
+                .remove_members(&provider, &m.signer, &[LeafNodeIndex::new(index)])
+                .map_err(mls)?;
+            m.stage(PendingCommit {
+                commit: commit.tls_serialize_detached()?,
+                welcome: None,
+            })
+        })
+    }
+
+    /// Ask to leave the group, returning the request to publish.
+    ///
+    /// A member cannot commit its own removal, so this is a proposal that
+    /// another member commits. A proposal is bound to its epoch: if another
+    /// commit lands first, it lapses, and this client makes it again in the
+    /// new epoch (and on reconnecting) until it is removed. A leaver gone for
+    /// good before anyone commits stays a member until someone removes it.
+    ///
+    /// # Errors
+    /// If there is no group, or the proposal cannot be made.
+    pub fn leave(&mut self) -> Result<Vec<u8>> {
+        self.atomically(Self::leave_unit)
+    }
+
+    /// [`Member::leave`], minus the unit-of-work wrapper.
+    fn leave_unit(&mut self) -> Result<Vec<u8>> {
+        self.db.flush_on_commit();
+        let provider = self.db.provider(&self.crypto);
+        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+        let epoch = group.epoch().as_u64();
+        let proposal = group
+            .leave_group(&provider, &self.signer)
+            .map_err(mls)?
+            .tls_serialize_detached()?;
+        self.db.set_leaving(Some((&proposal, epoch)))?;
+        self.leaving = Some((proposal.clone(), epoch));
+        Ok(proposal)
+    }
+
+    /// Whether this client has asked to leave and is still a member.
+    #[must_use]
+    pub fn is_leaving(&self) -> bool {
+        self.leaving.is_some()
+    }
+
+    /// Everyone in the group, this client included, by position.
+    #[must_use]
+    pub fn members(&self) -> Vec<Roster> {
+        let Some(group) = &self.group else {
+            return Vec::new();
+        };
+        let me = group.own_leaf_index();
+        group
+            .members()
+            .map(|m| Roster {
+                index: m.index.u32(),
+                name: String::from_utf8_lossy(m.credential.serialized_content()).into_owned(),
+                me: m.index == me,
+            })
+            .collect()
     }
 
     /// Join a group from a `Welcome` released by [`Member::propose_add`].
@@ -613,14 +731,19 @@ impl Member {
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = self.pending.take_if(|p| p.commit == wire) {
-            self.db.set_pending_add(None)?;
+            self.db.set_pending_commit(None)?;
             let provider = self.db.provider(&self.crypto);
             let group = self.group.as_mut().ok_or(Error::NoGroup)?;
             group.merge_pending_commit(&provider).map_err(mls)?;
-            return Ok(Event::Admitted {
-                welcome: pending.welcome,
-                mailbox: pending.mailbox,
+            return Ok(match pending.welcome {
+                Some((welcome, mailbox)) => Event::Admitted { welcome, mailbox },
+                None => Event::Committed,
             });
+        }
+        // This client's own request to leave, coming back. Others queue it;
+        // this client already has, when it made it.
+        if self.leaving.as_ref().is_some_and(|(p, _)| p == wire) {
+            return Ok(Event::Echo);
         }
         if let Some(sent) = self.take_sent(wire)? {
             let group = self.group.as_ref().ok_or(Error::NoGroup)?;
@@ -656,7 +779,7 @@ impl Member {
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         if superseded {
             self.pending = None;
-            self.db.set_pending_add(None)?;
+            self.db.set_pending_commit(None)?;
             group
                 .clear_pending_commit(provider.storage())
                 .map_err(mls)?;
@@ -679,12 +802,21 @@ impl Member {
                 Event::Message(String::from_utf8_lossy(&app.into_bytes()).into_owned())
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
+                let removed = commit.self_removed();
                 group.merge_staged_commit(&provider, *commit).map_err(mls)?;
-                if superseded {
-                    Event::AddSuperseded
+                if removed {
+                    Event::Removed
+                } else if superseded {
+                    Event::Superseded
                 } else {
                     Event::Advanced
                 }
+            }
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                group
+                    .store_pending_proposal(provider.storage(), *proposal)
+                    .map_err(mls)?;
+                Event::Proposed
             }
             _ => Event::Advanced,
         };
@@ -739,8 +871,13 @@ impl Member {
                 }
                 .encode()?,
             );
-            if let Some((to, offer)) = follow.offer {
-                requests.push(encode_publish(&to, FrameKind::KeyPackage, &offer)?);
+            if let Some(offer) = follow.offer {
+                let kind = if offer.rejoin {
+                    FrameKind::Rejoin
+                } else {
+                    FrameKind::KeyPackage
+                };
+                requests.push(encode_publish(&offer.to, kind, &offer.key_package)?);
             }
         }
         Ok(requests)
@@ -763,11 +900,45 @@ impl Member {
     /// # Errors
     /// If the key package cannot be built or recorded.
     pub fn offer(&mut self, channel: &[u8]) -> Result<()> {
-        self.atomically(|m| {
-            let offer = m.key_package()?;
-            let mailbox = m.mailbox(&offer)?;
-            m.db.follow(&mailbox, 0, Some((channel, &offer)))
-        })
+        self.atomically(|m| m.offer_unit(channel))
+    }
+
+    /// [`Member::offer`], minus the unit-of-work wrapper.
+    fn offer_unit(&mut self, channel: &[u8]) -> Result<()> {
+        let key_package = self.key_package()?;
+        let mailbox = self.mailbox(&key_package)?;
+        let offer = store::Offer {
+            to: channel.to_vec(),
+            key_package,
+            rejoin: false,
+        };
+        self.db.follow(&mailbox, 0, Some(&offer))
+    }
+
+    /// A request to be re-added, bound to the place it replaces.
+    ///
+    /// A fresh `KeyPackage`, the encryption key this client's place in the
+    /// group holds now, and this client's signature over both. Members act
+    /// on it only while that place still holds that key. Once acted on, the
+    /// place holds the new key, so the request is spent: replaying it, which
+    /// anyone can since the relay keeps every frame, changes nothing. Without
+    /// the binding, an old request replayed after this client's key changed
+    /// would replace its place and push it out.
+    fn rejoin_request(&self) -> Result<(Vec<u8>, Vec<u8>)> {
+        let group = self.group.as_ref().ok_or(Error::NoGroup)?;
+        let me = group.own_leaf_index();
+        let current = group
+            .members()
+            .find(|m| m.index == me)
+            .ok_or(Error::CorruptState("own place missing from the group"))?
+            .encryption_key;
+        let key_package = self.key_package()?;
+        let signature = self
+            .signer
+            .sign(&rejoin_signed(&current, &key_package))
+            .map_err(|e| Error::Mls(format!("signing a re-add request: {e:?}")))?;
+        let mailbox = self.mailbox(&key_package)?;
+        Ok((encode_rejoin(&key_package, &current, &signature), mailbox))
     }
 
     /// Process anything the relay sent, returning what to do about it.
@@ -853,7 +1024,11 @@ impl Member {
                     address: address.clone(),
                 }];
                 if self.channel().as_deref() == Some(address.as_slice()) {
-                    effects.extend(self.atomically(Self::answer_offers)?);
+                    effects.extend(self.atomically(|m| {
+                        let mut more = m.answer_requests()?;
+                        more.extend(m.restate_leave(true)?);
+                        Ok(more)
+                    })?);
                 }
                 Ok(effects)
             }
@@ -867,11 +1042,16 @@ impl Member {
                     return Ok(Vec::new());
                 };
                 if cursor <= next {
-                    return Ok(vec![Effect::Unavailable {
-                        address,
+                    let stranded = self.channel().as_deref() == Some(address.as_slice());
+                    let mut effects = vec![Effect::Unavailable {
+                        address: address.clone(),
                         floor,
                         next,
-                    }]);
+                    }];
+                    if stranded {
+                        effects.extend(self.atomically(|m| m.rejoin_unit(&address))?);
+                    }
+                    return Ok(effects);
                 }
                 // Ahead of everything the relay has: it lost or replaced its
                 // store, and numbering started again. Missing frames are not
@@ -895,9 +1075,9 @@ impl Member {
         let channel = self.channel();
         let on_channel = channel.as_deref() == Some(address);
         match kind {
-            FrameKind::KeyPackage if on_channel => {
-                self.db.defer(&body)?;
-                self.answer_offers()
+            FrameKind::KeyPackage | FrameKind::Rejoin if on_channel => {
+                self.db.defer(&body, kind == FrameKind::Rejoin)?;
+                self.answer_requests()
             }
             FrameKind::Welcome if self.group.is_none() => {
                 let (admitted_at, welcome) = split_welcome(&body)?;
@@ -920,7 +1100,7 @@ impl Member {
                 };
                 Ok(vec![Effect::Joined, Effect::Send(resume.encode()?)])
             }
-            FrameKind::Commit | FrameKind::Application if on_channel => {
+            FrameKind::Commit | FrameKind::Application | FrameKind::Proposal if on_channel => {
                 let channel = channel.unwrap_or_default();
                 let mut effects = Vec::new();
                 match self.receive_unit(&body)? {
@@ -933,20 +1113,25 @@ impl Member {
                             &body,
                         )?));
                         effects.push(Effect::Admitted);
-                        effects.extend(self.answer_offers()?);
                     }
-                    Event::AddSuperseded => {
-                        effects.push(Effect::AddSuperseded);
-                        effects.extend(self.answer_offers()?);
+                    Event::Committed | Event::Advanced => effects.push(Effect::Advanced),
+                    Event::Superseded => effects.push(Effect::Superseded),
+                    Event::Removed => {
+                        self.forget_group()?;
+                        return Ok(vec![Effect::Removed]);
                     }
-                    Event::Advanced => effects.push(Effect::Advanced),
                     Event::Resend { message } => effects.push(Effect::Send(encode_publish(
                         &channel,
                         FrameKind::Application,
                         &message,
                     )?)),
-                    Event::Echo | Event::Stale => {}
+                    Event::Proposed | Event::Echo | Event::Stale => {}
                 }
+                // The epoch may have moved, or a staged commit resolved, or a
+                // proposal arrived: answer what is waiting, and restate a
+                // request to leave that the epoch change made lapse.
+                effects.extend(self.answer_requests()?);
+                effects.extend(self.restate_leave(false)?);
                 Ok(effects)
             }
             // A Welcome once already in a group, or channel traffic for a
@@ -955,40 +1140,204 @@ impl Member {
         }
     }
 
-    /// Answer the oldest held join request whose joiner is not already a
-    /// member, if this client is live on its channel and not mid-add.
+    /// Answer what is waiting on this client, one commit at a time, if it is
+    /// live on its channel and nothing of its own is staged.
     ///
-    /// One at a time: openmls stages one commit at once, and the next request
-    /// is answered when this one's commit resolves.
-    fn answer_offers(&mut self) -> Result<Vec<Effect>> {
+    /// Requests to leave come first: queued proposals are committed together.
+    /// Then held requests to join or be re-added, oldest first. A join is
+    /// answered only if the joiner is not already a member, matched exactly
+    /// by signature key. A re-add only if it is genuine and current; see
+    /// [`Member::rejoin_request`].
+    ///
+    /// A client that has asked to leave answers nothing: committing pending
+    /// proposals would include its own removal, which it cannot commit.
+    fn answer_requests(&mut self) -> Result<Vec<Effect>> {
         let Some(channel) = self.channel() else {
             return Ok(Vec::new());
         };
-        if self.pending.is_some() || !self.live.contains(&channel) {
+        if self.pending.is_some() || self.leaving.is_some() || !self.live.contains(&channel) {
             return Ok(Vec::new());
         }
-        while let Some(offer) = self.db.take_deferred()? {
-            // Expired or malformed: nothing to answer.
-            let Ok(kp) = self.validate_key_package(&offer) else {
-                continue;
-            };
-            if self.is_member(&kp) {
-                continue;
-            }
-            let commit = self.propose_add_unit(kp)?;
-            let publish = encode_publish(&channel, FrameKind::Commit, &commit)?;
-            return Ok(vec![Effect::Send(publish)]);
-        }
-        Ok(Vec::new())
+        let commit = if self
+            .group
+            .as_ref()
+            .is_some_and(|g| g.pending_proposals().next().is_some())
+        {
+            Some(self.commit_proposals_unit()?)
+        } else {
+            self.answer_held_unit()?
+        };
+        let Some(commit) = commit else {
+            return Ok(Vec::new());
+        };
+        let publish = encode_publish(&channel, FrameKind::Commit, &commit)?;
+        Ok(vec![Effect::Send(publish)])
     }
 
-    /// Whether the client that made `kp` is already in the group, matched
-    /// exactly by signature key.
-    fn is_member(&self, kp: &KeyPackage) -> bool {
+    /// Commit every queued proposal.
+    fn commit_proposals_unit(&mut self) -> Result<Vec<u8>> {
+        self.db.flush_on_commit();
+        let provider = self.db.provider(&self.crypto);
+        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+        let (commit, _, _) = group
+            .commit_to_pending_proposals(&provider, &self.signer)
+            .map_err(mls)?;
+        self.stage(PendingCommit {
+            commit: commit.tls_serialize_detached()?,
+            welcome: None,
+        })
+    }
+
+    /// Stage a commit for the oldest held request that needs one.
+    fn answer_held_unit(&mut self) -> Result<Option<Vec<u8>>> {
+        while let Some((request, rejoin)) = self.db.take_deferred()? {
+            let commit = if rejoin {
+                let Some((index, kp)) = self.check_rejoin(&request) else {
+                    continue;
+                };
+                self.readd_unit(index, kp)?
+            } else {
+                // Expired or malformed: nothing to answer.
+                let Ok(kp) = self.validate_key_package(&request) else {
+                    continue;
+                };
+                if self.leaf_of(&kp).is_some() {
+                    continue; // already a member
+                }
+                self.propose_add_unit(kp)?
+            };
+            return Ok(Some(commit));
+        }
+        Ok(None)
+    }
+
+    /// The place a re-add request may replace, and its `KeyPackage`, if the
+    /// request is genuine and current: from a member, naming the key that
+    /// member's place holds now, signed by that member. See
+    /// [`Member::rejoin_request`].
+    fn check_rejoin(&self, request: &[u8]) -> Option<(LeafNodeIndex, KeyPackage)> {
+        let (key_package, named, signature) = decode_rejoin(request).ok()?;
+        let kp = self.validate_key_package(key_package).ok()?;
+        let (index, current) = self.leaf_of(&kp)?;
+        if current != named {
+            return None; // spent, or never this member's
+        }
+        self.crypto
+            .verify_signature(
+                CIPHERSUITE.signature_algorithm(),
+                &rejoin_signed(named, key_package),
+                kp.leaf_node().signature_key().as_slice(),
+                signature,
+            )
+            .ok()?;
+        Some((index, kp))
+    }
+
+    /// Replace the member at `index` with the client that made `kp`, in one
+    /// commit, so a member stranded by retention can follow the group again.
+    fn readd_unit(&mut self, index: LeafNodeIndex, kp: KeyPackage) -> Result<Vec<u8>> {
+        let mailbox = self.key_package_ref(&kp)?;
+        self.db.flush_on_commit();
+        let provider = self.db.provider(&self.crypto);
+        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+        let bundle = group
+            .commit_builder()
+            .propose_removals([index])
+            .propose_adds([kp])
+            .load_psks(provider.storage())
+            .map_err(mls)?
+            .build(provider.rand(), provider.crypto(), &self.signer, |_| true)
+            .map_err(mls)?
+            .stage_commit(&provider)
+            .map_err(mls)?;
+        let welcome = bundle
+            .to_welcome_msg()
+            .ok_or(Error::Mls("a re-add made no Welcome".into()))?
+            .tls_serialize_detached()?;
+        let commit = bundle.commit().tls_serialize_detached()?;
+        self.stage(PendingCommit {
+            commit,
+            welcome: Some((welcome, mailbox)),
+        })
+    }
+
+    /// Make this client's request to leave again if the epoch it was made
+    /// in has passed, or, with `republish`, send the standing one again (on
+    /// reconnecting, in case it never reached the relay).
+    fn restate_leave(&mut self, republish: bool) -> Result<Vec<Effect>> {
+        let (Some((proposal, epoch)), Some(channel)) = (self.leaving.clone(), self.channel())
+        else {
+            return Ok(Vec::new());
+        };
+        let current = self.group.as_ref().map(|g| g.epoch().as_u64());
+        let proposal = if current == Some(epoch) {
+            if !republish {
+                return Ok(Vec::new());
+            }
+            proposal
+        } else {
+            self.leave_unit()?
+        };
+        let publish = encode_publish(&channel, FrameKind::Proposal, &proposal)?;
+        Ok(vec![Effect::Send(publish)])
+    }
+
+    /// Drop the group: this client was removed, or is starting over. Deletes
+    /// its group state, so a removed member keeps no keys for it.
+    fn forget_group(&mut self) -> Result<()> {
+        let channel = self.channel();
+        if let Some(mut group) = self.group.take() {
+            group
+                .delete(self.db.provider(&self.crypto).storage())
+                .map_err(mls)?;
+        }
+        self.pending = None;
+        self.leaving = None;
+        self.db.set_pending_commit(None)?;
+        self.db.set_leaving(None)?;
+        self.db.clear_deferred()?;
+        self.record_group()?;
+        if let Some(channel) = channel {
+            self.db.unfollow(&channel)?;
+            self.live.remove(&channel);
+        }
+        Ok(())
+    }
+
+    /// A member stranded below the relay's retention floor cannot read the
+    /// group again. Start over: drop the group, and ask to be re-added with a
+    /// fresh `KeyPackage` under the same identity, which members answer by
+    /// replacing this client's leaf.
+    fn rejoin_unit(&mut self, channel: &[u8]) -> Result<Vec<Effect>> {
+        // Made before the group is dropped: it names this client's place.
+        let (request, mailbox) = self.rejoin_request()?;
+        self.forget_group()?;
+        let offer = store::Offer {
+            to: channel.to_vec(),
+            key_package: request.clone(),
+            rejoin: true,
+        };
+        self.db.follow(&mailbox, 0, Some(&offer))?;
+        let resume = Request::Resume {
+            address: Address::new(mailbox)?,
+            from: 0,
+        };
+        Ok(vec![
+            Effect::Rejoining,
+            Effect::Send(resume.encode()?),
+            Effect::Send(encode_publish(channel, FrameKind::Rejoin, &request)?),
+        ])
+    }
+
+    /// The position and encryption key of the member that shares `kp`'s
+    /// signature key, if there is one.
+    fn leaf_of(&self, kp: &KeyPackage) -> Option<(LeafNodeIndex, Vec<u8>)> {
         let key = kp.leaf_node().signature_key().as_slice();
         self.group
-            .as_ref()
-            .is_some_and(|g| g.members().any(|m| m.signature_key == key))
+            .as_ref()?
+            .members()
+            .find(|m| m.signature_key == key)
+            .map(|m| (m.index, m.encryption_key))
     }
 
     /// Display name of this member.
@@ -1040,6 +1389,12 @@ pub enum FrameKind {
     Commit,
     /// An encrypted application message.
     Application,
+    /// A proposal for the next commit to include: a member's request to
+    /// leave.
+    Proposal,
+    /// A `KeyPackage` from a member stranded by retention, asking to replace
+    /// its own leaf. Only answered if that identity is already a member.
+    Rejoin,
 }
 
 impl FrameKind {
@@ -1049,6 +1404,8 @@ impl FrameKind {
             Self::Welcome => 2,
             Self::Commit => 3,
             Self::Application => 4,
+            Self::Proposal => 5,
+            Self::Rejoin => 6,
         }
     }
 
@@ -1058,9 +1415,53 @@ impl FrameKind {
             2 => Some(Self::Welcome),
             3 => Some(Self::Commit),
             4 => Some(Self::Application),
+            5 => Some(Self::Proposal),
+            6 => Some(Self::Rejoin),
             _ => None,
         }
     }
+}
+
+/// Prefixed to what a re-add request signs, so the signature can never be
+/// taken for one over anything else.
+const REJOIN_LABEL: &[u8] = b"OpenConv rejoin v1";
+
+/// What a re-add request signs: the label, the key it names, and the
+/// `KeyPackage`. The key's length is included so the two cannot be shifted.
+fn rejoin_signed(named: &[u8], key_package: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(REJOIN_LABEL.len() + 4 + named.len() + key_package.len());
+    data.extend_from_slice(REJOIN_LABEL);
+    data.extend_from_slice(&u32::try_from(named.len()).unwrap_or(u32::MAX).to_be_bytes());
+    data.extend_from_slice(named);
+    data.extend_from_slice(key_package);
+    data
+}
+
+/// A re-add request's body: the `KeyPackage`, the key it names, and the
+/// signature, each length-prefixed except the last.
+fn encode_rejoin(key_package: &[u8], named: &[u8], signature: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + key_package.len() + named.len() + signature.len());
+    for part in [key_package, named] {
+        body.extend_from_slice(&u32::try_from(part.len()).unwrap_or(u32::MAX).to_be_bytes());
+        body.extend_from_slice(part);
+    }
+    body.extend_from_slice(signature);
+    body
+}
+
+/// Split off a length-prefixed part.
+fn take_part(rest: &[u8]) -> Result<(&[u8], &[u8])> {
+    let (len, rest) = rest.split_at_checked(4).ok_or(Error::MalformedFrame)?;
+    let len = u32::from_be_bytes(len.try_into().map_err(|_| Error::MalformedFrame)?);
+    let len = usize::try_from(len).map_err(|_| Error::MalformedFrame)?;
+    rest.split_at_checked(len).ok_or(Error::MalformedFrame)
+}
+
+/// Split a body made by [`encode_rejoin`].
+fn decode_rejoin(body: &[u8]) -> Result<(&[u8], &[u8], &[u8])> {
+    let (key_package, rest) = take_part(body)?;
+    let (named, signature) = take_part(rest)?;
+    Ok((key_package, named, signature))
 }
 
 /// A `Welcome` frame's body: the sequence number of the commit that admitted
@@ -1262,7 +1663,7 @@ mod tests {
 
         // Bob sees Alice's commit while his own is staged: he lost.
         assert!(
-            matches!(bob.receive(&alice_commit).unwrap(), Event::AddSuperseded),
+            matches!(bob.receive(&alice_commit).unwrap(), Event::Superseded),
             "bob's staged add should have been superseded"
         );
 
@@ -1610,7 +2011,7 @@ mod tests {
         alice.propose_add(&bob.key_package().unwrap()).unwrap();
         assert!(matches!(
             alice.propose_add(&carol.key_package().unwrap()),
-            Err(Error::AddInFlight)
+            Err(Error::CommitInFlight)
         ));
     }
 
@@ -1966,17 +2367,20 @@ mod tests {
         assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
 
         // The relay holds 50..60 and this client is at 0: frames it never
-        // saw are gone.
+        // saw are gone, possibly a commit. It cannot follow the group, so it
+        // drops it and asks to be re-added (#112).
         let effects = alice.deliver(&unavailable(50, 60)).unwrap();
         assert!(matches!(
             effects.as_slice(),
-            [Effect::Unavailable { floor: 50, .. }]
+            [
+                Effect::Unavailable { floor: 50, .. },
+                Effect::Rejoining,
+                Effect::Send(_),
+                Effect::Send(_)
+            ]
         ));
-        assert_eq!(
-            alice.db.cursor(&channel).unwrap(),
-            Some(0),
-            "the cursor moved"
-        );
+        assert_eq!(alice.channel(), None, "a stranded client kept its group");
+        assert!(alice.waiting_to_join().unwrap());
     }
 
     /// A client that restarts between staging an add and seeing its commit
@@ -2032,6 +2436,159 @@ mod tests {
         };
         assert_message(carol.receive(&message).unwrap(), "sent before a restart");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// Removal is what makes post-compromise security reachable: a removed
+    /// member must not read anything from the epoch after its removal. Without
+    /// this test, removal could "work" while the member kept reading.
+    #[test]
+    fn a_removed_member_cannot_read_what_comes_after() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        let carol_index = alice
+            .members()
+            .iter()
+            .find(|m| m.name == "carol")
+            .unwrap()
+            .index;
+
+        let removal = alice.remove_member(carol_index).unwrap();
+        assert!(matches!(alice.receive(&removal).unwrap(), Event::Committed));
+        assert!(matches!(bob.receive(&removal).unwrap(), Event::Advanced));
+        assert!(matches!(carol.receive(&removal).unwrap(), Event::Removed));
+        assert_eq!(alice.member_count(), 2);
+
+        let after = alice.send("after carol left").unwrap();
+        assert_message(bob.receive(&after).unwrap(), "after carol left");
+        assert!(
+            carol.receive(&after).is_err(),
+            "a removed member read a message from after its removal"
+        );
+    }
+
+    /// A removal and an add staged at the same epoch race like two adds: the
+    /// relay's order picks one, and the loser applies the winner instead.
+    #[test]
+    fn a_removal_racing_an_add_resolves_to_one_winner() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let dave = Member::new("dave").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        let carol_index = alice
+            .members()
+            .iter()
+            .find(|m| m.name == "carol")
+            .unwrap()
+            .index;
+
+        let removal = alice.remove_member(carol_index).unwrap();
+        let add = bob.propose_add(&dave.key_package().unwrap()).unwrap();
+
+        // The relay orders the removal first.
+        assert!(matches!(alice.receive(&removal).unwrap(), Event::Committed));
+        assert!(matches!(bob.receive(&removal).unwrap(), Event::Superseded));
+        assert!(matches!(carol.receive(&removal).unwrap(), Event::Removed));
+        // The losing add arrives a stale epoch behind and is ignored.
+        assert!(matches!(alice.receive(&add).unwrap(), Event::Advanced));
+        assert!(matches!(bob.receive(&add).unwrap(), Event::Advanced));
+        let names = |m: &Member| m.members().into_iter().map(|r| r.name).collect::<Vec<_>>();
+        assert_eq!(
+            names(&alice),
+            names(&bob),
+            "alice and bob disagree on who is in"
+        );
+        let check = bob.send("still agreed").unwrap();
+        assert_message(alice.receive(&check).unwrap(), "still agreed");
+    }
+
+    /// A re-add replaces someone's place, so it must be theirs to ask for, and
+    /// only once. A request built from a member's genuine `KeyPackage` but
+    /// not signed by them is refused. A genuine one is answered. The same
+    /// genuine one replayed afterwards (anyone can, since the relay keeps
+    /// every frame) names a key the place no longer holds, and is refused.
+    #[test]
+    fn a_rejoin_must_be_signed_and_current() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        let channel = alice.channel().unwrap();
+        let live = openconv_wire::Inbound::Page {
+            address: Address::new(channel.clone()).unwrap(),
+            next: 0,
+            live: true,
+        };
+        alice.deliver(&live.encode()).unwrap();
+        let commits = |effects: &[Effect]| {
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Send(_)))
+                .count()
+        };
+
+        // Forged: carol's real KeyPackage and her place's real key, but not
+        // her signature.
+        let (genuine, _) = carol.rejoin_request().unwrap();
+        let (kp, named, _) = decode_rejoin(&genuine).unwrap();
+        let forged = encode_rejoin(kp, named, &[0u8; 64]);
+        let effects = alice
+            .deliver(&delivery(&channel, 0, FrameKind::Rejoin, &forged))
+            .unwrap();
+        assert_eq!(commits(&effects), 0, "a forged re-add was answered");
+
+        // Genuine: answered with a commit replacing carol's place.
+        let effects = alice
+            .deliver(&delivery(&channel, 1, FrameKind::Rejoin, &genuine))
+            .unwrap();
+        assert_eq!(commits(&effects), 1, "a genuine re-add was not answered");
+        let readd = alice.pending.as_ref().unwrap().commit.clone();
+        assert!(matches!(
+            alice.receive(&readd).unwrap(),
+            Event::Admitted { .. }
+        ));
+
+        // Replayed: spent, since carol's place now holds the new key.
+        let effects = alice
+            .deliver(&delivery(&channel, 2, FrameKind::Rejoin, &genuine))
+            .unwrap();
+        assert_eq!(commits(&effects), 0, "a replayed re-add was answered again");
+        assert_eq!(alice.member_count(), 3);
+    }
+
+    /// The roster lists everyone, by position, and marks the asker.
+    #[test]
+    fn the_roster_lists_everyone_and_marks_me() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let roster = bob.members();
+        let names: Vec<(&str, bool)> = roster.iter().map(|m| (m.name.as_str(), m.me)).collect();
+        assert_eq!(names, [("alice", false), ("bob", true)]);
     }
 
     /// A failed operation must leave nothing behind, on disk or in memory.

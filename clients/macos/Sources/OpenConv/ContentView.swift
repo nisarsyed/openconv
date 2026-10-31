@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var relay = "ws://127.0.0.1:8080/ws"
     /// Pasted in by someone joining; shared by whoever created the group.
     @State private var joinChannel = ""
+    @State private var confirmingLeave = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,10 +45,39 @@ struct ContentView: View {
                 Button("Join") { connect(hosting: false) }
                     .disabled(joinChannel.trimmingCharacters(in: .whitespaces).isEmpty)
             } else {
+                if case .joined = model.status {
+                    membersMenu
+                    Button("Leave") { confirmingLeave = true }
+                        .disabled(model.leaving)
+                        .confirmationDialog(
+                            "Leave this group?", isPresented: $confirmingLeave
+                        ) {
+                            Button("Leave", role: .destructive) { model.leave() }
+                        } message: {
+                            Text(
+                                "You will stop receiving its messages. Rejoining needs an invitation."
+                            )
+                        }
+                }
                 Button("Disconnect") { model.disconnect() }
             }
         }
         .padding(10)
+    }
+
+    /// Everyone in the group, with Remove beside each other member. Any
+    /// member may remove any other until roles exist (milestone 4).
+    private var membersMenu: some View {
+        Menu("Members") {
+            ForEach(model.members) { member in
+                if member.me {
+                    Text("\(member.name) (you)")
+                } else {
+                    Button("Remove \(member.name)") { model.remove(member) }
+                }
+            }
+        }
+        .fixedSize()
     }
 
     /// The channel id, selectable so it can be copied to whoever joins next.

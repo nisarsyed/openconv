@@ -104,8 +104,9 @@ because MLS forward secrecy means they cannot read frames from before they
 joined however long those are kept. On a busy channel the size cap can bite
 before the time window, and then it is what sets that limit. A member away
 longer than the limit is told it cannot catch up, rather than being shown a
-history with holes in it. Rejoining it means another member re-adding it,
-which is #112.
+history with holes in it. It then asks to be re-added, and the first member
+online does so automatically; only that member can make the request, and it
+works once.
 
 **Retention limits history, not abuse.** Until identity exists (milestone 3),
 anyone who can reach the relay can publish to any address, including made-up

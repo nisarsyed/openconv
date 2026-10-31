@@ -495,6 +495,14 @@ struct Peer {
     ws: Ws,
     /// Messages from others, in the order this member decrypted them.
     heard: Vec<String>,
+    /// Set once this member is no longer in the group.
+    removed: bool,
+    /// Set if the relay said this member's cursor is gone. Fails the test
+    /// unless the test expects it.
+    stranded: bool,
+    expect_stranding: bool,
+    /// Every request this member's effects sent, so a test can replay one.
+    sent: Vec<Vec<u8>>,
 }
 
 impl Peer {
@@ -503,6 +511,10 @@ impl Peer {
             member,
             ws: connect(url).await,
             heard: Vec::new(),
+            removed: false,
+            stranded: false,
+            expect_stranding: false,
+            sent: Vec::new(),
         };
         for request in peer.member.connect().unwrap() {
             send(&mut peer.ws, request).await;
@@ -522,9 +534,16 @@ impl Peer {
             };
             for effect in self.member.deliver(&wire).unwrap() {
                 match effect {
-                    Effect::Send(request) => send(&mut self.ws, request).await,
+                    Effect::Send(request) => {
+                        self.sent.push(request.clone());
+                        send(&mut self.ws, request).await;
+                    }
                     Effect::Message(text) => self.heard.push(text),
-                    Effect::Unavailable { .. } => panic!("cursor unavailable"),
+                    Effect::Unavailable { .. } => {
+                        assert!(self.expect_stranding, "cursor unavailable");
+                        self.stranded = true;
+                    }
+                    Effect::Removed => self.removed = true,
                     _ => {}
                 }
             }
@@ -536,6 +555,31 @@ impl Peer {
         let ct = self.member.send(text).unwrap();
         let channel = self.member.channel().unwrap();
         publish(&mut self.ws, &channel, FrameKind::Application, &ct).await;
+    }
+
+    /// Remove the member called `name`.
+    async fn remove(&mut self, name: &str) {
+        let index = self
+            .member
+            .members()
+            .into_iter()
+            .find(|m| m.name == name)
+            .unwrap()
+            .index;
+        let commit = self.member.remove_member(index).unwrap();
+        let channel = self.member.channel().unwrap();
+        publish(&mut self.ws, &channel, FrameKind::Commit, &commit).await;
+    }
+
+    /// Ask to leave.
+    async fn leave(&mut self) {
+        let proposal = self.member.leave().unwrap();
+        let channel = self.member.channel().unwrap();
+        publish(&mut self.ws, &channel, FrameKind::Proposal, &proposal).await;
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.member.members().into_iter().map(|m| m.name).collect()
     }
 
     /// Close the connection and the member, keeping only what is on disk.
@@ -785,8 +829,12 @@ async fn a_member_away_past_retention_is_told_so() {
         .unwrap()
         .unwrap();
     let effects = bob.deliver(&msg.into_data()).unwrap();
+    // Told the frames are gone, and (since #112) asking to be re-added.
     assert!(
-        matches!(effects.as_slice(), [Effect::Unavailable { .. }]),
+        matches!(
+            effects.as_slice(),
+            [Effect::Unavailable { .. }, Effect::Rejoining, ..]
+        ),
         "expected to be told the frames are gone, got {effects:?}"
     );
 }
@@ -824,4 +872,167 @@ async fn an_oversized_message_closes_only_that_connection() {
         900,
         "a frame under the limit failed"
     );
+}
+
+// ---- Membership (#112) ----
+
+/// Alice, bob and carol in one group, all online.
+async fn three(url: &str) -> (Peer, Peer, Peer, Vec<u8>) {
+    let mut alice = Member::new("alice").unwrap();
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, url).await;
+    let mut bob = Member::new("bob").unwrap();
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, url).await;
+    let mut carol = Member::new("carol").unwrap();
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert_eq!(carol.member.member_count(), 3);
+    (alice, bob, carol, channel)
+}
+
+/// A member removed through the relay learns it, keeps nothing of the group,
+/// and the others carry on without it.
+#[tokio::test]
+async fn a_member_can_be_removed() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, _) = Box::pin(three(&url)).await;
+
+    alice.remove("carol").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert!(carol.removed, "carol was not told");
+    assert_eq!(carol.member.channel(), None, "carol kept the group");
+    assert_eq!(alice.names(), ["alice", "bob"]);
+    assert_eq!(bob.names(), alice.names());
+
+    bob.say("without carol").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert_eq!(alice.heard, ["without carol"]);
+    assert!(carol.heard.is_empty());
+}
+
+/// A member asks to leave, and whoever is online commits it.
+#[tokio::test]
+async fn a_member_can_leave() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, _) = Box::pin(three(&url)).await;
+
+    carol.leave().await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert!(carol.removed, "carol's leave was never committed");
+    assert_eq!(alice.names(), ["alice", "bob"]);
+    assert_eq!(bob.names(), alice.names());
+}
+
+/// A request to leave is bound to its epoch. If another commit lands
+/// first, the leaver makes it again in the new epoch, and still gets out.
+#[tokio::test]
+async fn a_leave_that_lapses_is_made_again() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, channel) = Box::pin(three(&url)).await;
+
+    // Carol decides to leave, but before her request reaches anyone, dave
+    // is admitted: a new epoch, in which her request means nothing.
+    let _lapsed = carol.member.leave().unwrap();
+    let mut dave = Member::new("dave").unwrap();
+    dave.offer(&channel).unwrap();
+    let mut dave = Peer::online(dave, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+
+    assert!(carol.removed, "carol's lapsed request was not made again");
+    assert_eq!(alice.names(), ["alice", "bob", "dave"]);
+    assert_eq!(dave.names(), alice.names());
+}
+
+/// The done condition's hardest case: a member stranded by retention asks
+/// to be re-added, is, and ends up with the same group as everyone else,
+/// in its old place rather than a second one.
+#[tokio::test]
+async fn a_stranded_member_is_readded() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("relay.db");
+    let (url, _server) = spawn_relay_on(Store::open(&db).unwrap()).await;
+
+    let mut alice = Member::new("alice").unwrap();
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+    let mut bob = Member::new("bob").unwrap();
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    let mut carol = persisted(dir.path(), "carol");
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    carol.offline().await;
+
+    // While carol is away the group changes (dave joins), and then retention
+    // takes everything, that commit included. Done through a second
+    // connection to the store, so it happens exactly once: a tiny window
+    // would strand carol again and again as she recovered.
+    let mut dave = Member::new("dave").unwrap();
+    dave.offer(&channel).unwrap();
+    let mut dave = Peer::online(dave, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut dave]).await;
+    Store::open(&db).unwrap().expire(i64::MAX as u64).unwrap();
+
+    let mut carol = Peer::online(persisted(dir.path(), "carol"), &url).await;
+    carol.expect_stranding = true;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+
+    assert!(
+        carol.stranded,
+        "carol was not stranded; the test proves nothing"
+    );
+    assert_eq!(
+        carol.member.channel(),
+        Some(channel),
+        "carol was not re-added"
+    );
+    assert_eq!(
+        alice.names(),
+        ["alice", "bob", "carol", "dave"],
+        "carol has two places"
+    );
+    assert_eq!(carol.names(), alice.names());
+    carol.say("back in").await;
+    alice.say("welcome back").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    assert!(bob.heard.contains(&"back in".to_owned()));
+    assert!(carol.heard.contains(&"welcome back".to_owned()));
+
+    // A late copy of carol's request, as a reconnect before her Welcome
+    // would send. It was already acted on, so nobody may act on it again:
+    // that would replace her place a second time and push her back out.
+    let rejoin = carol
+        .sent
+        .iter()
+        .find(|r| matches!(openconv_wire::Request::decode(r), Ok(openconv_wire::Request::Publish { payload, .. }) if payload.first() == Some(&6)))
+        .expect("carol never sent a re-add request")
+        .clone();
+    send(&mut carol.ws, rejoin).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    assert!(!carol.removed, "a stale re-add request pushed carol out");
+    assert_eq!(alice.names(), ["alice", "bob", "carol", "dave"]);
+}
+
+/// Re-adding replaces a member's place, so only that member may ask for
+/// it. A stranger cannot: a request from an identity not in the group is
+/// ignored, and nobody is removed or added for it.
+#[tokio::test]
+async fn a_rejoin_from_outside_the_group_is_ignored() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, channel) = Box::pin(three(&url)).await;
+
+    let mut stranger = Member::new("carol").unwrap(); // claims carol's name
+    let offer = stranger.key_package().unwrap();
+    let mut ws = connect(&url).await;
+    publish(&mut ws, &channel, FrameKind::Rejoin, &offer).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    assert_eq!(alice.names(), ["alice", "bob", "carol"]);
+    assert!(!carol.removed, "the stranger's request replaced carol");
+    let _ = &mut stranger;
 }
