@@ -444,8 +444,12 @@ async fn catch_up_and_live_traffic_meet_without_a_gap() {
         sender
     });
 
+    // Done once every frame is in and the relay has said the client is
+    // live. The two can come in either order: if the flood finishes before
+    // the last page is read, that page holds the rest and ends with `live`.
     let mut seen = Vec::new();
-    while (seen.len() as u64) < STORED + LIVE {
+    let mut live = false;
+    while (seen.len() as u64) < STORED + LIVE || !live {
         let msg = tokio::time::timeout(Duration::from_secs(5), client.next())
             .await
             .expect("stalled during catch-up")
@@ -456,7 +460,7 @@ async fn catch_up_and_live_traffic_meet_without_a_gap() {
             Inbound::Page {
                 live: false, next, ..
             } => send(&mut client, resume(next)).await,
-            Inbound::Page { live: true, .. } => {}
+            Inbound::Page { live: true, .. } => live = true,
             other => panic!("unexpected {other:?}"),
         }
     }
