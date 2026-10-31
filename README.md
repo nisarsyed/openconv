@@ -92,6 +92,21 @@ OPENCONV_RELAY_DB=/tmp/run/relay.db just relay
 OPENCONV_DATA_DIR=/tmp/run just client alice
 ```
 
+## Retention
+
+The relay keeps frames so members who were offline can catch up, and no
+longer than that: **30 days, and at most 64 MiB per channel**, whichever is hit
+first. Set `OPENCONV_RETENTION` (such as `7d` or `24h`) and
+`OPENCONV_CHANNEL_CAP` (such as `16MiB`) to change them; a malformed value
+stops the relay at startup. Lowering either costs exactly one thing: how long
+a member can be away and still catch up. It never costs new members anything,
+because MLS forward secrecy means they cannot read frames from before they
+joined however long those are kept. On a busy channel the size cap can bite
+before the time window, and then it is what sets that limit. A member away
+longer than the limit is told it cannot catch up, rather than being shown a
+history with holes in it. Rejoining it means another member re-adding it,
+which is #112.
+
 ## Checks
 
 ```sh

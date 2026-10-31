@@ -21,10 +21,18 @@ async fn spawn_relay() -> String {
 /// Boot a relay over `store`, returning its URL and the task serving it, so a
 /// test can stop it.
 async fn spawn_relay_on(store: Store) -> (String, tokio::task::JoinHandle<()>) {
+    spawn_relay_with(store, openconv_server::Retention::default()).await
+}
+
+/// Boot a relay over `store` with its own retention policy.
+async fn spawn_relay_with(
+    store: Store,
+    retention: openconv_server::Retention,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        axum::serve(listener, openconv_server::router(store).unwrap())
+        axum::serve(listener, openconv_server::router(store, retention).unwrap())
             .await
             .unwrap();
     });
@@ -735,4 +743,47 @@ async fn members_carry_on_through_a_relay_whose_store_was_reset() {
             Some("joined after the reset")
         );
     }
+}
+
+/// The done condition for #106, from a member's side: away longer than the
+/// relay keeps frames, a member is told it cannot catch up, rather than being
+/// served whatever is left as though nothing were missing.
+#[tokio::test]
+async fn a_member_away_past_retention_is_told_so() {
+    let retention = openconv_server::Retention {
+        window: Duration::from_millis(300),
+        ..openconv_server::Retention::default()
+    };
+    let (url, _server) = spawn_relay_with(Store::in_memory().unwrap(), retention).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut alice = Member::new("alice").unwrap();
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+    let mut bob = persisted(dir.path(), "bob");
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    settle(&mut [&mut alice, &mut bob]).await;
+    bob.offline().await;
+
+    alice.say("said while bob was away").await;
+    settle(&mut [&mut alice]).await;
+    tokio::time::sleep(Duration::from_millis(800)).await; // past the window
+
+    let mut bob = persisted(dir.path(), "bob");
+    let mut ws = connect(&url).await;
+    for request in bob.connect().unwrap() {
+        send(&mut ws, request).await;
+    }
+    let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("no answer to the resume")
+        .unwrap()
+        .unwrap();
+    let effects = bob.deliver(&msg.into_data()).unwrap();
+    assert!(
+        matches!(effects.as_slice(), [Effect::Unavailable { .. }]),
+        "expected to be told the frames are gone, got {effects:?}"
+    );
 }

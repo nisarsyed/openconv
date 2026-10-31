@@ -34,9 +34,12 @@ async fn frames_per_second(publishers: usize) -> f64 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/ws", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
-        axum::serve(listener, openconv_server::router(store).unwrap())
-            .await
-            .unwrap();
+        axum::serve(
+            listener,
+            openconv_server::router(store, openconv_server::Retention::default()).unwrap(),
+        )
+        .await
+        .unwrap();
     });
 
     // Connect and subscribe everyone before the clock starts. A connection's

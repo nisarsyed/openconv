@@ -25,8 +25,19 @@
 //! frame.
 //!
 //! It lives in its own table rather than being derived from `MAX(seq)` over
-//! the frames, because retention will delete frames. Deriving it would let an
+//! the frames, because retention deletes frames. Deriving it would let an
 //! address whose frames had all expired start again at zero.
+//!
+//! # Retention (#106)
+//!
+//! Frames are deleted by age ([`Store::expire`]) and by each address's total
+//! size ([`Store::trim`]), oldest first, without regard to what they are. The
+//! relay cannot tell a commit from a message without reading a payload, and
+//! it does not. A client left with a cursor below what remains is told so
+//! when it resumes (`Unavailable`).
+//!
+//! Either can be held back for an address by a pin: a catch-up in progress,
+//! whose next page must still be there when the client asks for it.
 
 use openconv_wire::{Address, Delivery};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -60,9 +71,25 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Bumped whenever the schema changes. A relay refuses a store with a higher
 /// version than it knows, so an old binary cannot misread a newer layout.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
-const SCHEMA: &str = "
+/// Each version's changes, applied in order from the store's own version.
+/// Never edit one that has shipped; add the next.
+const MIGRATIONS: [&str; 2] = [SCHEMA_V1, SCHEMA_V2];
+
+const SCHEMA_V2: &str = "
+    -- Each address's stored payload bytes, kept as frames come and go, so
+    -- the size cap is checked without summing every frame (#106).
+    ALTER TABLE sequences ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0;
+    UPDATE sequences SET bytes = (
+        SELECT COALESCE(SUM(length(payload)), 0)
+        FROM frames WHERE frames.address = sequences.address
+    );
+    -- Expiry deletes by age across every address.
+    CREATE INDEX frames_by_age ON frames (accepted_ms);
+";
+
+const SCHEMA_V1: &str = "
     -- The next sequence number for each address that has ever had a frame.
     -- Never deleted, so numbering survives retention emptying an address.
     CREATE TABLE sequences (
@@ -94,8 +121,9 @@ impl Store {
     ///
     /// The file is put in WAL mode with `synchronous = FULL` and
     /// `fullfsync`: a frame whose transaction has committed survives a crash
-    /// of the relay, the machine, or its power. That is the guarantee delivery depends on, since subscribers
-    /// only receive a frame once it is stored.
+    /// of the relay, the machine, or its power. That is the guarantee
+    /// delivery depends on, since subscribers only receive a frame once it is
+    /// stored.
     ///
     /// # Errors
     /// If the file cannot be opened or created, or holds a schema this relay
@@ -125,15 +153,20 @@ impl Store {
     fn init(mut conn: Connection) -> Result<Self> {
         let tx = conn.transaction()?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        match version {
-            0 => {
-                tx.execute_batch(SCHEMA)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            SCHEMA_VERSION => {}
-            found => return Err(Error::UnknownSchema { found }),
+        let pending = usize::try_from(version)
+            .ok()
+            .and_then(|v| MIGRATIONS.get(v..))
+            .ok_or(Error::UnknownSchema { found: version })?;
+        for migration in pending {
+            tx.execute_batch(migration)?;
         }
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
+        // Per-connection, never stored: the addresses retention must hold
+        // back, and from which sequence number. See `set_pins`.
+        conn.execute_batch(
+            "CREATE TEMP TABLE pins (address BLOB PRIMARY KEY, seq INTEGER NOT NULL)",
+        )?;
         Ok(Self { conn })
     }
 
@@ -176,15 +209,18 @@ impl Store {
         let mut deliveries = Vec::with_capacity(frames.len());
         {
             let mut next = tx.prepare_cached(
-                "INSERT INTO sequences (address, next_seq) VALUES (?1, 1)
-                 ON CONFLICT (address) DO UPDATE SET next_seq = next_seq + 1
+                "INSERT INTO sequences (address, next_seq, bytes) VALUES (?1, 1, ?2)
+                 ON CONFLICT (address) DO UPDATE SET
+                     next_seq = next_seq + 1,
+                     bytes = bytes + excluded.bytes
                  RETURNING next_seq - 1",
             )?;
             let mut insert = tx.prepare_cached(
                 "INSERT INTO frames (address, seq, accepted_ms, payload) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for (address, payload) in frames {
-                let seq: i64 = next.query_row([address.as_bytes()], |r| r.get(0))?;
+                let size = i64::try_from(payload.len()).map_err(|_| Error::OutOfRange)?;
+                let seq: i64 = next.query_row(params![address.as_bytes(), size], |r| r.get(0))?;
                 insert.execute(params![address.as_bytes(), seq, accepted, payload])?;
                 deliveries.push(Delivery {
                     address,
@@ -233,6 +269,116 @@ impl Store {
         .collect()
     }
 
+    /// The payload bytes stored for `address`.
+    ///
+    /// # Errors
+    /// If the read fails or the stored total is corrupt.
+    pub fn bytes(&self, address: &Address) -> Result<u64> {
+        let bytes: Option<i64> = self
+            .conn
+            .prepare_cached("SELECT bytes FROM sequences WHERE address = ?1")?
+            .query_row([address.as_bytes()], |r| r.get(0))
+            .optional()?;
+        u64::try_from(bytes.unwrap_or(0)).map_err(|_| Error::Corrupt)
+    }
+
+    /// Hold retention back: for each address, keep every frame from its
+    /// sequence number on. Replaces any earlier pins.
+    ///
+    /// # Errors
+    /// If the write fails.
+    pub fn set_pins(&mut self, pins: &[(Address, u64)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM temp.pins", [])?;
+        {
+            let mut insert =
+                tx.prepare_cached("INSERT INTO temp.pins (address, seq) VALUES (?1, ?2)")?;
+            for (address, seq) in pins {
+                let seq = i64::try_from(*seq).map_err(|_| Error::OutOfRange)?;
+                insert.execute(params![address.as_bytes(), seq])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete every frame accepted before `cutoff_ms`, except what a pin
+    /// holds. Returns how many went.
+    ///
+    /// # Errors
+    /// If the delete fails.
+    pub fn expire(&mut self, cutoff_ms: u64) -> Result<u64> {
+        let cutoff = i64::try_from(cutoff_ms).map_err(|_| Error::OutOfRange)?;
+        self.delete_where(
+            "accepted_ms < ?1 AND seq < COALESCE(
+                 (SELECT seq FROM temp.pins WHERE pins.address = frames.address),
+                 9223372036854775807)",
+            params![cutoff],
+        )
+    }
+
+    /// Delete `address`'s oldest frames until it holds at most `target`
+    /// bytes, or until a pin stops it. Returns how many went.
+    ///
+    /// # Errors
+    /// If the read or delete fails.
+    pub fn trim(&mut self, address: &Address, target: u64) -> Result<u64> {
+        let mut excess = self.bytes(address)?.saturating_sub(target);
+        if excess == 0 {
+            return Ok(0);
+        }
+        // The first frame to keep: the oldest at which enough has gone.
+        let mut keep_from = None;
+        {
+            let mut oldest = self.conn.prepare_cached(
+                "SELECT seq, length(payload) FROM frames WHERE address = ?1 ORDER BY seq",
+            )?;
+            let mut rows = oldest.query([address.as_bytes()])?;
+            while let Some(row) = rows.next()? {
+                let (seq, size): (i64, i64) = (row.get(0)?, row.get(1)?);
+                if excess == 0 {
+                    keep_from = Some(seq);
+                    break;
+                }
+                excess = excess.saturating_sub(u64::try_from(size).map_err(|_| Error::Corrupt)?);
+            }
+        }
+        let keep_from = keep_from.unwrap_or(i64::MAX);
+        self.delete_where(
+            "address = ?1 AND seq < ?2 AND seq < COALESCE(
+                 (SELECT seq FROM temp.pins WHERE pins.address = frames.address),
+                 9223372036854775807)",
+            params![address.as_bytes(), keep_from],
+        )
+    }
+
+    /// Delete frames matching `condition` and take their bytes off their
+    /// addresses' totals, in one transaction.
+    fn delete_where(&mut self, condition: &str, args: impl rusqlite::Params) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let mut freed: std::collections::HashMap<Vec<u8>, i64> = std::collections::HashMap::new();
+        let mut count = 0;
+        {
+            let mut delete = tx.prepare(&format!(
+                "DELETE FROM frames WHERE {condition} RETURNING address, length(payload)"
+            ))?;
+            let mut rows = delete.query(args)?;
+            while let Some(row) = rows.next()? {
+                *freed.entry(row.get(0)?).or_default() += row.get::<_, i64>(1)?;
+                count += 1;
+            }
+        }
+        {
+            let mut shrink =
+                tx.prepare_cached("UPDATE sequences SET bytes = bytes - ?2 WHERE address = ?1")?;
+            for (address, bytes) in &freed {
+                shrink.execute(params![address, bytes])?;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
     /// The oldest sequence number still stored for `address`, or the next one
     /// if nothing is: below this, a cursor cannot be served.
     ///
@@ -264,13 +410,12 @@ impl Store {
 
     /// Delete `address`'s frames below `seq`, as retention (#106) will.
     #[cfg(test)]
-    pub(crate) fn forget_before(&self, address: &Address, seq: u64) {
-        self.conn
-            .execute(
-                "DELETE FROM frames WHERE address = ?1 AND seq < ?2",
-                params![address.as_bytes(), i64::try_from(seq).unwrap()],
-            )
-            .expect("delete frames");
+    pub(crate) fn forget_before(&mut self, address: &Address, seq: u64) {
+        self.delete_where(
+            "address = ?1 AND seq < ?2",
+            params![address.as_bytes(), i64::try_from(seq).unwrap()],
+        )
+        .expect("delete frames");
     }
 
     /// Make every write fail from now on, so tests can check what the relay
@@ -417,6 +562,121 @@ mod tests {
             "delete did not apply"
         );
         assert_eq!(store.append(room, 0, b"c".to_vec()).unwrap().seq, 2);
+    }
+
+    /// Ten 100-byte frames on `room`, accepted at 0, 1, ... 9 ms.
+    fn ten_frames(store: &mut Store, room: &Address) {
+        for i in 0..10u8 {
+            store
+                .append(room.clone(), u64::from(i), vec![i; 100])
+                .unwrap();
+        }
+    }
+
+    fn stored_seqs(store: &Store, room: &Address) -> Vec<u64> {
+        store
+            .since(room, 0, 100)
+            .unwrap()
+            .iter()
+            .map(|d| d.seq)
+            .collect()
+    }
+
+    /// The running byte total is what the size cap is checked against, so
+    /// it has to match what is actually stored through every change.
+    #[test]
+    fn the_byte_total_tracks_what_is_stored() {
+        let mut store = Store::in_memory().unwrap();
+        let room = addr(b"room");
+        ten_frames(&mut store, &room);
+        assert_eq!(store.bytes(&room).unwrap(), 1000);
+        store.expire(3).unwrap();
+        store.trim(&room, 500).unwrap();
+        let stored: usize = store
+            .since(&room, 0, 100)
+            .unwrap()
+            .iter()
+            .map(|d| d.payload.len())
+            .sum();
+        assert_eq!(store.bytes(&room).unwrap(), stored as u64);
+    }
+
+    /// Expiry deletes by age. Numbering carries on, and the floor moves up,
+    /// which is what tells a client that was away too long.
+    #[test]
+    fn expiry_deletes_by_age_and_the_floor_moves() {
+        let mut store = Store::in_memory().unwrap();
+        let room = addr(b"room");
+        ten_frames(&mut store, &room);
+        assert_eq!(store.expire(5).unwrap(), 5);
+        assert_eq!(stored_seqs(&store, &room), [5, 6, 7, 8, 9]);
+        assert_eq!(store.floor(&room).unwrap(), 5);
+        assert_eq!(store.next_seq(&room).unwrap(), 10);
+    }
+
+    /// A pin holds back both kinds of eviction for its address, from its
+    /// sequence number on.
+    #[test]
+    fn a_pin_holds_back_eviction() {
+        let mut store = Store::in_memory().unwrap();
+        let (room, other) = (addr(b"room"), addr(b"other"));
+        ten_frames(&mut store, &room);
+        ten_frames(&mut store, &other);
+        store.set_pins(&[(room.clone(), 3)]).unwrap();
+
+        store.expire(100).unwrap();
+        assert_eq!(stored_seqs(&store, &room), [3, 4, 5, 6, 7, 8, 9]);
+        assert!(
+            stored_seqs(&store, &other).is_empty(),
+            "the pin leaked to another address"
+        );
+
+        store.trim(&room, 0).unwrap();
+        assert_eq!(stored_seqs(&store, &room), [3, 4, 5, 6, 7, 8, 9]);
+
+        store.set_pins(&[]).unwrap();
+        store.trim(&room, 0).unwrap();
+        assert!(
+            stored_seqs(&store, &room).is_empty(),
+            "unpinned, it should go"
+        );
+    }
+
+    /// Trimming removes the oldest frames until the address is under its
+    /// target, and no more.
+    #[test]
+    fn trim_keeps_the_newest_frames_under_the_target() {
+        let mut store = Store::in_memory().unwrap();
+        let room = addr(b"room");
+        ten_frames(&mut store, &room);
+        store.trim(&room, 450).unwrap();
+        assert_eq!(stored_seqs(&store, &room), [6, 7, 8, 9]);
+        assert_eq!(store.bytes(&room).unwrap(), 400);
+        assert_eq!(store.trim(&room, 450).unwrap(), 0, "already under target");
+    }
+
+    /// A store written before byte totals existed gets them computed when it
+    /// is first opened by this version.
+    #[test]
+    fn a_version_one_store_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(
+                "INSERT INTO sequences VALUES (x'726f6f6d', 2);
+                 INSERT INTO frames VALUES (x'726f6f6d', 0, 1, x'0102');
+                 INSERT INTO frames VALUES (x'726f6f6d', 1, 2, x'030405');
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        let room = addr(b"room");
+        assert_eq!(store.bytes(&room).unwrap(), 5);
+        assert_eq!(store.append(room.clone(), 3, vec![9]).unwrap().seq, 2);
+        assert_eq!(store.bytes(&room).unwrap(), 6);
     }
 
     #[test]
