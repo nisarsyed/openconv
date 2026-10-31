@@ -24,7 +24,7 @@ async fn spawn_relay_on(store: Store) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        axum::serve(listener, openconv_server::router(store))
+        axum::serve(listener, openconv_server::router(store).unwrap())
             .await
             .unwrap();
     });

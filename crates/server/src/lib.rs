@@ -25,6 +25,17 @@
 //! offline still gets their `Welcome`, and how a member who was away will
 //! catch up (#105). Sequence numbers live in the store too, so a restarted
 //! relay carries on from where it stopped rather than reusing numbers.
+//!
+//! # One writer
+//!
+//! Numbering, storing and delivering all happen on one thread, the writer.
+//! Connections hand it their publishes and wait to hear where each landed.
+//! Being the only thing that numbers or delivers is what keeps the order
+//! agreed (#102). The writer takes every publish waiting at that moment and
+//! stores the lot in one transaction, so frames that arrive together share
+//! one flush to disk (#117). A flush per frame capped the whole relay at
+//! about 250 frames a second with a true flush, however many clients were
+//! publishing; sharing it lets throughput grow with load.
 
 pub mod store;
 
@@ -49,7 +60,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use store::Store;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 /// Frames queued for one connection before it counts as too slow to keep up.
 const BACKLOG: usize = 256;
@@ -57,6 +68,14 @@ const BACKLOG: usize = 256;
 /// Addresses one connection may subscribe to. A client needs its channel and
 /// its mailbox; this is headroom, not a quota anyone should reach.
 const MAX_SUBSCRIPTIONS: usize = 64;
+
+/// Publishes waiting for the writer. Bounded, so a flood makes connections
+/// wait their turn instead of growing memory without limit.
+const WRITE_QUEUE: usize = 1024;
+
+/// The most frames committed in one transaction. Bounds a transaction's size,
+/// and how long the last frame in a batch waits behind the rest.
+const MAX_BATCH: usize = 256;
 
 /// A connection, as an address sees it.
 #[derive(Clone)]
@@ -74,37 +93,56 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// Who is subscribed to what.
+///
+/// Poisoned locks panic rather than recover: a panic partway through an
+/// update means routing state can no longer be trusted.
+type Routes = Arc<Mutex<HashMap<Address, HashMap<usize, Subscriber>>>>;
+
+/// Why a publish did not land.
+#[derive(Debug, Clone, thiserror::Error)]
+enum PublishError {
+    /// The store refused the batch this frame was in.
+    #[error(transparent)]
+    Store(Arc<store::Error>),
+    /// The writer has stopped, so nothing can be stored.
+    #[error("the relay's writer has stopped")]
+    WriterStopped,
+}
+
+/// Where a published frame landed: its sequence number, and how many
+/// subscribers it reached.
+type Landed = Result<(u64, usize), PublishError>;
+
+/// A publish waiting for the writer.
+struct Publish {
+    address: Address,
+    payload: Vec<u8>,
+    landed: oneshot::Sender<Landed>,
+}
+
 #[derive(Clone)]
 struct Relay {
-    /// Where frames are numbered and kept.
-    ///
-    /// This lock is also the ordering lock. A frame is numbered, written and
-    /// handed to every subscriber in one critical section, so no two can
-    /// interleave. With numbering and delivery separate, concurrent frames
-    /// get numbers 4 and 5, then race to the queues, and some clients
-    /// receive 5 before 4 (#102). Clients then disagree about which commit
-    /// won its epoch, which is the one thing this relay exists to decide.
-    ///
-    /// One lock for every address, where there used to be one per channel.
-    /// SQLite allows a single writer, so publishes were going to serialise
-    /// on the write regardless; delivery under the same lock adds only
-    /// `try_send`s, which never wait. If this ever limits throughput, the
-    /// fix is sharding stores by address, not splitting the lock.
-    store: Arc<Mutex<Store>>,
-    /// Who is subscribed to what. Taken after `store` when both are needed,
-    /// and alone to add or remove subscribers.
-    ///
-    /// Poisoned locks panic rather than recover: a panic partway through an
-    /// update means routing state can no longer be trusted.
-    routes: Arc<Mutex<HashMap<Address, HashMap<usize, Subscriber>>>>,
+    /// The writer's queue. See the module docs for why there is one writer.
+    writes: mpsc::Sender<Publish>,
+    /// Changed by connections as they subscribe and leave; read by the writer
+    /// as it delivers.
+    routes: Routes,
 }
 
 impl Relay {
-    fn new(store: Store) -> Self {
-        Self {
-            store: Arc::new(Mutex::new(store)),
-            routes: Arc::default(),
-        }
+    /// Start the writer over `store`.
+    fn start(store: Store) -> std::io::Result<Self> {
+        let (writes, queue) = mpsc::channel(WRITE_QUEUE);
+        let routes = Routes::default();
+        let writer_routes = routes.clone();
+        // A thread rather than a blocking task: it lives as long as the relay,
+        // and it ends by itself once every connection and the router have
+        // dropped their senders.
+        std::thread::Builder::new()
+            .name("relay-writer".into())
+            .spawn(move || write_loop(store, queue, &writer_routes))?;
+        Ok(Self { writes, routes })
     }
 
     /// Add a connection to each of `addresses`, taking the lock once for the
@@ -122,34 +160,19 @@ impl Relay {
         }
     }
 
-    /// Number a frame, store it, and only then deliver it.
-    ///
-    /// Blocks on SQLite, so call it off the async runtime. Storing first is
-    /// what makes delivery a promise: a subscriber never receives a frame
-    /// that a crash could lose, and a failed write is delivered to nobody.
-    fn publish(&self, address: Address, payload: Vec<u8>) -> store::Result<(u64, usize)> {
-        let mut store = self.store.lock().expect("store poisoned");
-        let delivery = store.append(address, now_ms(), payload)?;
-        let seq = delivery.seq;
-        let frame = Bytes::from(delivery.encode());
-        let mut routes = self.routes.lock().expect("routing state poisoned");
-        let Some(subscribers) = routes.get_mut(&delivery.address) else {
-            return Ok((seq, 0));
+    /// Hand a frame to the writer, and wait until it is stored and delivered.
+    async fn publish(&self, address: Address, payload: Vec<u8>) -> Landed {
+        let (landed, reply) = oneshot::channel();
+        let publish = Publish {
+            address,
+            payload,
+            landed,
         };
-        subscribers.retain(|id, sub| match sub.frames.try_send(frame.clone()) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!(id, "client lagged; disconnecting");
-                sub.kick.notify_one();
-                false
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
-        });
-        let reached = subscribers.len();
-        if subscribers.is_empty() {
-            routes.remove(&delivery.address);
-        }
-        Ok((seq, reached))
+        self.writes
+            .send(publish)
+            .await
+            .map_err(|_| PublishError::WriterStopped)?;
+        reply.await.map_err(|_| PublishError::WriterStopped)?
     }
 
     fn unsubscribe_all(&self, id: usize, addresses: &HashSet<Address>) {
@@ -166,13 +189,93 @@ impl Relay {
     }
 }
 
-/// Build the relay router over `store`. Exposed so tests can serve it on an
-/// ephemeral port.
-pub fn router(store: Store) -> Router {
-    Router::new()
+/// The writer: take whatever publishes are waiting, commit them together,
+/// and repeat until every sender has gone.
+fn write_loop(mut store: Store, mut queue: mpsc::Receiver<Publish>, routes: &Routes) {
+    let mut batch = Vec::with_capacity(MAX_BATCH);
+    while let Some(first) = queue.blocking_recv() {
+        batch.push(first);
+        while batch.len() < MAX_BATCH {
+            let Ok(next) = queue.try_recv() else { break };
+            batch.push(next);
+        }
+        commit(&mut store, routes, &mut batch);
+    }
+}
+
+/// Number and store `batch` in one transaction, and only then deliver it, in
+/// sequence order, and tell each publisher where its frame landed.
+///
+/// Storing first is what makes delivery a promise: a subscriber never
+/// receives a frame that a crash could lose. If the store refuses the batch,
+/// none of it is delivered and every publisher in it is told so.
+fn commit(store: &mut Store, routes: &Routes, batch: &mut Vec<Publish>) {
+    let (frames, replies): (Vec<_>, Vec<_>) = batch
+        .drain(..)
+        .map(|p| ((p.address, p.payload), p.landed))
+        .unzip();
+    let deliveries = match store.append_batch(frames, now_ms()) {
+        Ok(deliveries) => deliveries,
+        Err(error) => {
+            let error = Arc::new(error);
+            for landed in replies {
+                // A publisher that has gone away no longer needs telling.
+                let _ = landed.send(Err(PublishError::Store(error.clone())));
+            }
+            return;
+        }
+    };
+    let frames: Vec<_> = deliveries
+        .into_iter()
+        .map(|d| {
+            let frame = Bytes::from(d.encode());
+            (d.address, d.seq, frame)
+        })
+        .collect();
+    let mut routes = routes.lock().expect("routing state poisoned");
+    for ((address, seq, frame), landed) in frames.into_iter().zip(replies) {
+        let reached = deliver(&mut routes, &address, &frame);
+        let _ = landed.send(Ok((seq, reached)));
+    }
+}
+
+/// Hand a frame to everyone subscribed to `address`, dropping any connection
+/// too far behind to take it. Returns how many it reached.
+fn deliver(
+    routes: &mut HashMap<Address, HashMap<usize, Subscriber>>,
+    address: &Address,
+    frame: &Bytes,
+) -> usize {
+    let Some(subscribers) = routes.get_mut(address) else {
+        return 0;
+    };
+    // `try_send` never waits, so a slow client cannot stall the writer.
+    subscribers.retain(|id, sub| match sub.frames.try_send(frame.clone()) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!(id, "client lagged; disconnecting");
+            sub.kick.notify_one();
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    });
+    let reached = subscribers.len();
+    if subscribers.is_empty() {
+        routes.remove(address);
+    }
+    reached
+}
+
+/// Build the relay router over `store`, starting the thread that writes to
+/// it. Exposed so tests can serve it on an ephemeral port.
+///
+/// # Errors
+/// If the writer thread cannot be started.
+pub fn router(store: Store) -> std::io::Result<Router> {
+    Ok(Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/ws", get(upgrade))
-        .with_state(Relay::new(store))
+        .with_state(Relay::start(store)?))
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(relay): State<Relay>) -> impl IntoResponse {
@@ -245,25 +348,19 @@ async fn handle(socket: WebSocket, relay: Relay) {
                 }
                 Ok(Request::Publish { to, payload }) => {
                     let bytes = payload.len();
-                    let relay = inbound_relay.clone();
                     // Awaited before the next request is read, so one
                     // connection's requests still take effect in order.
-                    match tokio::task::spawn_blocking(move || relay.publish(to, payload)).await {
-                        Ok(Ok((seq, reached))) => {
+                    match inbound_relay.publish(to, payload).await {
+                        Ok((seq, reached)) => {
                             tracing::debug!(id, seq, bytes, reached, "stored and relayed");
                         }
                         // There is no acknowledgement to fail, so closing the
                         // connection is how the publisher learns the frame
                         // went nowhere, rather than believing it was sent.
-                        Ok(Err(error)) => {
+                        Err(error) => {
                             tracing::error!(id, %error, "could not store frame; disconnecting");
                             return;
                         }
-                        Err(join) if join.is_panic() => {
-                            std::panic::resume_unwind(join.into_panic())
-                        }
-                        // Only happens while the runtime shuts down.
-                        Err(_) => return,
                     }
                 }
                 Err(error) => {
@@ -295,30 +392,83 @@ async fn handle(socket: WebSocket, relay: Relay) {
 mod tests {
     use super::*;
 
-    fn subscriber() -> (Subscriber, mpsc::Receiver<Bytes>) {
-        let (frames, rx) = mpsc::channel(BACKLOG);
-        let kick = Arc::new(Notify::new());
-        (Subscriber { frames, kick }, rx)
+    fn addr(bytes: &[u8]) -> Address {
+        Address::new(bytes.to_vec()).unwrap()
     }
 
-    /// Delivery is a promise that the frame is stored. A frame the store
-    /// refused must reach nobody, or a crash could lose something a
-    /// subscriber has already acted on.
+    /// Subscribe a fake connection to `address`, returning its queue.
+    fn subscriber(routes: &Routes, id: usize, address: &Address) -> mpsc::Receiver<Bytes> {
+        let (frames, rx) = mpsc::channel(BACKLOG);
+        let kick = Arc::new(Notify::new());
+        routes
+            .lock()
+            .unwrap()
+            .entry(address.clone())
+            .or_default()
+            .insert(id, Subscriber { frames, kick });
+        rx
+    }
+
+    /// A batch as the writer would take it off its queue.
+    fn batch(frames: &[(&Address, &[u8])]) -> (Vec<Publish>, Vec<oneshot::Receiver<Landed>>) {
+        frames
+            .iter()
+            .map(|(address, payload)| {
+                let (landed, reply) = oneshot::channel();
+                let publish = Publish {
+                    address: (*address).clone(),
+                    payload: payload.to_vec(),
+                    landed,
+                };
+                (publish, reply)
+            })
+            .unzip()
+    }
+
+    /// A committed batch reaches subscribers in sequence order, and each
+    /// publisher learns its own frame's number.
     #[test]
-    fn a_frame_that_cannot_be_stored_is_not_delivered() {
-        let relay = Relay::new(Store::in_memory().unwrap());
-        let room = Address::new(b"room".to_vec()).unwrap();
-        let (sub, mut rx) = subscriber();
-        relay.subscribe(0, &sub, vec![room.clone()]);
+    fn a_batch_is_delivered_in_order_once_stored() {
+        let mut store = Store::in_memory().unwrap();
+        let routes = Routes::default();
+        let (room, other) = (addr(b"room"), addr(b"other"));
+        let mut rx = subscriber(&routes, 0, &room);
+        let (mut publishes, replies) = batch(&[(&room, b"a"), (&other, b"x"), (&room, b"b")]);
 
-        assert_eq!(
-            relay.publish(room.clone(), b"kept".to_vec()).unwrap(),
-            (0, 1)
-        );
-        assert!(rx.try_recv().is_ok(), "a stored frame should be delivered");
+        commit(&mut store, &routes, &mut publishes);
 
-        relay.store.lock().unwrap().fail_writes();
-        assert!(relay.publish(room, b"lost".to_vec()).is_err());
+        let landed: Vec<_> = replies
+            .into_iter()
+            .map(|mut r| r.try_recv().unwrap().unwrap())
+            .collect();
+        assert_eq!(landed, [(0, 1), (0, 0), (1, 1)]);
+        let seen: Vec<(u64, Vec<u8>)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|f| openconv_wire::Delivery::decode(&f).unwrap())
+            .map(|d| (d.seq, d.payload))
+            .collect();
+        assert_eq!(seen, [(0, b"a".to_vec()), (1, b"b".to_vec())]);
+    }
+
+    /// Delivery is a promise that the frame is stored. A batch the store
+    /// refused must reach nobody, and every publisher in it must hear so,
+    /// or a crash could lose something a subscriber has already acted on.
+    #[test]
+    fn a_batch_that_cannot_be_stored_is_delivered_to_nobody() {
+        let mut store = Store::in_memory().unwrap();
+        store.fail_writes();
+        let routes = Routes::default();
+        let room = addr(b"room");
+        let mut rx = subscriber(&routes, 0, &room);
+        let (mut publishes, replies) = batch(&[(&room, b"a"), (&room, b"b"), (&room, b"c")]);
+
+        commit(&mut store, &routes, &mut publishes);
+
+        for mut reply in replies {
+            assert!(matches!(
+                reply.try_recv().unwrap(),
+                Err(PublishError::Store(_))
+            ));
+        }
         assert!(rx.try_recv().is_err(), "an unstored frame was delivered");
     }
 }

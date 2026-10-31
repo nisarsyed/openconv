@@ -147,27 +147,22 @@ check() {
     fi
 }
 
-# Persistence: each client should have written an encrypted database. Its
-# WAL holds recent writes, so it is checked too when present.
+# Persistence: each client should have written an encrypted database. Plain
+# sqlite3, holding no key, must not be able to read it. That is the direct
+# test; grepping the ciphertext for a short name like "bob" matches by chance
+# about one time in twenty-five at these sizes. The WAL's contents are covered
+# by the core's `vault_file_is_encrypted` test, with an identity long enough
+# not to.
 for who in alice bob carol; do
     db="$OPENCONV_DATA_DIR/$who.db"
     if [ ! -f "$db" ]; then
         echo "  FAIL $who wrote no database"
         fail=1
-        continue
-    fi
-    leaked=0
-    for f in "$db" "$db-wal"; do
-        [ -f "$f" ] || continue
-        if head -c 15 "$f" | LC_ALL=C grep -qa '^SQLite format 3'; then
-            echo "  FAIL $(basename "$f") has a plaintext SQLite header"
-            leaked=1
-        elif LC_ALL=C grep -qa "$who" "$f"; then
-            echo "  FAIL $who's identity is readable in $(basename "$f")"
-            leaked=1
-        fi
-    done
-    if [ "$leaked" = 1 ]; then
+    elif head -c 15 "$db" | LC_ALL=C grep -qa '^SQLite format 3'; then
+        echo "  FAIL $who's database has a plaintext SQLite header"
+        fail=1
+    elif sqlite3 -readonly "$db" 'SELECT count(*) FROM sqlite_master' >/dev/null 2>&1; then
+        echo "  FAIL $who's database opens without its key"
         fail=1
     else
         echo "  ok   $who persisted an encrypted database"
