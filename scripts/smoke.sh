@@ -13,6 +13,8 @@ LOG=$(mktemp -d)
 # Clients now persist state. Give each run its own data dir so a previous
 # run's group does not leak into this one.
 export OPENCONV_DATA_DIR="$LOG/data"
+# The relay stores frames now; a fresh store per run, for the same reason.
+export OPENCONV_RELAY_DB="$LOG/relay.db"
 MESSAGE="hello from bob"
 # Carol joins last. Bob was already in the group when she was admitted, so he
 # only decrypts her message if he applied the commit that her join produced.

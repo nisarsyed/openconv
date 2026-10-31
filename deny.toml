@@ -52,6 +52,12 @@ allow = [
     # Required by unicode-ident, which every proc-macro in the tree depends
     # on. Permissive; carries an attribution requirement only.
     "Unicode-3.0",
+    # Required by foldhash, hashbrown's default hasher, which rusqlite's
+    # statement cache brings in (2026-10-31, #104). Permissive with no
+    # copyleft: its only conditions are not misrepresenting authorship and
+    # marking altered sources. Anything enabling hashbrown's default hasher
+    # would bring it back, so allowing it beats disabling the cache.
+    "Zlib",
     # Weak, file-level copyleft. Allowed deliberately, not by oversight:
     # UniFFI (the Rust<->Swift bridge) and hpke-rs (pulled in by openmls for
     # HPKE) are both MPL-2.0, and both are load-bearing.

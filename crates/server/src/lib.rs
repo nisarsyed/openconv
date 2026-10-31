@@ -1,7 +1,7 @@
 //! OpenConv relay.
 //!
 //! The relay routes opaque frames to whoever is subscribed to their address.
-//! It never parses, decrypts, or stores payloads. It reads the envelope
+//! It never parses or decrypts payloads. It reads the envelope
 //! (`openconv-wire`) because routing needs an address, and nothing past it.
 //! Keeping it that way is the privacy argument, so resist adding anything
 //! that inspects a payload.
@@ -20,10 +20,13 @@
 //! sender learns where its frame landed in the order. Clients recognise their
 //! own frames by content, which keeps sender identity off the wire.
 //!
-//! Nothing is stored. A frame published to an address with no subscribers is
-//! dropped. An address is forgotten when its last subscriber leaves, and its
-//! sequence starts again from zero if anyone subscribes later. Continuity
-//! across that is the job of durable storage (#104).
+//! Every frame is stored before anyone receives it (see [`store`]), including
+//! frames to an address nobody is subscribed to: that is how a joiner who is
+//! offline still gets their `Welcome`, and how a member who was away will
+//! catch up (#105). Sequence numbers live in the store too, so a restarted
+//! relay carries on from where it stopped rather than reusing numbers.
+
+pub mod store;
 
 use axum::{
     Router,
@@ -36,7 +39,7 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-use openconv_wire::{Address, Delivery, Request};
+use openconv_wire::{Address, Request};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -45,6 +48,7 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
+use store::Store;
 use tokio::sync::{Notify, mpsc};
 
 /// Frames queued for one connection before it counts as too slow to keep up.
@@ -54,7 +58,7 @@ const BACKLOG: usize = 256;
 /// its mailbox; this is headroom, not a quota anyone should reach.
 const MAX_SUBSCRIPTIONS: usize = 64;
 
-/// A connection, as a channel sees it.
+/// A connection, as an address sees it.
 #[derive(Clone)]
 struct Subscriber {
     frames: mpsc::Sender<Bytes>,
@@ -64,127 +68,111 @@ struct Subscriber {
     kick: Arc<Notify>,
 }
 
-/// One address's ordering state and audience.
-#[derive(Default)]
-struct Channel {
-    /// The next sequence number to hand out.
-    next_seq: u64,
-    subscribers: HashMap<usize, Subscriber>,
-}
-
-impl Channel {
-    /// Number a frame and hand it to every subscriber.
-    ///
-    /// One call, under the channel's lock, so numbering and delivery cannot
-    /// interleave. With the two separate, concurrent frames get numbers 4
-    /// and 5, then race to the queues, and some clients receive 5 before 4.
-    /// Clients then disagree about which commit won its epoch, which is the
-    /// one thing this relay exists to decide. `try_send` never waits, so the
-    /// lock is never held across a yield.
-    fn publish(&mut self, address: &Address, payload: Vec<u8>) -> u64 {
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        let frame = Bytes::from(
-            Delivery {
-                address: address.clone(),
-                seq,
-                accepted_ms: now_ms(),
-                payload,
-            }
-            .encode(),
-        );
-        self.subscribers
-            .retain(|id, sub| match sub.frames.try_send(frame.clone()) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(id, "client lagged; disconnecting");
-                    sub.kick.notify_one();
-                    false
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-            });
-        seq
-    }
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Relay {
-    /// Every address someone is subscribed to.
+    /// Where frames are numbered and kept.
     ///
-    /// The map's lock is held only to find or create a channel, and to add
-    /// or remove subscribers. Numbering happens under each channel's own
-    /// lock, so traffic on one channel never waits for another.
+    /// This lock is also the ordering lock. A frame is numbered, written and
+    /// handed to every subscriber in one critical section, so no two can
+    /// interleave. With numbering and delivery separate, concurrent frames
+    /// get numbers 4 and 5, then race to the queues, and some clients
+    /// receive 5 before 4 (#102). Clients then disagree about which commit
+    /// won its epoch, which is the one thing this relay exists to decide.
+    ///
+    /// One lock for every address, where there used to be one per channel.
+    /// SQLite allows a single writer, so publishes were going to serialise
+    /// on the write regardless; delivery under the same lock adds only
+    /// `try_send`s, which never wait. If this ever limits throughput, the
+    /// fix is sharding stores by address, not splitting the lock.
+    store: Arc<Mutex<Store>>,
+    /// Who is subscribed to what. Taken after `store` when both are needed,
+    /// and alone to add or remove subscribers.
     ///
     /// Poisoned locks panic rather than recover: a panic partway through an
     /// update means routing state can no longer be trusted.
-    channels: Arc<Mutex<HashMap<Address, Arc<Mutex<Channel>>>>>,
+    routes: Arc<Mutex<HashMap<Address, HashMap<usize, Subscriber>>>>,
 }
 
 impl Relay {
-    /// Add a connection to each of `addresses`, taking the map's lock once
-    /// for the whole request.
+    fn new(store: Store) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(store)),
+            routes: Arc::default(),
+        }
+    }
+
+    /// Add a connection to each of `addresses`, taking the lock once for the
+    /// whole request.
     fn subscribe(&self, id: usize, subscriber: &Subscriber, addresses: Vec<Address>) {
         if addresses.is_empty() {
             return;
         }
-        let mut channels = self.channels.lock().expect("relay state poisoned");
+        let mut routes = self.routes.lock().expect("routing state poisoned");
         for address in addresses {
-            channels
+            routes
                 .entry(address)
                 .or_default()
-                .lock()
-                .expect("channel state poisoned")
-                .subscribers
                 .insert(id, subscriber.clone());
         }
     }
 
-    fn publish(&self, address: &Address, payload: Vec<u8>) -> Option<u64> {
-        // Clone the handle and let go of the map before numbering, so the
-        // map's lock does not serialise every channel's traffic.
-        let channel = self
-            .channels
-            .lock()
-            .expect("relay state poisoned")
-            .get(address)
-            .cloned()?;
-        let seq = channel
-            .lock()
-            .expect("channel state poisoned")
-            .publish(address, payload);
-        Some(seq)
+    /// Number a frame, store it, and only then deliver it.
+    ///
+    /// Blocks on SQLite, so call it off the async runtime. Storing first is
+    /// what makes delivery a promise: a subscriber never receives a frame
+    /// that a crash could lose, and a failed write is delivered to nobody.
+    fn publish(&self, address: Address, payload: Vec<u8>) -> store::Result<(u64, usize)> {
+        let mut store = self.store.lock().expect("store poisoned");
+        let delivery = store.append(address, now_ms(), payload)?;
+        let seq = delivery.seq;
+        let frame = Bytes::from(delivery.encode());
+        let mut routes = self.routes.lock().expect("routing state poisoned");
+        let Some(subscribers) = routes.get_mut(&delivery.address) else {
+            return Ok((seq, 0));
+        };
+        subscribers.retain(|id, sub| match sub.frames.try_send(frame.clone()) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(id, "client lagged; disconnecting");
+                sub.kick.notify_one();
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        });
+        let reached = subscribers.len();
+        if subscribers.is_empty() {
+            routes.remove(&delivery.address);
+        }
+        Ok((seq, reached))
     }
 
     fn unsubscribe_all(&self, id: usize, addresses: &HashSet<Address>) {
-        let mut channels = self.channels.lock().expect("relay state poisoned");
+        let mut routes = self.routes.lock().expect("routing state poisoned");
         for address in addresses {
-            let Some(channel) = channels.get(address) else {
+            let Some(subscribers) = routes.get_mut(address) else {
                 continue;
             };
-            let empty = {
-                let mut channel = channel.lock().expect("channel state poisoned");
-                channel.subscribers.remove(&id);
-                channel.subscribers.is_empty()
-            };
-            if empty {
-                channels.remove(address);
+            subscribers.remove(&id);
+            if subscribers.is_empty() {
+                routes.remove(address);
             }
         }
     }
 }
 
-/// Build the relay router. Exposed so tests can serve it on an ephemeral port.
-pub fn router() -> Router {
+/// Build the relay router over `store`. Exposed so tests can serve it on an
+/// ephemeral port.
+pub fn router(store: Store) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/ws", get(upgrade))
-        .with_state(Relay::default())
+        .with_state(Relay::new(store))
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(relay): State<Relay>) -> impl IntoResponse {
@@ -257,10 +245,25 @@ async fn handle(socket: WebSocket, relay: Relay) {
                 }
                 Ok(Request::Publish { to, payload }) => {
                     let bytes = payload.len();
-                    if let Some(seq) = inbound_relay.publish(&to, payload) {
-                        tracing::debug!(id, seq, bytes, "relayed");
-                    } else {
-                        tracing::debug!(id, bytes, "no subscribers; dropped");
+                    let relay = inbound_relay.clone();
+                    // Awaited before the next request is read, so one
+                    // connection's requests still take effect in order.
+                    match tokio::task::spawn_blocking(move || relay.publish(to, payload)).await {
+                        Ok(Ok((seq, reached))) => {
+                            tracing::debug!(id, seq, bytes, reached, "stored and relayed");
+                        }
+                        // There is no acknowledgement to fail, so closing the
+                        // connection is how the publisher learns the frame
+                        // went nowhere, rather than believing it was sent.
+                        Ok(Err(error)) => {
+                            tracing::error!(id, %error, "could not store frame; disconnecting");
+                            return;
+                        }
+                        Err(join) if join.is_panic() => {
+                            std::panic::resume_unwind(join.into_panic())
+                        }
+                        // Only happens while the runtime shuts down.
+                        Err(_) => return,
                     }
                 }
                 Err(error) => {
@@ -286,4 +289,36 @@ async fn handle(socket: WebSocket, relay: Relay) {
     let subscribed = std::mem::take(&mut *subscribed.lock().expect("subscription set poisoned"));
     relay.unsubscribe_all(id, &subscribed);
     tracing::info!(id, "client disconnected");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subscriber() -> (Subscriber, mpsc::Receiver<Bytes>) {
+        let (frames, rx) = mpsc::channel(BACKLOG);
+        let kick = Arc::new(Notify::new());
+        (Subscriber { frames, kick }, rx)
+    }
+
+    /// Delivery is a promise that the frame is stored. A frame the store
+    /// refused must reach nobody, or a crash could lose something a
+    /// subscriber has already acted on.
+    #[test]
+    fn a_frame_that_cannot_be_stored_is_not_delivered() {
+        let relay = Relay::new(Store::in_memory().unwrap());
+        let room = Address::new(b"room".to_vec()).unwrap();
+        let (sub, mut rx) = subscriber();
+        relay.subscribe(0, &sub, vec![room.clone()]);
+
+        assert_eq!(
+            relay.publish(room.clone(), b"kept".to_vec()).unwrap(),
+            (0, 1)
+        );
+        assert!(rx.try_recv().is_ok(), "a stored frame should be delivered");
+
+        relay.store.lock().unwrap().fail_writes();
+        assert!(relay.publish(room, b"lost".to_vec()).is_err());
+        assert!(rx.try_recv().is_err(), "an unstored frame was delivered");
+    }
 }
