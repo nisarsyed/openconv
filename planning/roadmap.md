@@ -91,15 +91,19 @@ This unlocks offline delivery, late joiners getting context, and multiple
 conversations. It also turns local history into a cache of something
 authoritative rather than the only copy.
 
-Tracked as #103–#107, #110 (fixed) and #112. #110: messages sent
+Tracked as #103–#107, #110 (fixed), #112 and #117. #110: messages sent
 concurrently with a commit were silently dropped, which had to be fixed before
 catch-up could deliver "the same message set as everyone else".
 
-**Order: 103 → 104 → 107 → 105 → 106**, with #112 alongside #105.
+**Order: 103 → 104 → 107 → 117 → 105 → 106**, with #112 alongside #105.
 
 - #107 moved ahead of #105, because #105 adds per-channel cursors to the
   client's persisted state. They should land in the new storage, not in a
   snapshot format that is about to be replaced.
+- #117 (group commit) was found after #104 merged: one flush per frame,
+  under one lock, capped the whole relay at about 250 frames a second with a
+  true disk flush. It goes before #105, so catch-up is built on the relay's
+  final write path.
 - #106 can go any time after #104.
 - #112 (removal, leaving, re-adding a stranded member) was split out of #105.
   Without the split, #105 could not be finished without quietly building

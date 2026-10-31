@@ -81,9 +81,9 @@ const SCHEMA: &str = "
     );
 ";
 
-/// The relay's frame store. One connection, used under the relay's lock: a
-/// single writer is all SQLite allows anyway, and that lock is also what
-/// keeps numbering and delivery atomic.
+/// The relay's frame store. One connection, owned by the relay's writer
+/// thread: SQLite allows a single writer anyway, and the writer being the
+/// only thing that numbers and delivers is what keeps the order agreed.
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
@@ -92,9 +92,9 @@ pub struct Store {
 impl Store {
     /// Open the store at `path`, creating it if it does not exist.
     ///
-    /// The file is put in WAL mode with `synchronous = FULL`: a frame whose
-    /// transaction has committed survives a crash of the relay or the
-    /// machine. That is the guarantee delivery depends on, since subscribers
+    /// The file is put in WAL mode with `synchronous = FULL` and
+    /// `fullfsync`: a frame whose transaction has committed survives a crash
+    /// of the relay, the machine, or its power. That is the guarantee delivery depends on, since subscribers
     /// only receive a frame once it is stored.
     ///
     /// # Errors
@@ -105,6 +105,11 @@ impl Store {
         // `journal_mode` reports the mode it settled on, so it is a query.
         conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "FULL")?;
+        // On macOS, `fsync` hands data to the drive without making it flush
+        // its cache, so `FULL` alone does not survive a power cut there. This
+        // makes SQLite use `F_FULLFSYNC`, which does. Elsewhere it changes
+        // nothing: Linux's `fsync` already flushes.
+        conn.pragma_update(None, "fullfsync", true)?;
         Self::init(conn)
     }
 
@@ -133,41 +138,64 @@ impl Store {
     }
 
     /// Number a frame and store it, returning it as subscribers should
-    /// receive it.
-    ///
-    /// The sequence advances and the frame is written in one transaction, so
-    /// a crash leaves both or neither. When this returns, the frame is on
-    /// disk.
+    /// receive it. [`Store::append_batch`] for one frame.
     ///
     /// # Errors
-    /// If the write fails. Nothing is stored and the sequence does not
-    /// advance, so the frame must not be delivered either.
+    /// As [`Store::append_batch`].
     pub fn append(
         &mut self,
         address: Address,
         accepted_ms: u64,
         payload: Vec<u8>,
     ) -> Result<Delivery> {
+        self.append_batch(vec![(address, payload)], accepted_ms)?
+            .pop()
+            .ok_or(Error::Corrupt)
+    }
+
+    /// Number and store several frames in one transaction, returning them in
+    /// order as subscribers should receive them.
+    ///
+    /// One transaction means one flush to disk however many frames it holds,
+    /// and that flush is what the relay's throughput is bounded by (#117).
+    /// Frames are numbered in the order given, so two to the same address
+    /// get consecutive numbers in that order. Sequences advance and frames
+    /// are written together, so a crash leaves all of them or none. When
+    /// this returns, every frame is on disk.
+    ///
+    /// # Errors
+    /// If the write fails. Nothing is stored and no sequence advances, so
+    /// none of the frames may be delivered.
+    pub fn append_batch(
+        &mut self,
+        frames: Vec<(Address, Vec<u8>)>,
+        accepted_ms: u64,
+    ) -> Result<Vec<Delivery>> {
         let accepted = i64::try_from(accepted_ms).map_err(|_| Error::OutOfRange)?;
         let tx = self.conn.transaction()?;
-        let seq: i64 = tx
-            .prepare_cached(
+        let mut deliveries = Vec::with_capacity(frames.len());
+        {
+            let mut next = tx.prepare_cached(
                 "INSERT INTO sequences (address, next_seq) VALUES (?1, 1)
                  ON CONFLICT (address) DO UPDATE SET next_seq = next_seq + 1
                  RETURNING next_seq - 1",
-            )?
-            .query_row([address.as_bytes()], |r| r.get(0))?;
-        tx.prepare_cached(
-            "INSERT INTO frames (address, seq, accepted_ms, payload) VALUES (?1, ?2, ?3, ?4)",
-        )?
-        .execute(params![address.as_bytes(), seq, accepted, payload])?;
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO frames (address, seq, accepted_ms, payload) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (address, payload) in frames {
+                let seq: i64 = next.query_row([address.as_bytes()], |r| r.get(0))?;
+                insert.execute(params![address.as_bytes(), seq, accepted, payload])?;
+                deliveries.push(Delivery {
+                    address,
+                    seq: u64::try_from(seq).map_err(|_| Error::Corrupt)?,
+                    accepted_ms,
+                    payload,
+                });
+            }
+        }
         tx.commit()?;
-        Ok(Delivery {
-            address,
-            seq: u64::try_from(seq).map_err(|_| Error::Corrupt)?,
-            accepted_ms,
-            payload,
-        })
+        Ok(deliveries)
     }
 
     /// Up to `limit` stored frames for `address`, starting at sequence
@@ -255,6 +283,41 @@ mod tests {
         );
         assert_eq!(store.next_seq(&red).unwrap(), 2);
         assert_eq!(store.next_seq(&addr(b"never")).unwrap(), 0);
+    }
+
+    /// A batch is numbered in the order given, interleaved addresses
+    /// included, and continues each address's existing count.
+    #[test]
+    fn a_batch_is_numbered_in_order_per_address() {
+        let mut store = Store::in_memory().unwrap();
+        let (red, blue) = (addr(b"red"), addr(b"blue"));
+        store.append(red.clone(), 0, b"r0".to_vec()).unwrap();
+        let batch = store
+            .append_batch(
+                vec![
+                    (red.clone(), b"r1".to_vec()),
+                    (blue.clone(), b"b0".to_vec()),
+                    (red.clone(), b"r2".to_vec()),
+                ],
+                7,
+            )
+            .unwrap();
+        let got: Vec<(&[u8], u64, &[u8])> = batch
+            .iter()
+            .map(|d| (d.address.as_bytes(), d.seq, d.payload.as_slice()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (&b"red"[..], 1, &b"r1"[..]),
+                (b"blue", 0, b"b0"),
+                (b"red", 2, b"r2")
+            ]
+        );
+        assert_eq!(
+            payloads(&store.since(&red, 0, 10).unwrap()),
+            [(0, &b"r0"[..]), (1, b"r1"), (2, b"r2")]
+        );
     }
 
     #[test]

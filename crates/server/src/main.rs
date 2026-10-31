@@ -25,7 +25,10 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!(%addr, "relay listening");
-    axum::serve(listener, openconv_server::router(store))
-        .await
-        .expect("serve");
+    axum::serve(
+        listener,
+        openconv_server::router(store).expect("start the relay writer"),
+    )
+    .await
+    .expect("serve");
 }
