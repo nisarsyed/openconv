@@ -27,16 +27,30 @@
 //! rolled back as a whole if any part of it fails. Savepoints rather than
 //! transactions because operations nest: receiving a message can resend one.
 //!
+//! # Durability
+//!
 //! The file uses WAL with `synchronous = FULL`, so an operation that has
-//! returned is on disk. That matters most for sending: a message must not
-//! leave this device until the ratchet step that produced it is durable, or
-//! a crash could make this client encrypt twice with the same key.
+//! returned survives the app or the OS crashing. That is not enough for
+//! sending. On macOS, `fsync` hands data to the drive without making it flush
+//! its cache, so a power cut can lose the last writes, and a client that comes
+//! back with an older sender ratchet would encrypt again under key
+//! generations it has already used.
+//!
+//! So operations that produce something other members will see (a message,
+//! a commit, a new group, a `KeyPackage`) ask for a true flush
+//! (`F_FULLFSYNC`) when they commit; see [`Database::flush_on_commit`]. It
+//! costs about 4 ms where an ordinary commit costs about 0.1 ms, which is fine
+//! once per send and too much once per received frame. Receives don't need
+//! it: one lost to a power cut is fetched and applied again. A flushed commit
+//! also makes durable everything committed before it, receives included,
+//! because the WAL is flushed as a whole.
 
 use crate::{Error, Result};
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 const KEY_LEN: usize = 32;
@@ -122,15 +136,25 @@ pub(crate) struct Saved {
 /// One client's state: an open SQLite connection with the schema in place.
 pub(crate) struct Database {
     conn: Connection,
-    /// False for in-memory databases, which keep nothing across a restart.
-    persistent: bool,
+    /// The database file, or `None` for an in-memory database, which keeps
+    /// nothing across a restart.
+    path: Option<PathBuf>,
+    /// Savepoints currently open. Only the outermost release commits.
+    depth: Cell<u32>,
+    /// Whether the open transaction must be flushed to the drive when it
+    /// commits. Set by any operation inside it, and cleared when it ends.
+    flush: Cell<bool>,
+    /// Commits that were flushed to the drive, so tests can see which
+    /// operations asked for it.
+    #[cfg(test)]
+    pub(crate) flushed: Cell<u32>,
 }
 
 /// Never prints the connection: the tables behind it hold key material.
 impl std::fmt::Debug for Database {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Database")
-            .field("persistent", &self.persistent)
+            .field("persistent", &self.path.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -142,7 +166,7 @@ fn store<E: std::fmt::Display>(e: E) -> Error {
 impl Database {
     /// A database that lives only as long as this value.
     pub(crate) fn in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory().map_err(store)?, false)
+        Self::init(Connection::open_in_memory().map_err(store)?, None)
     }
 
     /// Open, or create, the encrypted database at `path` with `key`.
@@ -185,6 +209,13 @@ impl Database {
             .map_err(store)?;
         conn.pragma_update(None, "synchronous", "FULL")
             .map_err(store)?;
+        // A checkpoint copies the WAL into the database and then lets the WAL
+        // be overwritten. On macOS a plain `fsync` can leave the copied pages
+        // in the drive's cache, so a power cut after the WAL moves on would
+        // lose them. Checkpoints are rare (see below), so flushing them is
+        // cheap.
+        conn.pragma_update(None, "checkpoint_fullfsync", true)
+            .map_err(store)?;
         // By default the WAL grows to about 1000 pages (4 MiB) before it is
         // checkpointed into the database, and the file is never shrunk
         // afterwards, so every client would carry a 4 MiB WAL against a store
@@ -197,10 +228,10 @@ impl Database {
         // SQLite gives the WAL and shared-memory files the same permissions as
         // the database, so restricting this one covers them.
         restrict(path)?;
-        Self::init(conn, true)
+        Self::init(conn, Some(path.to_owned()))
     }
 
-    fn init(mut conn: Connection, persistent: bool) -> Result<Self> {
+    fn init(mut conn: Connection, path: Option<PathBuf>) -> Result<Self> {
         SqliteStorageProvider::<JsonCodec, &mut Connection>::new(&mut conn)
             .run_migrations()
             .map_err(store)?;
@@ -223,12 +254,19 @@ impl Database {
             }
         }
         tx.commit().map_err(store)?;
-        Ok(Self { conn, persistent })
+        Ok(Self {
+            conn,
+            path,
+            depth: Cell::new(0),
+            flush: Cell::new(false),
+            #[cfg(test)]
+            flushed: Cell::new(0),
+        })
     }
 
     /// Whether this database outlives the process.
     pub(crate) fn is_persistent(&self) -> bool {
-        self.persistent
+        self.path.is_some()
     }
 
     /// openmls's provider over this database.
@@ -257,13 +295,50 @@ impl Database {
     /// [`Database::rollback`] on failure; [`Database::atomically`] does both,
     /// for callers that do not need to touch anything else in between.
     pub(crate) fn begin(&self) -> Result<()> {
-        self.conn.execute_batch("SAVEPOINT op").map_err(store)
+        self.conn.execute_batch("SAVEPOINT op").map_err(store)?;
+        self.depth.set(self.depth.get() + 1);
+        Ok(())
     }
 
     /// Keep everything since the matching [`Database::begin`]. The outermost
-    /// release is the commit.
+    /// release is the commit, and is flushed to the drive if anything inside
+    /// it asked for that.
     pub(crate) fn release(&self) -> Result<()> {
-        self.conn.execute_batch("RELEASE op").map_err(store)
+        self.conn.execute_batch("RELEASE op").map_err(store)?;
+        self.depth.set(self.depth.get() - 1);
+        if self.depth.get() == 0 && self.flush.replace(false) {
+            self.flush_to_drive()?;
+        }
+        Ok(())
+    }
+
+    /// Make the drive write out what SQLite has handed it.
+    ///
+    /// Done after the commit rather than by switching on `PRAGMA fullfsync`
+    /// for it: set inside an open transaction, that pragma measurably did not
+    /// reach the commit's sync. `sync_all` on macOS is `F_FULLFSYNC`, which
+    /// flushes the drive's whole cache, so syncing the WAL covers the commit
+    /// SQLite has just written to it and everything committed before.
+    fn flush_to_drive(&self) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let mut wal = path.clone().into_os_string();
+        wal.push("-wal");
+        std::fs::File::open(wal)
+            .and_then(|wal| wal.sync_all())
+            .map_err(store)?;
+        // Counted only once the flush has happened, after a real commit.
+        #[cfg(test)]
+        self.flushed.set(self.flushed.get() + 1);
+        Ok(())
+    }
+
+    /// Ask for the current transaction to be flushed to the drive when it
+    /// commits, rather than only handed to it. For operations whose result
+    /// other members will see; see the module docs for why.
+    pub(crate) fn flush_on_commit(&self) {
+        self.flush.set(true);
     }
 
     /// Undo everything since the matching [`Database::begin`].
@@ -273,6 +348,10 @@ impl Database {
     /// error worth reporting is whichever one caused the rollback.
     pub(crate) fn rollback(&self) {
         let _ = self.conn.execute_batch("ROLLBACK TO op; RELEASE op");
+        self.depth.set(self.depth.get().saturating_sub(1));
+        if self.depth.get() == 0 {
+            self.flush.set(false);
+        }
     }
 
     /// What this client recorded about itself, or `None` for a new database.

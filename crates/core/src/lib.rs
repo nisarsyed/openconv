@@ -349,6 +349,7 @@ impl Member {
         // resulting Welcome needs, possibly after a restart.
         let provider = self.db.provider(&self.crypto);
         self.db.atomically(|| {
+            self.db.flush_on_commit();
             let bundle = KeyPackage::builder()
                 .build(
                     CIPHERSUITE,
@@ -371,6 +372,7 @@ impl Member {
 
     /// [`Member::create_group`], minus the unit-of-work wrapper.
     fn create_group_unit(&mut self) -> Result<()> {
+        self.db.flush_on_commit();
         let group = MlsGroup::new(
             &self.db.provider(&self.crypto),
             &self.signer,
@@ -402,6 +404,7 @@ impl Member {
         let mailbox = self.key_package_ref(&kp)?;
 
         self.atomically(|m| {
+            m.db.flush_on_commit();
             let provider = m.db.provider(&m.crypto);
             let group = m.group.as_mut().ok_or(Error::NoGroup)?;
             let (commit, welcome, _) = group
@@ -453,9 +456,10 @@ impl Member {
     /// If this member has no group, or encryption fails.
     pub fn send(&mut self, text: &str) -> Result<Vec<u8>> {
         // Encrypting ratchets the sender key. The ciphertext is returned only
-        // once that step is durable, so a crash cannot make this client
-        // encrypt again with the same key.
+        // once that step is flushed to the drive, so neither a crash nor a
+        // power cut can make this client encrypt again with the same key.
         self.atomically(|m| {
+            m.db.flush_on_commit();
             let provider = m.db.provider(&m.crypto);
             let group = m.group.as_mut().ok_or(Error::NoGroup)?;
             let epoch = group.epoch().as_u64();
@@ -1307,6 +1311,71 @@ mod tests {
         );
         drop(member);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Whatever other members will see must be flushed to the drive before
+    /// it leaves: a power cut that rolled back a sender's ratchet would make
+    /// it encrypt again under used keys. Receives are not flushed, because a
+    /// lost one is simply applied again, and one flush per received frame
+    /// would make catching up slow.
+    #[test]
+    fn only_what_others_see_is_flushed_to_the_drive() {
+        let (path, vault) = test_vault("flusher");
+        let mut bob = Member::restore(vault, "flusher").unwrap();
+        let mut alice = Member::new("alice").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let flushed = |m: &Member| m.db.flushed.get();
+
+        // A key package is a promise to accept a Welcome later.
+        let before = flushed(&bob);
+        let offer = bob.key_package().unwrap();
+        assert_eq!(flushed(&bob), before + 1, "key package not flushed");
+
+        alice.create_group().unwrap();
+        let commit = alice.propose_add(&offer).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        let before = flushed(&bob);
+        bob.join(&welcome).unwrap();
+        assert_eq!(flushed(&bob), before, "joining is a receive");
+
+        let before = flushed(&bob);
+        let wire = bob.send("hello").unwrap();
+        assert_eq!(flushed(&bob), before + 1, "send not flushed");
+        alice.receive(&wire).unwrap();
+
+        let before = flushed(&bob);
+        bob.receive(&alice.send("hi").unwrap()).unwrap();
+        assert_eq!(flushed(&bob), before, "an ordinary receive was flushed");
+
+        let before = flushed(&bob);
+        let commit = bob.propose_add(&carol.key_package().unwrap()).unwrap();
+        assert_eq!(flushed(&bob), before + 1, "commit not flushed");
+        let Event::Admitted { welcome, .. } = bob.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.join(&welcome).unwrap();
+        alice.receive(&commit).unwrap();
+
+        // A receive that resends produces new ciphertext, so it must flush,
+        // even though the send happens inside the receive.
+        let raced = bob.send("crossed").unwrap();
+        let commit = alice
+            .propose_add(&Member::new("dave").unwrap().key_package().unwrap())
+            .unwrap();
+        alice.receive(&commit).unwrap();
+        bob.receive(&commit).unwrap();
+        let before = flushed(&bob);
+        assert!(matches!(bob.receive(&raced).unwrap(), Event::Resend { .. }));
+        assert_eq!(
+            flushed(&bob),
+            before + 1,
+            "a resend inside a receive was not flushed"
+        );
+
+        drop(bob);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     /// A failed operation must leave nothing behind, on disk or in memory.
