@@ -78,6 +78,20 @@ OPENCONV_DATA_DIR=/tmp/a just client alice
 OPENCONV_DATA_DIR=/tmp/b just client bob
 ```
 
+**Relay and client data belong together.** Each client remembers how far it
+has read the relay's history, and the relay keeps that history in
+`OPENCONV_RELAY_DB`, which defaults to `openconv-relay.db` in the directory the
+relay starts in (`just relay` always uses the repo root). If the relay starts
+with a fresh store, clients find themselves ahead of it and follow its new
+numbering from the start, saying so; the relay logs a warning whenever it
+creates a new store. For throwaway runs, point both somewhere disposable and
+reset them together:
+
+```sh
+OPENCONV_RELAY_DB=/tmp/run/relay.db just relay
+OPENCONV_DATA_DIR=/tmp/run just client alice
+```
+
 ## Checks
 
 ```sh

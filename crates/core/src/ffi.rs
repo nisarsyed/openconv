@@ -106,6 +106,11 @@ pub enum ClientEffect {
         /// The address.
         address: Vec<u8>,
     },
+    /// The relay's history was reset; this client follows it from its start.
+    RelayReset {
+        /// The address.
+        address: Vec<u8>,
+    },
     /// The relay no longer holds frames this client missed on `address`, so
     /// it cannot follow the group until another member re-adds it.
     Unavailable {
@@ -128,6 +133,7 @@ impl From<Effect> for ClientEffect {
             Effect::AddSuperseded => Self::AddSuperseded,
             Effect::Advanced => Self::Advanced,
             Effect::Live { address } => Self::Live { address },
+            Effect::RelayReset { address } => Self::RelayReset { address },
             Effect::Unavailable {
                 address,
                 floor,

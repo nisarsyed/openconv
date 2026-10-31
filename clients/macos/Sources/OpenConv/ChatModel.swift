@@ -272,6 +272,9 @@ final class ChatModel: ObservableObject {
             // Logged, not shown: tells a headless run catch-up finished.
             print("[\(identity)] caught up")
 
+        case .relayReset:
+            note("the relay's history was reset; following it from its start")
+
         case .unavailable(_, let floor, _):
             note(
                 "the relay no longer holds what this client missed (it starts at \(floor)); "

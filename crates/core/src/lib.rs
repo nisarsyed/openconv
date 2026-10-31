@@ -224,6 +224,14 @@ pub enum Effect {
         /// The address.
         address: Vec<u8>,
     },
+    /// The relay's history for `address` is behind this client: its store
+    /// was reset or replaced. This client now follows the relay's numbering
+    /// from its oldest frame. Nothing it already applied is applied twice:
+    /// MLS refuses an old commit or a message whose key is spent.
+    RelayReset {
+        /// The address.
+        address: Vec<u8>,
+    },
     /// The relay cannot serve this client's cursor on `address`. Below
     /// `floor`, retention removed frames this client never saw, including
     /// possibly a commit, so it cannot follow the group until another member
@@ -853,11 +861,31 @@ impl Member {
                 address,
                 floor,
                 next,
-            } => Ok(vec![Effect::Unavailable {
-                address: address.into_bytes(),
-                floor,
-                next,
-            }]),
+            } => {
+                let address = address.into_bytes();
+                let Some(cursor) = self.db.cursor(&address)? else {
+                    return Ok(Vec::new());
+                };
+                if cursor <= next {
+                    return Ok(vec![Effect::Unavailable {
+                        address,
+                        floor,
+                        next,
+                    }]);
+                }
+                // Ahead of everything the relay has: it lost or replaced its
+                // store, and numbering started again. Missing frames are not
+                // the risk here, so follow its numbering from the start.
+                self.db.atomically(|| self.db.advance(&address, floor))?;
+                let resume = Request::Resume {
+                    address: Address::new(address.clone())?,
+                    from: floor,
+                };
+                Ok(vec![
+                    Effect::RelayReset { address },
+                    Effect::Send(resume.encode()?),
+                ])
+            }
         }
     }
 
@@ -1903,6 +1931,51 @@ mod tests {
         );
         assert!(
             matches!(alice.deliver(&next).unwrap().as_slice(), [Effect::Message(t)] if t == "fine")
+        );
+    }
+
+    /// A relay whose history is behind the client was reset: the client
+    /// follows its numbering from the start. One whose history begins after
+    /// the client's cursor dropped frames the client never saw, which cannot
+    /// be resynced away, and is reported.
+    #[test]
+    fn a_reset_relay_is_followed_but_a_lost_history_is_reported() {
+        let mut alice = Member::new("alice").unwrap();
+        alice.create_group().unwrap();
+        let channel = alice.channel().unwrap();
+        alice.db.advance(&channel, 40).unwrap();
+        let unavailable = |floor, next| {
+            openconv_wire::Inbound::Unavailable {
+                address: Address::new(channel.clone()).unwrap(),
+                floor,
+                next,
+            }
+            .encode()
+        };
+
+        // The relay holds 0..3: it was reset after this client read to 40.
+        let effects = alice.deliver(&unavailable(0, 3)).unwrap();
+        let [Effect::RelayReset { .. }, Effect::Send(request)] = effects.as_slice() else {
+            panic!("a reset relay should be resynced to, got {effects:?}");
+        };
+        let expected = Request::Resume {
+            address: Address::new(channel.clone()).unwrap(),
+            from: 0,
+        };
+        assert_eq!(request, &expected.encode().unwrap());
+        assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
+
+        // The relay holds 50..60 and this client is at 0: frames it never
+        // saw are gone.
+        let effects = alice.deliver(&unavailable(50, 60)).unwrap();
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Unavailable { floor: 50, .. }]
+        ));
+        assert_eq!(
+            alice.db.cursor(&channel).unwrap(),
+            Some(0),
+            "the cursor moved"
         );
     }
 

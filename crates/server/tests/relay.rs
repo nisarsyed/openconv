@@ -679,3 +679,60 @@ async fn a_join_request_made_while_everyone_was_away_is_answered() {
     settle(&mut [&mut alice, &mut bob]).await;
     assert_eq!(alice.heard, ["made it"]);
 }
+
+/// A relay whose store is replaced by an empty one (started from another
+/// directory, say) is behind every client. They follow its new numbering
+/// from the start and carry on, rather than stopping as though they had
+/// missed frames, and new members can still join through it.
+#[tokio::test]
+async fn members_carry_on_through_a_relay_whose_store_was_reset() {
+    let url = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut alice = persisted(dir.path(), "alice");
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+    let mut bob = persisted(dir.path(), "bob");
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    let mut carol = persisted(dir.path(), "carol");
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    for i in 0..5 {
+        alice.say(&format!("old {i}")).await;
+    }
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    for peer in [alice, bob, carol] {
+        peer.offline().await;
+    }
+
+    // A different relay, with nothing stored.
+    let url = spawn_relay().await;
+    let mut alice = Peer::online(persisted(dir.path(), "alice"), &url).await;
+    let mut bob = Peer::online(persisted(dir.path(), "bob"), &url).await;
+    let mut carol = Peer::online(persisted(dir.path(), "carol"), &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    bob.say("still here").await;
+    let mut dave = Member::new("dave").unwrap();
+    dave.offer(&channel).unwrap();
+    let mut dave = Peer::online(dave, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    assert_eq!(alice.heard, ["still here"]);
+    assert_eq!(carol.heard, ["still here"]);
+    assert_eq!(
+        dave.member.member_count(),
+        4,
+        "nobody could join after the reset"
+    );
+    dave.say("joined after the reset").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    for peer in [&alice, &bob, &carol] {
+        assert_eq!(
+            peer.heard.last().map(String::as_str),
+            Some("joined after the reset")
+        );
+    }
+}

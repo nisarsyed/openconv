@@ -24,6 +24,11 @@ One test is `#[ignore]`d because it touches the real macOS Keychain:
 Two clients side by side without sharing state:
 `OPENCONV_DATA_DIR=/tmp/a just client alice`
 
+Clients remember how far they have read the relay's history, so reset relay
+and client data together. The relay's store is `OPENCONV_RELAY_DB`, default
+`openconv-relay.db` relative to where it starts; a fresh one makes clients
+resync (and the relay warns), but a mismatched pair is confusing to debug.
+
 ## Architecture
 
 Three pieces, two languages, one FFI seam:
