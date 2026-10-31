@@ -5,20 +5,30 @@ use futures_util::{SinkExt, StreamExt};
 use openconv_core::{
     Envelope, Event, FrameKind, Member, decode_delivery, encode_publish, encode_subscribe,
 };
+use openconv_server::store::Store;
+use openconv_wire::Address;
 use std::time::Duration;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Boot the relay on an ephemeral port and return its ws:// URL.
+/// Boot a relay with an in-memory store on an ephemeral port and return its
+/// ws:// URL.
 async fn spawn_relay() -> String {
+    spawn_relay_on(Store::in_memory().unwrap()).await.0
+}
+
+/// Boot a relay over `store`, returning its URL and the task serving it, so a
+/// test can stop it.
+async fn spawn_relay_on(store: Store) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = openconv_server::router();
-        axum::serve(listener, app).await.unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, openconv_server::router(store))
+            .await
+            .unwrap();
     });
-    format!("ws://{addr}/ws")
+    (format!("ws://{addr}/ws"), server)
 }
 
 async fn connect(url: &str) -> Ws {
@@ -303,5 +313,84 @@ async fn concurrent_senders_produce_one_agreed_order() {
     assert_eq!(
         transcripts[0], transcripts[1],
         "observers disagreed about the order of the same frames"
+    );
+}
+
+/// The done condition for durable storage: a restarted relay carries on
+/// numbering where it stopped, and what was stored before is still there.
+///
+/// Reusing a sequence number after a restart is corruption, not a reset: a
+/// client whose cursor was past it would silently skip the new frames.
+#[tokio::test]
+async fn a_restarted_relay_continues_the_sequence_and_keeps_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("relay.db");
+
+    let (url, server) = spawn_relay_on(Store::open(&db).unwrap()).await;
+    let mut ws = connect(&url).await;
+    subscribe(&mut ws, &[b"room"]).await;
+    for body in [&b"m0"[..], b"m1", b"m2"] {
+        publish(&mut ws, b"room", FrameKind::Application, body).await;
+        assert_eq!(next(&mut ws).await.body, body);
+    }
+    ws.close(None).await.unwrap();
+    server.abort();
+
+    // A new relay over the same file, as after a process restart. Two
+    // subscribers, so this checks the number everyone agrees on, not one
+    // connection's view.
+    let (url, _server) = spawn_relay_on(Store::open(&db).unwrap()).await;
+    let mut a = connect(&url).await;
+    let mut b = connect(&url).await;
+    subscribe(&mut a, &[b"room"]).await;
+    subscribe(&mut b, &[b"room"]).await;
+    publish(&mut a, b"room", FrameKind::Application, b"m3").await;
+    for ws in [&mut a, &mut b] {
+        let env = next(ws).await;
+        assert_eq!((env.seq, env.body.as_slice()), (3, &b"m3"[..]));
+    }
+
+    // Everything from before the restart is still stored, in order, with the
+    // number it was delivered under.
+    let room = Address::new(b"room".to_vec()).unwrap();
+    let stored: Vec<(u64, Vec<u8>)> = Store::open(&db)
+        .unwrap()
+        .since(&room, 0, 100)
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.seq, decode_delivery(&d.encode()).unwrap().body))
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            (0, b"m0".to_vec()),
+            (1, b"m1".to_vec()),
+            (2, b"m2".to_vec()),
+            (3, b"m3".to_vec())
+        ]
+    );
+}
+
+/// A frame to an address nobody is listening on is kept, not dropped. This
+/// is what lets a `Welcome` reach a joiner who went offline after asking.
+#[tokio::test]
+async fn frames_to_an_unwatched_address_are_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("relay.db");
+    let (url, _server) = spawn_relay_on(Store::open(&db).unwrap()).await;
+
+    let mut sender = connect(&url).await;
+    publish(&mut sender, b"mailbox", FrameKind::Welcome, b"welcome").await;
+    // Sync point: the relay handles a connection's requests in order, so by
+    // the time this probe echoes, the publish before it has been stored.
+    subscribe(&mut sender, &[]).await;
+
+    let mailbox = Address::new(b"mailbox".to_vec()).unwrap();
+    let stored = Store::open(&db).unwrap().since(&mailbox, 0, 10).unwrap();
+    assert_eq!(stored.len(), 1);
+    let env = decode_delivery(&stored[0].encode()).unwrap();
+    assert_eq!(
+        (env.kind, env.body.as_slice()),
+        (FrameKind::Welcome, &b"welcome"[..])
     );
 }

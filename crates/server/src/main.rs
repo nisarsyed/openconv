@@ -1,5 +1,6 @@
 //! Binary entry point for the OpenConv relay.
 
+use openconv_server::store::Store;
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -16,9 +17,15 @@ async fn main() {
         .parse()
         .expect("OPENCONV_ADDR must be host:port");
 
+    // Where frames are kept. Relative to the working directory by default;
+    // point it somewhere durable for anything that is not a dev run.
+    let db = std::env::var("OPENCONV_RELAY_DB").unwrap_or_else(|_| "openconv-relay.db".into());
+    let store = Store::open(&db).expect("open the relay store");
+    tracing::info!(db, "relay store open");
+
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!(%addr, "relay listening");
-    axum::serve(listener, openconv_server::router())
+    axum::serve(listener, openconv_server::router(store))
         .await
         .expect("serve");
 }
