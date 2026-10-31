@@ -35,8 +35,9 @@ that orders frames, a native SwiftUI client, and state that survives a
 restart. Three or more members, commit races resolved correctly.
 
 What that is not yet: **one implicit conversation, everyone online at once.**
-The relay routes frames by channel but stores nothing, so a message sent
-while you are disconnected is gone permanently. There is no
+The relay routes frames by channel and stores them durably (#104), but a
+reconnecting client has no way yet to ask for what it missed (#105), so a
+message sent while you are disconnected never reaches you. There is no
 identity beyond a self-declared name.
 
 ## The ordering principle
