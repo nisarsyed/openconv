@@ -19,14 +19,31 @@
 //! client → relay
 //!   Subscribe   0x01  count:u8  (len:u8 address)*count
 //!   Publish     0x02  len:u8 address  payload…
+//!   Resume      0x03  len:u8 address  from:u64
 //!
 //! relay → client
 //!   Delivery    0x01  len:u8 address  seq:u64  accepted_ms:u64  payload…
+//!   Page        0x02  len:u8 address  next:u64  live:u8
+//!   Unavailable 0x03  len:u8 address  floor:u64  next:u64
 //! ```
 //!
-//! Relay → client messages carry a tag even though there is only one kind
-//! today, so that a later notice (a client's cursor falling below the
-//! retention floor, say) is an addition rather than a format change.
+//! # Catching up
+//!
+//! A client that has been away sends `Resume` with the first sequence number
+//! it has not seen. The relay sends what it has stored from there, a page at
+//! a time, each page ending in a `Page`. If `live` is 0 there is more, and the
+//! client asks again from `next`. If `live` is 1 the client has everything,
+//! and is now subscribed: the relay registered it in the same step as reading
+//! the last page, so no frame can fall between catch-up and live delivery.
+//! Paging keeps a client back from a month away from arriving as one burst,
+//! and keeps the relay free of per-client state between requests.
+//!
+//! `Unavailable` means the relay cannot serve that cursor. Either retention
+//! has removed frames the client never saw (`from` below `floor`), or the
+//! client is ahead of everything the relay has (`from` above `next`), which
+//! means the relay lost its store. A client that missed a commit cannot read
+//! anything after it, so neither case is quietly served from wherever history
+//! happens to start.
 
 /// Anything that can be wrong with an envelope.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -46,6 +63,9 @@ pub enum Error {
     /// A subscribe listed more addresses than fit its count byte.
     #[error("at most {max} addresses per subscribe, got {0}", max = u8::MAX)]
     TooManyAddresses(usize),
+    /// A flag byte was neither 0 nor 1.
+    #[error("flag must be 0 or 1, got {0}")]
+    InvalidFlag(u8),
     /// Bytes followed the last field of a message that has no payload.
     #[error("{0} unexpected trailing bytes")]
     TrailingBytes(usize),
@@ -108,11 +128,22 @@ pub enum Request {
         /// Opaque to the relay.
         payload: Vec<u8>,
     },
+    /// Send what is stored for `address` from sequence `from`, a page at a
+    /// time, and subscribe once the client has it all. See the module docs.
+    Resume {
+        /// The address to catch up on.
+        address: Address,
+        /// The first sequence number the client has not seen.
+        from: u64,
+    },
 }
 
 const SUBSCRIBE: u8 = 0x01;
 const PUBLISH: u8 = 0x02;
+const RESUME: u8 = 0x03;
 const DELIVERY: u8 = 0x01;
+const PAGE: u8 = 0x02;
+const UNAVAILABLE: u8 = 0x03;
 
 impl Request {
     /// Serialise for the wire.
@@ -137,6 +168,13 @@ impl Request {
                 out.extend_from_slice(payload);
                 Ok(out)
             }
+            Self::Resume { address, from } => {
+                let mut out = Vec::with_capacity(10 + address.0.len());
+                out.push(RESUME);
+                address.encode_into(&mut out);
+                out.extend_from_slice(&from.to_be_bytes());
+                Ok(out)
+            }
         }
     }
 
@@ -154,9 +192,7 @@ impl Request {
                 let addresses = (0..count).map(|_| r.address()).collect::<Result<_>>()?;
                 // A subscribe has no payload, so anything after the last
                 // address is malformed rather than something to ignore.
-                if !r.0.is_empty() {
-                    return Err(Error::TrailingBytes(r.0.len()));
-                }
+                r.end()?;
                 Ok(Self::Subscribe(addresses))
             }
             PUBLISH => {
@@ -165,6 +201,14 @@ impl Request {
                     to,
                     payload: r.rest(),
                 })
+            }
+            RESUME => {
+                let request = Self::Resume {
+                    address: r.address()?,
+                    from: r.u64()?,
+                };
+                r.end()?;
+                Ok(request)
             }
             tag => Err(Error::UnknownTag(tag)),
         }
@@ -219,6 +263,105 @@ impl Delivery {
     }
 }
 
+/// Anything the relay sends a client.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Inbound {
+    /// A frame published to an address the client follows.
+    Delivery(Delivery),
+    /// The end of a page of catch-up for `address`.
+    Page {
+        /// The address being caught up on.
+        address: Address,
+        /// The sequence number after the last frame sent: where to resume
+        /// from if there is more.
+        next: u64,
+        /// True if that was everything and the client is now subscribed;
+        /// false if it should send `Resume` from `next` for the rest.
+        live: bool,
+    },
+    /// The relay cannot serve a resume for `address` from where it was asked.
+    Unavailable {
+        /// The address.
+        address: Address,
+        /// The oldest sequence number the relay still holds.
+        floor: u64,
+        /// The sequence number the next frame will get.
+        next: u64,
+    },
+}
+
+impl Inbound {
+    /// Serialise for the wire.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Delivery(delivery) => delivery.encode(),
+            Self::Page {
+                address,
+                next,
+                live,
+            } => {
+                let mut out = Vec::with_capacity(11 + address.0.len());
+                out.push(PAGE);
+                address.encode_into(&mut out);
+                out.extend_from_slice(&next.to_be_bytes());
+                out.push(u8::from(*live));
+                out
+            }
+            Self::Unavailable {
+                address,
+                floor,
+                next,
+            } => {
+                let mut out = Vec::with_capacity(18 + address.0.len());
+                out.push(UNAVAILABLE);
+                address.encode_into(&mut out);
+                out.extend_from_slice(&floor.to_be_bytes());
+                out.extend_from_slice(&next.to_be_bytes());
+                out
+            }
+        }
+    }
+
+    /// Parse anything the relay sends. The input came off the network, so
+    /// any shape of rubbish is an error, never a panic.
+    ///
+    /// # Errors
+    /// If the message is empty, truncated, carries an unknown tag, an invalid
+    /// address or flag, or has bytes after a message that has no payload.
+    pub fn decode(wire: &[u8]) -> Result<Self> {
+        let mut r = Reader(wire);
+        match r.byte().map_err(|_| Error::Empty)? {
+            DELIVERY => Delivery::decode(wire).map(Self::Delivery),
+            PAGE => {
+                let address = r.address()?;
+                let next = r.u64()?;
+                let live = match r.byte()? {
+                    0 => false,
+                    1 => true,
+                    flag => return Err(Error::InvalidFlag(flag)),
+                };
+                r.end()?;
+                Ok(Self::Page {
+                    address,
+                    next,
+                    live,
+                })
+            }
+            UNAVAILABLE => {
+                let notice = Self::Unavailable {
+                    address: r.address()?,
+                    floor: r.u64()?,
+                    next: r.u64()?,
+                };
+                r.end()?;
+                Ok(notice)
+            }
+            tag => Err(Error::UnknownTag(tag)),
+        }
+    }
+}
+
 /// A cursor over untrusted bytes. Every read is bounds-checked.
 struct Reader<'a>(&'a [u8]);
 
@@ -251,6 +394,16 @@ impl Reader<'_> {
     fn rest(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.0).to_vec()
     }
+
+    /// Fail if anything is left: for messages with no payload, trailing
+    /// bytes are malformed rather than something to ignore.
+    fn end(&self) -> Result<()> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::TrailingBytes(self.0.len()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +427,10 @@ mod tests {
                 to: addr(&[1; MAX_ADDRESS_LEN]),
                 payload: vec![],
             },
+            Request::Resume {
+                address: addr(b"channel"),
+                from: u64::MAX,
+            },
         ] {
             let wire = request.encode().unwrap();
             assert_eq!(Request::decode(&wire).unwrap(), request);
@@ -289,6 +446,65 @@ mod tests {
             payload: b"\x04ciphertext".to_vec(),
         };
         assert_eq!(Delivery::decode(&delivery.encode()).unwrap(), delivery);
+    }
+
+    #[test]
+    fn notices_round_trip() {
+        for inbound in [
+            Inbound::Page {
+                address: addr(b"room"),
+                next: 42,
+                live: false,
+            },
+            Inbound::Page {
+                address: addr(b"room"),
+                next: 0,
+                live: true,
+            },
+            Inbound::Unavailable {
+                address: addr(&[3; 32]),
+                floor: 10,
+                next: 99,
+            },
+            Inbound::Delivery(Delivery {
+                address: addr(b"room"),
+                seq: 7,
+                accepted_ms: 8,
+                payload: b"x".to_vec(),
+            }),
+        ] {
+            assert_eq!(Inbound::decode(&inbound.encode()).unwrap(), inbound);
+        }
+    }
+
+    #[test]
+    fn notices_reject_hostile_shapes() {
+        let page = Inbound::Page {
+            address: addr(b"a"),
+            next: 1,
+            live: true,
+        }
+        .encode();
+        for cut in 0..page.len() {
+            assert!(Inbound::decode(&page[..cut]).is_err(), "cut at {cut}");
+        }
+        let mut bad_flag = page.clone();
+        *bad_flag.last_mut().unwrap() = 2;
+        assert_eq!(Inbound::decode(&bad_flag), Err(Error::InvalidFlag(2)));
+        let mut trailing = page;
+        trailing.push(0);
+        assert_eq!(Inbound::decode(&trailing), Err(Error::TrailingBytes(1)));
+
+        let resume = Request::Resume {
+            address: addr(b"a"),
+            from: 3,
+        }
+        .encode()
+        .unwrap();
+        for cut in 0..resume.len() {
+            assert!(Request::decode(&resume[..cut]).is_err(), "cut at {cut}");
+        }
+        assert_eq!(Inbound::decode(&[0x7f]), Err(Error::UnknownTag(0x7f)));
     }
 
     /// Both directions come off the network, so every truncation of a valid

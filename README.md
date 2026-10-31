@@ -56,6 +56,12 @@ and from there both can chat. Everything on the wire is MLS ciphertext.
 Each client keeps its MLS state — identity, group membership, ratchet state —
 in an encrypted SQLite database, so a restart resumes where it left off.
 
+The relay keeps every frame, so a client that was closed catches up on what
+it missed when it reconnects: messages, membership changes, and requests to
+join that arrived while nobody was online to answer. A new member does not
+get the history from before they joined, and cannot: MLS forward secrecy
+means those frames were never encrypted for them.
+
 - **Encrypted at rest.** SQLCipher encrypts and authenticates every page, and
   the files are `0600`. Each operation is one transaction, so a crash or an
   error cannot leave half an update on disk.

@@ -3,11 +3,12 @@
 //! The server never sees plaintext. Everything in this crate runs on the
 //! client; the wire carries only TLS-serialised MLS messages.
 
+use openconv_wire::{Address, Inbound, Request};
 use openmls::prelude::{tls_codec::*, *};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
 use openmls_traits::OpenMlsProvider;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 
 pub mod store;
@@ -58,6 +59,16 @@ pub enum Error {
     /// The vault decrypted but its contents do not form a usable client.
     #[error("saved state is unreadable: {0}")]
     CorruptState(&'static str),
+    /// The relay delivered a frame past the one this client expected next,
+    /// so frames in between were missed. Never expected: catch-up and live
+    /// delivery are designed to meet without a gap.
+    #[error("missed frames: expected {expected}, got {got}")]
+    Gap {
+        /// The sequence number this client expected.
+        expected: u64,
+        /// The one that arrived.
+        got: u64,
+    },
 }
 
 /// Convenience alias for this crate's fallible operations.
@@ -81,13 +92,16 @@ pub struct Member {
     group: Option<MlsGroup>,
     /// An add staged but not yet confirmed by the relay's ordering.
     ///
-    /// Not persisted: a restart mid-add drops it, and the add is simply
-    /// retried. Persisting it would mean reconciling a staged commit against
-    /// an ordering this client has not yet seen.
+    /// Persisted. openmls keeps its half (the staged commit) in the store, so
+    /// a client that restarted mid-add would otherwise meet its own commit
+    /// in catch-up without recognising it, and be unable to process it.
     pending: Option<PendingAdd>,
     /// Recently sent messages, so their echoes off the relay can be
     /// recognised without putting sender identity on the wire.
     sent: VecDeque<Sent>,
+    /// Addresses caught up on since this client last connected. Join
+    /// requests are only answered live; see [`Member::deliver`].
+    live: HashSet<Vec<u8>>,
 }
 
 /// A message sent and not yet seen coming back.
@@ -155,6 +169,41 @@ pub enum Event {
     Stale,
 }
 
+/// What the app should do after [`Member::deliver`], in order.
+#[derive(Debug)]
+pub enum Effect {
+    /// Write these bytes to the relay.
+    Send(Vec<u8>),
+    /// A decrypted message from another member.
+    Message(String),
+    /// This client joined the group from a `Welcome`.
+    Joined,
+    /// This client's add won its epoch; the new member has been let in.
+    Admitted,
+    /// This client's add lost to another member's commit, which was applied
+    /// instead. The joiner was probably admitted by it.
+    AddSuperseded,
+    /// Group state moved on, membership possibly with it.
+    Advanced,
+    /// Caught up on `address`; frames from here on are live.
+    Live {
+        /// The address.
+        address: Vec<u8>,
+    },
+    /// The relay cannot serve this client's cursor on `address`. Below
+    /// `floor`, retention removed frames this client never saw, including
+    /// possibly a commit, so it cannot follow the group until another member
+    /// re-adds it (#112).
+    Unavailable {
+        /// The address.
+        address: Vec<u8>,
+        /// The oldest sequence number the relay holds.
+        floor: u64,
+        /// The next sequence number the relay will assign.
+        next: u64,
+    },
+}
+
 /// Redacting by hand rather than deriving: this type holds identity keys and
 /// ratchet state, and a derived `Debug` would print them into any log or
 /// panic message that formats a `Member`.
@@ -204,6 +253,7 @@ impl Member {
             group: None,
             pending: None,
             sent: VecDeque::new(),
+            live: HashSet::new(),
         })
     }
 
@@ -247,14 +297,28 @@ impl Member {
             signature_key: signature_public_key.into(),
         };
 
+        let pending = db
+            .pending_add()?
+            .map(|(commit, welcome, mailbox)| PendingAdd {
+                commit,
+                welcome,
+                mailbox,
+            });
+        let sent = db
+            .sent()?
+            .into_iter()
+            .map(|(wire, epoch, text)| Sent { wire, epoch, text })
+            .collect();
+
         Ok(Self {
             crypto,
             db,
             signer,
             credential,
             group,
-            pending: None,
-            sent: VecDeque::new(),
+            pending,
+            sent,
+            live: HashSet::new(),
         })
     }
 
@@ -381,7 +445,9 @@ impl Member {
         )
         .map_err(mls)?;
         self.group = Some(group);
-        self.record_group()
+        self.record_group()?;
+        let channel = self.channel().ok_or(Error::NoGroup)?;
+        self.db.follow(&channel, 0, None)
     }
 
     /// Stage adding a member from their published `KeyPackage`.
@@ -401,24 +467,30 @@ impl Member {
         }
 
         let kp = self.validate_key_package(key_package)?;
+        self.atomically(|m| m.propose_add_unit(kp))
+    }
+
+    /// [`Member::propose_add`] for a validated `KeyPackage`, minus the
+    /// unit-of-work wrapper.
+    fn propose_add_unit(&mut self, kp: KeyPackage) -> Result<Vec<u8>> {
         let mailbox = self.key_package_ref(&kp)?;
+        self.db.flush_on_commit();
+        let provider = self.db.provider(&self.crypto);
+        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+        let (commit, welcome, _) = group
+            .add_members(&provider, &self.signer, &[kp])
+            .map_err(mls)?;
 
-        self.atomically(|m| {
-            m.db.flush_on_commit();
-            let provider = m.db.provider(&m.crypto);
-            let group = m.group.as_mut().ok_or(Error::NoGroup)?;
-            let (commit, welcome, _) = group
-                .add_members(&provider, &m.signer, &[kp])
-                .map_err(mls)?;
-
-            let commit = commit.tls_serialize_detached()?;
-            m.pending = Some(PendingAdd {
-                commit: commit.clone(),
-                welcome: welcome.tls_serialize_detached()?,
-                mailbox,
-            });
-            Ok(commit)
-        })
+        let pending = PendingAdd {
+            commit: commit.tls_serialize_detached()?,
+            welcome: welcome.tls_serialize_detached()?,
+            mailbox,
+        };
+        self.db
+            .set_pending_add(Some((&pending.commit, &pending.welcome, &pending.mailbox)))?;
+        let commit = pending.commit.clone();
+        self.pending = Some(pending);
+        Ok(commit)
     }
 
     /// Join a group from a `Welcome` released by [`Member::propose_add`].
@@ -433,21 +505,25 @@ impl Member {
             });
         };
 
-        self.atomically(|m| {
-            let provider = m.db.provider(&m.crypto);
-            let group = StagedWelcome::new_from_welcome(
-                &provider,
-                Self::config().join_config(),
-                welcome,
-                None, // ratchet tree travels in the Welcome
-            )
-            .map_err(mls)?
-            .into_group(&provider)
-            .map_err(mls)?;
+        self.atomically(|m| m.join_unit(welcome))
+    }
 
-            m.group = Some(group);
-            m.record_group()
-        })
+    /// [`Member::join`] for a parsed `Welcome`, minus the unit-of-work
+    /// wrapper.
+    fn join_unit(&mut self, welcome: Welcome) -> Result<()> {
+        let provider = self.db.provider(&self.crypto);
+        let group = StagedWelcome::new_from_welcome(
+            &provider,
+            Self::config().join_config(),
+            welcome,
+            None, // ratchet tree travels in the Welcome
+        )
+        .map_err(mls)?
+        .into_group(&provider)
+        .map_err(mls)?;
+
+        self.group = Some(group);
+        self.record_group()
     }
 
     /// Encrypt an application message for the group.
@@ -471,7 +547,7 @@ impl Member {
                 wire: wire.clone(),
                 epoch,
                 text: text.to_owned(),
-            });
+            })?;
             Ok(wire)
         })
     }
@@ -493,6 +569,7 @@ impl Member {
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = self.pending.take_if(|p| p.commit == wire) {
+            self.db.set_pending_add(None)?;
             let provider = self.db.provider(&self.crypto);
             let group = self.group.as_mut().ok_or(Error::NoGroup)?;
             group.merge_pending_commit(&provider).map_err(mls)?;
@@ -501,7 +578,7 @@ impl Member {
                 mailbox: pending.mailbox,
             });
         }
-        if let Some(sent) = self.take_sent(wire) {
+        if let Some(sent) = self.take_sent(wire)? {
             let group = self.group.as_ref().ok_or(Error::NoGroup)?;
             if sent.epoch == group.epoch().as_u64() {
                 return Ok(Event::Echo);
@@ -535,6 +612,7 @@ impl Member {
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         if superseded {
             self.pending = None;
+            self.db.set_pending_add(None)?;
             group
                 .clear_pending_commit(provider.storage())
                 .map_err(mls)?;
@@ -569,21 +647,265 @@ impl Member {
         Ok(event)
     }
 
-    /// Record a message so the relay's echo of it can be recognised.
-    fn remember_sent(&mut self, sent: Sent) {
+    /// Record a message so the relay's echo of it can be recognised, even
+    /// after a restart.
+    fn remember_sent(&mut self, sent: Sent) -> Result<()> {
+        self.db
+            .push_sent(&sent.wire, sent.epoch, &sent.text, SENT_HISTORY)?;
         if self.sent.len() == SENT_HISTORY {
             self.sent.pop_front();
         }
         self.sent.push_back(sent);
+        Ok(())
     }
 
     /// Claim the record of a sent message whose echo has arrived.
     ///
     /// Removed rather than just matched, so a message is resent at most once
     /// per echo: a second copy of a stale echo must not send it twice.
-    fn take_sent(&mut self, wire: &[u8]) -> Option<Sent> {
-        let at = self.sent.iter().position(|sent| sent.wire == wire)?;
-        self.sent.remove(at)
+    fn take_sent(&mut self, wire: &[u8]) -> Result<Option<Sent>> {
+        let Some(at) = self.sent.iter().position(|sent| sent.wire == wire) else {
+            return Ok(None);
+        };
+        self.db.remove_sent(wire)?;
+        Ok(self.sent.remove(at))
+    }
+
+    // ---- Following the relay (#105) ----
+
+    /// The requests to send on connecting to the relay, in order.
+    ///
+    /// One `Resume` per address this client reads, from its saved cursor, so
+    /// it catches up on whatever it missed and then goes live. While waiting
+    /// to be admitted, the offer is published again too: if nobody was
+    /// online to answer it before, someone may be now, and a member who has
+    /// already admitted this client ignores the repeat.
+    ///
+    /// # Errors
+    /// If the store cannot be read, or a saved address is invalid.
+    pub fn connect(&mut self) -> Result<Vec<Vec<u8>>> {
+        self.live.clear();
+        let mut requests = Vec::new();
+        for follow in self.db.follows()? {
+            requests.push(
+                Request::Resume {
+                    address: Address::new(follow.address)?,
+                    from: follow.next_seq,
+                }
+                .encode()?,
+            );
+            if let Some((to, offer)) = follow.offer {
+                requests.push(encode_publish(&to, FrameKind::KeyPackage, &offer)?);
+            }
+        }
+        Ok(requests)
+    }
+
+    /// Whether this client has asked to join a group and is still waiting
+    /// for its `Welcome`. Survives a restart: [`Member::connect`] keeps
+    /// reading the mailbox and re-sends the offer.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn waiting_to_join(&self) -> Result<bool> {
+        Ok(self.group.is_none() && self.db.follows()?.iter().any(|f| f.offer.is_some()))
+    }
+
+    /// Ask to join the group on `channel`: make a `KeyPackage` and read its
+    /// mailbox, where the `Welcome` will come. Send [`Member::connect`]'s
+    /// requests afterwards; they include the offer itself.
+    ///
+    /// # Errors
+    /// If the key package cannot be built or recorded.
+    pub fn offer(&mut self, channel: &[u8]) -> Result<()> {
+        self.atomically(|m| {
+            let offer = m.key_package()?;
+            let mailbox = m.mailbox(&offer)?;
+            m.db.follow(&mailbox, 0, Some((channel, &offer)))
+        })
+    }
+
+    /// Process anything the relay sent, returning what to do about it.
+    ///
+    /// Frames are applied in sequence order, once each: a frame at or below
+    /// this client's cursor is a duplicate (catch-up and live delivery can
+    /// overlap at a reconnect) and is dropped. The cursor advances in the
+    /// same transaction as the state the frame changed, so a crash can never
+    /// apply a frame twice or skip one.
+    ///
+    /// Join requests are answered only once this client is live on its
+    /// channel. One seen during catch-up is held, and once live it is
+    /// answered only if the joiner is not already a member, since someone
+    /// online may well have admitted them meanwhile.
+    ///
+    /// # Errors
+    /// If the message is malformed, frames were missed, or a frame could not
+    /// be applied. A frame that cannot be applied is stepped over: the
+    /// relay's order is fixed, so it would fail the same way every time.
+    pub fn deliver(&mut self, wire: &[u8]) -> Result<Vec<Effect>> {
+        match Inbound::decode(wire)? {
+            Inbound::Delivery(delivery) => {
+                let address = delivery.address.into_bytes();
+                let Some(next) = self.db.cursor(&address)? else {
+                    return Ok(Vec::new()); // not an address this client reads
+                };
+                if delivery.seq < next {
+                    return Ok(Vec::new());
+                }
+                if delivery.seq > next {
+                    return Err(Error::Gap {
+                        expected: next,
+                        got: delivery.seq,
+                    });
+                }
+                let seq = delivery.seq;
+                let applied = self.atomically(|m| {
+                    let effects = m.apply(&address, seq, &delivery.payload)?;
+                    m.db.advance(&address, seq + 1)?;
+                    Ok(effects)
+                });
+                if applied.is_err() {
+                    self.db.atomically(|| self.db.advance(&address, seq + 1))?;
+                }
+                applied
+            }
+            Inbound::Page {
+                address,
+                next,
+                live,
+            } => {
+                let address = address.into_bytes();
+                let Some(cursor) = self.db.cursor(&address)? else {
+                    return Ok(Vec::new());
+                };
+                if !live {
+                    let more = Request::Resume {
+                        address: Address::new(address)?,
+                        from: cursor.max(next),
+                    };
+                    return Ok(vec![Effect::Send(more.encode()?)]);
+                }
+                self.live.insert(address.clone());
+                let mut effects = vec![Effect::Live {
+                    address: address.clone(),
+                }];
+                if self.channel().as_deref() == Some(address.as_slice()) {
+                    effects.extend(self.atomically(Self::answer_offers)?);
+                }
+                Ok(effects)
+            }
+            Inbound::Unavailable {
+                address,
+                floor,
+                next,
+            } => Ok(vec![Effect::Unavailable {
+                address: address.into_bytes(),
+                floor,
+                next,
+            }]),
+        }
+    }
+
+    /// Apply one frame from `address`, at `seq`.
+    fn apply(&mut self, address: &[u8], seq: u64, payload: &[u8]) -> Result<Vec<Effect>> {
+        let (kind, body) = decode_frame(payload)?;
+        let channel = self.channel();
+        let on_channel = channel.as_deref() == Some(address);
+        match kind {
+            FrameKind::KeyPackage if on_channel => {
+                self.db.defer(&body)?;
+                self.answer_offers()
+            }
+            FrameKind::Welcome if self.group.is_none() => {
+                let (admitted_at, welcome) = split_welcome(&body)?;
+                let msg = MlsMessageIn::tls_deserialize_exact(welcome)?;
+                let MlsMessageBodyIn::Welcome(welcome) = msg.extract() else {
+                    return Err(Error::UnexpectedMessage {
+                        expected: "Welcome",
+                    });
+                };
+                self.join_unit(welcome)?;
+                let channel = self.channel().ok_or(Error::NoGroup)?;
+                // Read the channel from just after the commit that admitted
+                // this client. Anything ordered after it, even if it raced
+                // the Welcome here, is then applied rather than lost.
+                self.db.unfollow_mailboxes()?;
+                self.db.follow(&channel, admitted_at + 1, None)?;
+                let resume = Request::Resume {
+                    address: Address::new(channel)?,
+                    from: admitted_at + 1,
+                };
+                Ok(vec![Effect::Joined, Effect::Send(resume.encode()?)])
+            }
+            FrameKind::Commit | FrameKind::Application if on_channel => {
+                let channel = channel.unwrap_or_default();
+                let mut effects = Vec::new();
+                match self.receive_unit(&body)? {
+                    Event::Message(text) => effects.push(Effect::Message(text)),
+                    Event::Admitted { welcome, mailbox } => {
+                        let body = join_welcome(seq, &welcome);
+                        effects.push(Effect::Send(encode_publish(
+                            &mailbox,
+                            FrameKind::Welcome,
+                            &body,
+                        )?));
+                        effects.push(Effect::Admitted);
+                        effects.extend(self.answer_offers()?);
+                    }
+                    Event::AddSuperseded => {
+                        effects.push(Effect::AddSuperseded);
+                        effects.extend(self.answer_offers()?);
+                    }
+                    Event::Advanced => effects.push(Effect::Advanced),
+                    Event::Resend { message } => effects.push(Effect::Send(encode_publish(
+                        &channel,
+                        FrameKind::Application,
+                        &message,
+                    )?)),
+                    Event::Echo | Event::Stale => {}
+                }
+                Ok(effects)
+            }
+            // A Welcome once already in a group, or channel traffic for a
+            // channel this client is not in.
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Answer the oldest held join request whose joiner is not already a
+    /// member, if this client is live on its channel and not mid-add.
+    ///
+    /// One at a time: openmls stages one commit at once, and the next request
+    /// is answered when this one's commit resolves.
+    fn answer_offers(&mut self) -> Result<Vec<Effect>> {
+        let Some(channel) = self.channel() else {
+            return Ok(Vec::new());
+        };
+        if self.pending.is_some() || !self.live.contains(&channel) {
+            return Ok(Vec::new());
+        }
+        while let Some(offer) = self.db.take_deferred()? {
+            // Expired or malformed: nothing to answer.
+            let Ok(kp) = self.validate_key_package(&offer) else {
+                continue;
+            };
+            if self.is_member(&kp) {
+                continue;
+            }
+            let commit = self.propose_add_unit(kp)?;
+            let publish = encode_publish(&channel, FrameKind::Commit, &commit)?;
+            return Ok(vec![Effect::Send(publish)]);
+        }
+        Ok(Vec::new())
+    }
+
+    /// Whether the client that made `kp` is already in the group, matched
+    /// exactly by signature key.
+    fn is_member(&self, kp: &KeyPackage) -> bool {
+        let key = kp.leaf_node().signature_key().as_slice();
+        self.group
+            .as_ref()
+            .is_some_and(|g| g.members().any(|m| m.signature_key == key))
     }
 
     /// Display name of this member.
@@ -656,6 +978,23 @@ impl FrameKind {
             _ => None,
         }
     }
+}
+
+/// A `Welcome` frame's body: the sequence number of the commit that admitted
+/// the joiner, then the `Welcome`. The joiner reads the channel from just
+/// after that commit.
+fn join_welcome(admitted_at: u64, welcome: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + welcome.len());
+    body.extend_from_slice(&admitted_at.to_be_bytes());
+    body.extend_from_slice(welcome);
+    body
+}
+
+/// Split a body made by [`join_welcome`].
+fn split_welcome(body: &[u8]) -> Result<(u64, &[u8])> {
+    let (seq, welcome) = body.split_at_checked(8).ok_or(Error::MalformedFrame)?;
+    let seq = u64::from_be_bytes(seq.try_into().map_err(|_| Error::MalformedFrame)?);
+    Ok((seq, welcome))
 }
 
 /// Prefix a payload with its frame tag.
@@ -1375,6 +1714,119 @@ mod tests {
         );
 
         drop(bob);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A relay delivery of `body` on `address` at `seq`, as the wire carries it.
+    fn delivery(address: &[u8], seq: u64, kind: FrameKind, body: &[u8]) -> Vec<u8> {
+        openconv_wire::Delivery {
+            address: openconv_wire::Address::new(address.to_vec()).unwrap(),
+            seq,
+            accepted_ms: 0,
+            payload: encode_frame(kind, body),
+        }
+        .encode()
+    }
+
+    /// Catch-up and live delivery can overlap at a reconnect, so the same
+    /// frame can arrive twice. The second copy must be dropped: applying an
+    /// MLS message twice fails, and would be reported as an error.
+    #[test]
+    fn a_frame_delivered_twice_is_applied_once() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let channel = alice.channel().unwrap();
+        // Alice already holds the admitting commit; her cursor starts at 0.
+        let wire = delivery(
+            &channel,
+            0,
+            FrameKind::Application,
+            &bob.send("once").unwrap(),
+        );
+
+        let first = alice.deliver(&wire).unwrap();
+        assert!(matches!(first.as_slice(), [Effect::Message(t)] if t == "once"));
+        assert!(
+            alice.deliver(&wire).unwrap().is_empty(),
+            "the repeat was applied"
+        );
+    }
+
+    /// A frame beyond the next expected one means frames were missed. It is
+    /// refused, and the cursor stays put so the missing ones can be fetched.
+    #[test]
+    fn a_gap_is_refused_without_moving_the_cursor() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let channel = alice.channel().unwrap();
+        let ahead = delivery(&channel, 5, FrameKind::Application, &bob.send("x").unwrap());
+
+        assert!(matches!(
+            alice.deliver(&ahead),
+            Err(Error::Gap {
+                expected: 0,
+                got: 5
+            })
+        ));
+        assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
+    }
+
+    /// A client that restarts between staging an add and seeing its commit
+    /// come back must still recognise that commit as its own. Catch-up will
+    /// deliver it, and openmls cannot process a member's own commit as if
+    /// someone else had sent it.
+    #[test]
+    fn a_staged_add_survives_a_restart() {
+        let (path, vault) = test_vault("stager");
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let commit = {
+            let mut alice = Member::restore(vault, "stager").unwrap();
+            alice.create_group().unwrap();
+            admit(&mut alice, &mut bob);
+            alice.propose_add(&carol.key_package().unwrap()).unwrap()
+        };
+
+        let mut alice = Member::restore(Vault::with_key(&path, [7u8; 32]), "stager").unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("the restarted client did not recognise its own commit");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        assert_eq!(alice.member_count(), 3);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A message whose echo arrives after a restart is still recognised, so
+    /// one that landed behind a commit is still resent.
+    #[test]
+    fn a_sent_message_survives_a_restart() {
+        let (path, vault) = test_vault("sender");
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let raced = {
+            let mut alice = Member::restore(vault, "sender").unwrap();
+            alice.create_group().unwrap();
+            admit(&mut alice, &mut bob);
+            alice.send("sent before a restart").unwrap()
+        };
+        // Bob admits carol, and the relay orders that before alice's message.
+        let commit = bob.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = bob.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.join(&welcome).unwrap();
+
+        let mut alice = Member::restore(Vault::with_key(&path, [7u8; 32]), "sender").unwrap();
+        alice.receive(&commit).unwrap();
+        let Event::Resend { message } = alice.receive(&raced).unwrap() else {
+            panic!("the restarted client did not recognise its own message");
+        };
+        assert_message(carol.receive(&message).unwrap(), "sent before a restart");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

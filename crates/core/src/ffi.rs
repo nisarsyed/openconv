@@ -8,7 +8,7 @@
 // UniFFI generates bindings for; borrowing here would not compile.
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::{FrameKind, Member};
+use crate::{Effect, FrameKind, Member};
 use std::sync::{Arc, Mutex};
 
 /// Flattened error: the core error type holds openmls and codec errors that
@@ -76,6 +76,67 @@ impl From<crate::Event> for ClientEvent {
             crate::Event::Echo => Self::Echo,
             crate::Event::Resend { message } => Self::Resend { message },
             crate::Event::Stale => Self::Stale,
+        }
+    }
+}
+
+/// What the app should do after [`Client::deliver`], in order.
+#[derive(Debug, uniffi::Enum)]
+pub enum ClientEffect {
+    /// Write `request` to the relay.
+    Send {
+        /// Ready to send as a binary WebSocket message.
+        request: Vec<u8>,
+    },
+    /// A decrypted message from another member.
+    Message {
+        /// The plaintext.
+        text: String,
+    },
+    /// This client joined the group.
+    Joined,
+    /// This client let a new member in.
+    Admitted,
+    /// Another member let the joiner in first.
+    AddSuperseded,
+    /// Group state moved on; membership may have changed.
+    Advanced,
+    /// Caught up on `address`; live from here.
+    Live {
+        /// The address.
+        address: Vec<u8>,
+    },
+    /// The relay no longer holds frames this client missed on `address`, so
+    /// it cannot follow the group until another member re-adds it.
+    Unavailable {
+        /// The address.
+        address: Vec<u8>,
+        /// The oldest sequence number the relay holds.
+        floor: u64,
+        /// The next sequence number the relay will assign.
+        next: u64,
+    },
+}
+
+impl From<Effect> for ClientEffect {
+    fn from(e: Effect) -> Self {
+        match e {
+            Effect::Send(request) => Self::Send { request },
+            Effect::Message(text) => Self::Message { text },
+            Effect::Joined => Self::Joined,
+            Effect::Admitted => Self::Admitted,
+            Effect::AddSuperseded => Self::AddSuperseded,
+            Effect::Advanced => Self::Advanced,
+            Effect::Live { address } => Self::Live { address },
+            Effect::Unavailable {
+                address,
+                floor,
+                next,
+            } => Self::Unavailable {
+                address,
+                floor,
+                next,
+            },
         }
     }
 }
@@ -180,6 +241,46 @@ impl Client {
     /// If the frame is malformed, or cannot be decrypted by this client.
     pub fn receive(&self, wire: Vec<u8>) -> Result<ClientEvent> {
         Ok(self.lock().receive(&wire)?.into())
+    }
+
+    /// Requests to send on connecting to the relay: catch up on every
+    /// address this client reads, then go live. Send them in order.
+    ///
+    /// # Errors
+    /// If saved state cannot be read.
+    pub fn connect(&self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.lock().connect()?)
+    }
+
+    /// Ask to join the group on `channel`. Send [`Client::connect`]'s
+    /// requests afterwards; they carry the offer.
+    ///
+    /// # Errors
+    /// If the offer cannot be made or recorded.
+    pub fn offer(&self, channel: Vec<u8>) -> Result<()> {
+        Ok(self.lock().offer(&channel)?)
+    }
+
+    /// Whether this client asked to join and is still waiting to be let in.
+    ///
+    /// # Errors
+    /// If saved state cannot be read.
+    pub fn waiting_to_join(&self) -> Result<bool> {
+        Ok(self.lock().waiting_to_join()?)
+    }
+
+    /// Process anything the relay sent, returning what to do about it.
+    ///
+    /// # Errors
+    /// If the message is malformed, frames were missed, or a frame could not
+    /// be applied.
+    pub fn deliver(&self, wire: Vec<u8>) -> Result<Vec<ClientEffect>> {
+        Ok(self
+            .lock()
+            .deliver(&wire)?
+            .into_iter()
+            .map(ClientEffect::from)
+            .collect())
     }
 
     /// This client's display name.

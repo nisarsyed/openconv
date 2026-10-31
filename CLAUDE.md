@@ -74,10 +74,26 @@ resolves commit races. A publisher subscribed to the address gets its own
 frame back, so it learns where the frame landed; clients recognise their own
 frames by exact byte match, which keeps sender identity off the wire.
 
-Joining: learn the channel id out of band, subscribe to the channel and your
-mailbox in one request, then publish your `KeyPackage` to the channel. The one
-request matters — the relay handles a connection's requests in order, so the
-subscription exists before anyone can answer.
+**Catch-up (#105).** The relay stores every frame. A client keeps a cursor per
+address it reads (its channel, or its mailbox while waiting to join) in the
+same transaction as its MLS state, and on connecting sends `Resume` from each
+cursor. The relay answers a page at a time and registers the live
+subscription in the same writer step as the last page, so catch-up and live
+traffic meet without a gap. `Member::deliver` takes whatever the relay sent,
+drops duplicates, applies the frame, and returns `Effect`s for the app; Swift
+does not track sequence numbers or dispatch frame kinds. Catch-up serves members who were
+away; it does not give a new member history. MLS forward secrecy means a
+member cannot read frames from before it joined, however long they are kept.
+That is the design, not a bug.
+
+Joining: learn the channel id out of band, then `offer(channel)` and send
+`connect()`'s requests: `Resume` on the mailbox, then the `KeyPackage`
+published to the channel. The order matters: the relay handles a connection's
+requests in order, so the mailbox is read before anyone can answer. The
+`Welcome` carries the sequence number of the commit that admitted the joiner,
+who then reads the channel from just after it. A waiting joiner re-sends its
+offer on every reconnect, and members answer requests seen during catch-up
+once live, unless the joiner is already a member.
 
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.

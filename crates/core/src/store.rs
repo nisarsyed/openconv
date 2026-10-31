@@ -57,9 +57,52 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
-const SCHEMA: &str = "
+/// Each version's changes, applied in order from the store's own version.
+/// Never edit one that has shipped; add the next.
+const MIGRATIONS: [&str; 2] = [SCHEMA_V1, SCHEMA_V2];
+
+const SCHEMA_V2: &str = "
+    -- Addresses this client reads from the relay, and the first sequence
+    -- number on each it has not yet applied (#105). Its channel, or, while
+    -- it waits to be admitted, its mailbox. A mailbox row also holds the
+    -- offer that was made from it, re-sent on every reconnect until a
+    -- Welcome arrives.
+    CREATE TABLE follows (
+        address  BLOB PRIMARY KEY,
+        next_seq INTEGER NOT NULL,
+        offer_to BLOB,
+        offer    BLOB
+    );
+
+    -- Messages sent and not yet seen coming back, so an echo that lands
+    -- behind a commit can be resent even after a restart.
+    CREATE TABLE sent (
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        wire  BLOB NOT NULL,
+        epoch INTEGER NOT NULL,
+        text  TEXT NOT NULL
+    );
+
+    -- An add staged and not yet confirmed by the relay's ordering. Kept, so
+    -- a client that restarts mid-add recognises its own commit in catch-up.
+    CREATE TABLE pending_add (
+        id      INTEGER PRIMARY KEY CHECK (id = 0),
+        commit_ BLOB NOT NULL,
+        welcome BLOB NOT NULL,
+        mailbox BLOB NOT NULL
+    );
+
+    -- Join requests seen while catching up or while another add was in
+    -- flight, answered once this client is live and free.
+    CREATE TABLE deferred (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_package BLOB NOT NULL
+    );
+";
+
+const SCHEMA_V1: &str = "
     -- Who this client is. One row: a database belongs to one identity.
     CREATE TABLE client (
         id                   INTEGER PRIMARY KEY CHECK (id = 0),
@@ -240,19 +283,19 @@ impl Database {
         let version: i64 = tx
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(store)?;
-        match version {
-            0 => {
-                tx.execute_batch(SCHEMA).map_err(store)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)
-                    .map_err(store)?;
-            }
-            SCHEMA_VERSION => {}
-            _ => {
-                return Err(Error::CorruptState(
-                    "store was written by a newer version of OpenConv",
-                ));
-            }
+        let Some(pending) = usize::try_from(version)
+            .ok()
+            .and_then(|v| MIGRATIONS.get(v..))
+        else {
+            return Err(Error::CorruptState(
+                "store was written by a newer version of OpenConv",
+            ));
+        };
+        for migration in pending {
+            tx.execute_batch(migration).map_err(store)?;
         }
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(store)?;
         tx.commit().map_err(store)?;
         Ok(Self {
             conn,
@@ -386,6 +429,197 @@ impl Database {
             )
             .map(drop)
             .map_err(store)
+    }
+}
+
+/// A staged add as stored: `(commit, welcome, mailbox)`.
+pub(crate) type StagedAdd = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// An address this client reads from the relay. See the `follows` table.
+pub(crate) struct Follow {
+    pub(crate) address: Vec<u8>,
+    pub(crate) next_seq: u64,
+    /// For a mailbox: the channel the offer went to, and the offer.
+    pub(crate) offer: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+fn to_i64(n: u64) -> Result<i64> {
+    i64::try_from(n).map_err(|_| Error::CorruptState("sequence number out of range"))
+}
+
+fn to_u64(n: i64) -> rusqlite::Result<u64> {
+    u64::try_from(n).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Integer, Box::new(e))
+    })
+}
+
+impl Database {
+    /// Every address this client reads.
+    pub(crate) fn follows(&self) -> Result<Vec<Follow>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT address, next_seq, offer_to, offer FROM follows")
+            .map_err(store)?;
+        let rows = stmt
+            .query_map([], |r| {
+                let offer = match (r.get(2)?, r.get(3)?) {
+                    (Some(to), Some(offer)) => Some((to, offer)),
+                    _ => None,
+                };
+                Ok(Follow {
+                    address: r.get(0)?,
+                    next_seq: to_u64(r.get(1)?)?,
+                    offer,
+                })
+            })
+            .map_err(store)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(store)
+    }
+
+    /// Start reading `address` from `next_seq`, replacing any earlier entry.
+    pub(crate) fn follow(
+        &self,
+        address: &[u8],
+        next_seq: u64,
+        offer: Option<(&[u8], &[u8])>,
+    ) -> Result<()> {
+        let (to, offer) = offer.unzip();
+        let next_seq = to_i64(next_seq)?;
+        self.conn
+            .prepare_cached(
+                "INSERT OR REPLACE INTO follows (address, next_seq, offer_to, offer)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .and_then(|mut stmt| stmt.execute(params![address, next_seq, to, offer]))
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Stop reading every mailbox: the offers they were for are answered.
+    pub(crate) fn unfollow_mailboxes(&self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM follows WHERE offer IS NOT NULL", [])
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The first unapplied sequence number on `address`, or `None` if this
+    /// client does not read it.
+    pub(crate) fn cursor(&self, address: &[u8]) -> Result<Option<u64>> {
+        let next: Option<i64> = self
+            .conn
+            .prepare_cached("SELECT next_seq FROM follows WHERE address = ?1")
+            .and_then(|mut stmt| stmt.query_row([address], |r| r.get(0)).optional())
+            .map_err(store)?;
+        next.map(|n| u64::try_from(n).map_err(|_| Error::CorruptState("negative cursor")))
+            .transpose()
+    }
+
+    /// Record that everything on `address` before `next_seq` is applied.
+    pub(crate) fn advance(&self, address: &[u8], next_seq: u64) -> Result<()> {
+        let next_seq = to_i64(next_seq)?;
+        self.conn
+            .prepare_cached("UPDATE follows SET next_seq = ?2 WHERE address = ?1")
+            .and_then(|mut stmt| stmt.execute(params![address, next_seq]))
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Sent messages awaiting their echo, oldest first.
+    pub(crate) fn sent(&self) -> Result<Vec<(Vec<u8>, u64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT wire, epoch, text FROM sent ORDER BY id")
+            .map_err(store)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, to_u64(r.get(1)?)?, r.get(2)?)))
+            .map_err(store)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(store)
+    }
+
+    /// Record a sent message, keeping only the newest `keep`.
+    pub(crate) fn push_sent(&self, wire: &[u8], epoch: u64, text: &str, keep: usize) -> Result<()> {
+        let keep = i64::try_from(keep).unwrap_or(i64::MAX);
+        self.conn
+            .execute(
+                "INSERT INTO sent (wire, epoch, text) VALUES (?1, ?2, ?3)",
+                params![wire, to_i64(epoch)?, text],
+            )
+            .and_then(|_| {
+                self.conn.execute(
+                    "DELETE FROM sent WHERE id NOT IN (SELECT id FROM sent ORDER BY id DESC LIMIT ?1)",
+                    [keep],
+                )
+            })
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Forget a sent message whose echo has arrived.
+    pub(crate) fn remove_sent(&self, wire: &[u8]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM sent WHERE wire = ?1", [wire])
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The staged add, as `(commit, welcome, mailbox)`.
+    pub(crate) fn pending_add(&self) -> Result<Option<StagedAdd>> {
+        self.conn
+            .query_row(
+                "SELECT commit_, welcome, mailbox FROM pending_add WHERE id = 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(store)
+    }
+
+    /// Record the staged add, or clear it.
+    pub(crate) fn set_pending_add(&self, pending: Option<(&[u8], &[u8], &[u8])>) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM pending_add", [])
+            .map_err(store)?;
+        if let Some((commit, welcome, mailbox)) = pending {
+            self.conn
+                .execute(
+                    "INSERT INTO pending_add (id, commit_, welcome, mailbox) VALUES (0, ?1, ?2, ?3)",
+                    params![commit, welcome, mailbox],
+                )
+                .map_err(store)?;
+        }
+        Ok(())
+    }
+
+    /// Hold a join request to answer later.
+    pub(crate) fn defer(&self, key_package: &[u8]) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO deferred (key_package) VALUES (?1)",
+                [key_package],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The oldest held join request, removed from the list.
+    pub(crate) fn take_deferred(&self) -> Result<Option<Vec<u8>>> {
+        let oldest: Option<(i64, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT id, key_package FROM deferred ORDER BY id LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(store)?;
+        let Some((id, key_package)) = oldest else {
+            return Ok(None);
+        };
+        self.conn
+            .execute("DELETE FROM deferred WHERE id = ?1", [id])
+            .map_err(store)?;
+        Ok(Some(key_package))
     }
 }
 

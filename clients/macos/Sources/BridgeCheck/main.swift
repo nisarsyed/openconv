@@ -168,6 +168,42 @@ do {
 }
 
 print("bridge: errors cross as swift errors")
+// Catch-up crosses the bridge: requests out, notices in, effects back.
+do {
+    let host = try Client(identity: "host")
+    try host.createGroup()
+    guard let channel = host.channel() else { throw BridgeError.unexpected("no channel") }
+    let requests = try host.connect()
+    check("a member resumes its channel on connect", requests.map { $0.first } == [0x03])
+
+    let joiner = try Client(identity: "joiner")
+    try joiner.offer(channel: channel)
+    check("an offer leaves the joiner waiting", try joiner.waitingToJoin())
+    check(
+        "a waiting joiner resumes its mailbox, then re-offers",
+        try joiner.connect().map { $0.first } == [0x03, 0x02])
+
+    // Page notice: tag, address, next, live.
+    var page = Data([0x02, UInt8(channel.count)])
+    page.append(channel)
+    page.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 0, 1])
+    guard case .live(let address) = try host.deliver(wire: page).first else {
+        throw BridgeError.unexpected("no live effect")
+    }
+    check("going live crosses as an effect", address == channel)
+
+    var gone = Data([0x03, UInt8(channel.count)])
+    gone.append(channel)
+    gone.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 9] + [0, 0, 0, 0, 0, 0, 0, 12])
+    guard case .unavailable(_, let floor, let next) = try host.deliver(wire: gone).first else {
+        throw BridgeError.unexpected("no unavailable effect")
+    }
+    check("an unavailable cursor crosses as an effect", floor == 9 && next == 12)
+} catch {
+    print("  FAIL catch-up — \(error)")
+    failures += 1
+}
+
 do {
     let lonely = try Client(identity: "lonely")
     // No group yet, so this must throw rather than trap.
