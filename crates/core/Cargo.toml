@@ -24,8 +24,14 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uniffi = "0.32"
 openconv-wire = { path = "../wire" }
-chacha20poly1305 = "0.10"
 rand = "0.8"
+# The MLS store, in SQLite. Patched to the vendored copy in the workspace
+# manifest until upstream releases it on rusqlite 0.40.
+openmls_sqlite_storage = "0.3"
+# SQLCipher, so the whole database is encrypted at rest. On macOS it uses
+# CommonCrypto from the Security framework; elsewhere, the system OpenSSL.
+# 0.40 to match the relay: libsqlite3-sys allows one version per build.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

@@ -5,12 +5,14 @@
 
 use openmls::prelude::{tls_codec::*, *};
 use openmls_basic_credential::SignatureKeyPair;
+use openmls_rust_crypto::RustCrypto;
 use openmls_traits::OpenMlsProvider;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
 pub mod store;
-pub use store::{Provider, Snapshot, Vault};
+use store::{Database, Saved};
+pub use store::{JsonCodec, Provider, Vault};
 
 uniffi::setup_scaffolding!();
 
@@ -69,12 +71,14 @@ fn mls<E: std::fmt::Display>(e: E) -> Error {
 
 /// One participant on one device.
 pub struct Member {
-    provider: Provider,
+    crypto: RustCrypto,
+    /// Where openmls keeps group state and keys, and where this client
+    /// records who it is. In memory for members made with [`Member::new`],
+    /// encrypted on disk for the rest.
+    db: Database,
     signer: SignatureKeyPair,
     credential: CredentialWithKey,
     group: Option<MlsGroup>,
-    /// Absent for in-memory members, which keep nothing across a restart.
-    vault: Option<Vault>,
     /// An add staged but not yet confirmed by the relay's ordering.
     ///
     /// Not persisted: a restart mid-add drops it, and the add is simply
@@ -91,6 +95,7 @@ pub struct Member {
 /// Holds the plaintext, because an echo arriving after a commit means the
 /// message has to be encrypted again. Deliberately no derived `Debug`: it
 /// would print message contents into any log line that formats one.
+#[derive(Clone)]
 struct Sent {
     /// Exactly the bytes sent, used to spot this message coming back.
     wire: Vec<u8>,
@@ -101,7 +106,7 @@ struct Sent {
 }
 
 /// An add waiting to find out whether it won its epoch.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PendingAdd {
     /// Exactly the bytes sent, used to spot this commit coming back.
     commit: Vec<u8>,
@@ -158,21 +163,33 @@ impl std::fmt::Debug for Member {
         f.debug_struct("Member")
             .field("identity", &self.identity())
             .field("members", &self.member_count())
-            .field("persisted", &self.vault.is_some())
+            .field("persisted", &self.db.is_persistent())
             .finish_non_exhaustive()
     }
 }
 
 impl Member {
-    /// Create a fresh identity. `identity` is the display name carried in
-    /// the MLS basic credential.
+    /// Create a fresh identity that lives only in memory. `identity` is the
+    /// display name carried in the MLS basic credential.
     ///
     /// # Errors
     /// If a signature key pair cannot be generated or stored.
     pub fn new(identity: &str) -> Result<Self> {
-        let provider = Provider::default();
+        Self::create(Database::in_memory()?, identity)
+    }
+
+    /// Mint a new identity and record it in `db`.
+    fn create(db: Database, identity: &str) -> Result<Self> {
+        let crypto = RustCrypto::default();
         let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).map_err(mls)?;
-        signer.store(provider.storage()).map_err(mls)?;
+        db.atomically(|| {
+            signer.store(db.provider(&crypto).storage()).map_err(mls)?;
+            db.save(&Saved {
+                identity: identity.to_owned(),
+                signature_public_key: signer.to_public_vec(),
+                group_id: None,
+            })
+        })?;
 
         let credential = CredentialWithKey {
             credential: BasicCredential::new(identity.as_bytes().to_vec()).into(),
@@ -180,11 +197,11 @@ impl Member {
         };
 
         Ok(Self {
-            provider,
+            crypto,
+            db,
             signer,
             credential,
             group: None,
-            vault: None,
             pending: None,
             sent: VecDeque::new(),
         })
@@ -205,65 +222,78 @@ impl Member {
     /// # Errors
     /// As [`Member::open`].
     pub fn restore(vault: Vault, identity: &str) -> Result<Self> {
-        let Some(snapshot) = vault.load()? else {
-            let mut member = Self::new(identity)?;
-            member.vault = Some(vault);
-            member.persist()?;
-            return Ok(member);
-        };
-
-        let Snapshot {
+        let db = vault.connect()?;
+        let Some(Saved {
             identity,
             signature_public_key,
             group_id,
-            storage,
-        } = snapshot;
-        let provider = Provider::with_storage(store::restore(storage)?);
+        }) = db.load()?
+        else {
+            return Self::create(db, identity);
+        };
 
+        let crypto = RustCrypto::default();
+        let provider = db.provider(&crypto);
         let signer = SignatureKeyPair::read(
             provider.storage(),
             &signature_public_key,
             CIPHERSUITE.signature_algorithm(),
         )
         .ok_or(Error::CorruptState("signature key pair missing from store"))?;
+        let group = load_group(&provider, group_id.as_deref())?;
 
         let credential = CredentialWithKey {
             credential: BasicCredential::new(identity.as_bytes().to_vec()).into(),
             signature_key: signature_public_key.into(),
         };
 
-        let group = match &group_id {
-            Some(id) => MlsGroup::load(provider.storage(), &GroupId::from_slice(id))
-                .map_err(mls)?
-                .ok_or(Error::CorruptState(
-                    "group id recorded but no group in store",
-                ))
-                .map(Some)?,
-            None => None,
-        };
-
         Ok(Self {
-            provider,
+            crypto,
+            db,
             signer,
             credential,
             group,
-            vault: Some(vault),
             pending: None,
             sent: VecDeque::new(),
         })
     }
 
-    /// Write current state to the vault. A no-op for in-memory members.
-    fn persist(&self) -> Result<()> {
-        let Some(vault) = &self.vault else {
-            return Ok(());
-        };
+    /// Run `op` as one unit: its writes reach the store together or not at
+    /// all.
+    ///
+    /// On failure the store is rolled back, and this member's in-memory
+    /// state is put back to match it. openmls may have moved the group
+    /// partway before failing, so the group is reloaded from the store rather
+    /// than trusted. A failed operation, such as a message that will not
+    /// decrypt, therefore leaves no trace: never destroying key state on a
+    /// decryption failure holds by construction rather than by care.
+    fn atomically<T>(&mut self, op: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let pending = self.pending.clone();
+        let sent = self.sent.clone();
+        self.db.begin()?;
+        let result = op(self).and_then(|value| self.db.release().map(|()| value));
+        if result.is_err() {
+            self.db.rollback();
+            self.pending = pending;
+            self.sent = sent;
+            self.reload_group()?;
+        }
+        result
+    }
 
-        vault.save(&Snapshot {
+    /// Replace the in-memory group with what the store holds.
+    fn reload_group(&mut self) -> Result<()> {
+        let group_id = self.db.load()?.and_then(|saved| saved.group_id);
+        self.group = load_group(&self.db.provider(&self.crypto), group_id.as_deref())?;
+        Ok(())
+    }
+
+    /// Record which group this member is in, after creating or joining one.
+    fn record_group(&self) -> Result<()> {
+        self.db.save(&Saved {
             identity: self.identity(),
             signature_public_key: self.signer.to_public_vec(),
             group_id: self.channel(),
-            storage: store::dump(self.provider.storage())?,
         })
     }
 
@@ -292,11 +322,7 @@ impl Member {
 
     /// A validated `KeyPackage`'s reference: the joiner's mailbox.
     fn key_package_ref(&self, kp: &KeyPackage) -> Result<Vec<u8>> {
-        Ok(kp
-            .hash_ref(self.provider.crypto())
-            .map_err(mls)?
-            .as_slice()
-            .to_vec())
+        Ok(kp.hash_ref(&self.crypto).map_err(mls)?.as_slice().to_vec())
     }
 
     /// Parse and verify a `KeyPackage` from the network. It is hostile input
@@ -309,7 +335,7 @@ impl Member {
             });
         };
         // Verifies the signature and lifetime before we trust it.
-        kp.validate(self.provider.crypto(), ProtocolVersion::Mls10)
+        kp.validate(&self.crypto, ProtocolVersion::Mls10)
             .map_err(mls)
     }
 
@@ -319,15 +345,20 @@ impl Member {
     /// # Errors
     /// If the key package cannot be built or serialised.
     pub fn key_package(&self) -> Result<Vec<u8>> {
-        let bundle = KeyPackage::builder()
-            .build(
-                CIPHERSUITE,
-                &self.provider,
-                &self.signer,
-                self.credential.clone(),
-            )
-            .map_err(mls)?;
-        Ok(MlsMessageOut::from(bundle.key_package().clone()).tls_serialize_detached()?)
+        // Building one stores its private init key, which joining with the
+        // resulting Welcome needs, possibly after a restart.
+        let provider = self.db.provider(&self.crypto);
+        self.db.atomically(|| {
+            let bundle = KeyPackage::builder()
+                .build(
+                    CIPHERSUITE,
+                    &provider,
+                    &self.signer,
+                    self.credential.clone(),
+                )
+                .map_err(mls)?;
+            Ok(MlsMessageOut::from(bundle.key_package().clone()).tls_serialize_detached()?)
+        })
     }
 
     /// Start a new group with just this member in it.
@@ -335,15 +366,20 @@ impl Member {
     /// # Errors
     /// If the group cannot be created, or its state cannot be persisted.
     pub fn create_group(&mut self) -> Result<()> {
+        self.atomically(Self::create_group_unit)
+    }
+
+    /// [`Member::create_group`], minus the unit-of-work wrapper.
+    fn create_group_unit(&mut self) -> Result<()> {
         let group = MlsGroup::new(
-            &self.provider,
+            &self.db.provider(&self.crypto),
             &self.signer,
             &Self::config(),
             self.credential.clone(),
         )
         .map_err(mls)?;
         self.group = Some(group);
-        self.persist()
+        self.record_group()
     }
 
     /// Stage adding a member from their published `KeyPackage`.
@@ -365,19 +401,21 @@ impl Member {
         let kp = self.validate_key_package(key_package)?;
         let mailbox = self.key_package_ref(&kp)?;
 
-        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
-        let (commit, welcome, _) = group
-            .add_members(&self.provider, &self.signer, &[kp])
-            .map_err(mls)?;
+        self.atomically(|m| {
+            let provider = m.db.provider(&m.crypto);
+            let group = m.group.as_mut().ok_or(Error::NoGroup)?;
+            let (commit, welcome, _) = group
+                .add_members(&provider, &m.signer, &[kp])
+                .map_err(mls)?;
 
-        let commit = commit.tls_serialize_detached()?;
-        self.pending = Some(PendingAdd {
-            commit: commit.clone(),
-            welcome: welcome.tls_serialize_detached()?,
-            mailbox,
-        });
-        self.persist()?;
-        Ok(commit)
+            let commit = commit.tls_serialize_detached()?;
+            m.pending = Some(PendingAdd {
+                commit: commit.clone(),
+                welcome: welcome.tls_serialize_detached()?,
+                mailbox,
+            });
+            Ok(commit)
+        })
     }
 
     /// Join a group from a `Welcome` released by [`Member::propose_add`].
@@ -392,18 +430,21 @@ impl Member {
             });
         };
 
-        let group = StagedWelcome::new_from_welcome(
-            &self.provider,
-            Self::config().join_config(),
-            welcome,
-            None, // ratchet tree travels in the Welcome
-        )
-        .map_err(mls)?
-        .into_group(&self.provider)
-        .map_err(mls)?;
+        self.atomically(|m| {
+            let provider = m.db.provider(&m.crypto);
+            let group = StagedWelcome::new_from_welcome(
+                &provider,
+                Self::config().join_config(),
+                welcome,
+                None, // ratchet tree travels in the Welcome
+            )
+            .map_err(mls)?
+            .into_group(&provider)
+            .map_err(mls)?;
 
-        self.group = Some(group);
-        self.persist()
+            m.group = Some(group);
+            m.record_group()
+        })
     }
 
     /// Encrypt an application message for the group.
@@ -411,20 +452,24 @@ impl Member {
     /// # Errors
     /// If this member has no group, or encryption fails.
     pub fn send(&mut self, text: &str) -> Result<Vec<u8>> {
-        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
-        let epoch = group.epoch().as_u64();
-        // Encrypting ratchets the sender key, so the new state must be saved.
-        let wire = group
-            .create_message(&self.provider, &self.signer, text.as_bytes())
-            .map_err(mls)?
-            .tls_serialize_detached()?;
-        self.remember_sent(Sent {
-            wire: wire.clone(),
-            epoch,
-            text: text.to_owned(),
-        });
-        self.persist()?;
-        Ok(wire)
+        // Encrypting ratchets the sender key. The ciphertext is returned only
+        // once that step is durable, so a crash cannot make this client
+        // encrypt again with the same key.
+        self.atomically(|m| {
+            let provider = m.db.provider(&m.crypto);
+            let group = m.group.as_mut().ok_or(Error::NoGroup)?;
+            let epoch = group.epoch().as_u64();
+            let wire = group
+                .create_message(&provider, &m.signer, text.as_bytes())
+                .map_err(mls)?
+                .tls_serialize_detached()?;
+            m.remember_sent(Sent {
+                wire: wire.clone(),
+                epoch,
+                text: text.to_owned(),
+            });
+            Ok(wire)
+        })
     }
 
     /// Process an incoming message. Returns `Some` for application messages,
@@ -434,12 +479,19 @@ impl Member {
     /// If the message is malformed, this member has no group, or the message
     /// cannot be decrypted.
     pub fn receive(&mut self, wire: &[u8]) -> Result<Event> {
+        // Receiving advances ratchet state whether or not it was a message,
+        // and a failure must leave none of that behind.
+        self.atomically(|m| m.receive_unit(wire))
+    }
+
+    /// [`Member::receive`], minus the unit-of-work wrapper.
+    fn receive_unit(&mut self, wire: &[u8]) -> Result<Event> {
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = self.pending.take_if(|p| p.commit == wire) {
+            let provider = self.db.provider(&self.crypto);
             let group = self.group.as_mut().ok_or(Error::NoGroup)?;
-            group.merge_pending_commit(&self.provider).map_err(mls)?;
-            self.persist()?;
+            group.merge_pending_commit(&provider).map_err(mls)?;
             return Ok(Event::Admitted {
                 welcome: pending.welcome,
                 mailbox: pending.mailbox,
@@ -475,15 +527,15 @@ impl Member {
         // because the relay ordered theirs first. Drop ours before applying
         // theirs; openmls will not stage two commits at once.
         let superseded = protocol.content_type() == ContentType::Commit && self.pending.is_some();
+        let provider = self.db.provider(&self.crypto);
+        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         if superseded {
             self.pending = None;
-            let group = self.group.as_mut().ok_or(Error::NoGroup)?;
             group
-                .clear_pending_commit(self.provider.storage())
+                .clear_pending_commit(provider.storage())
                 .map_err(mls)?;
         }
 
-        let group = self.group.as_mut().ok_or(Error::NoGroup)?;
         // Frames from an epoch we have already left cannot be decrypted. A
         // stale commit lost its race and has nothing to apply. A stale
         // message will be resent by its sender, and must not be reported as
@@ -494,18 +546,14 @@ impl Member {
                 ContentType::Commit | ContentType::Proposal => Event::Advanced,
             });
         }
-        let processed = group
-            .process_message(&self.provider, protocol)
-            .map_err(mls)?;
+        let processed = group.process_message(&provider, protocol).map_err(mls)?;
 
         let event = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 Event::Message(String::from_utf8_lossy(&app.into_bytes()).into_owned())
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
-                group
-                    .merge_staged_commit(&self.provider, *commit)
-                    .map_err(mls)?;
+                group.merge_staged_commit(&provider, *commit).map_err(mls)?;
                 if superseded {
                     Event::AddSuperseded
                 } else {
@@ -514,8 +562,6 @@ impl Member {
             }
             _ => Event::Advanced,
         };
-        // Receiving advances ratchet state whether or not it was a message.
-        self.persist()?;
         Ok(event)
     }
 
@@ -559,6 +605,19 @@ impl Member {
     pub fn member_count(&self) -> usize {
         self.group.as_ref().map_or(0, |g| g.members().count())
     }
+}
+
+/// The group `id` names, from the store, or `None` if there is no id.
+fn load_group(provider: &Provider<'_>, id: Option<&[u8]>) -> Result<Option<MlsGroup>> {
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    MlsGroup::load(provider.storage(), &GroupId::from_slice(id))
+        .map_err(mls)?
+        .ok_or(Error::CorruptState(
+            "group id recorded but no group in store",
+        ))
+        .map(Some)
 }
 
 /// What a relayed frame carries. The relay never reads this; only clients do.
@@ -1197,9 +1256,9 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
-    /// A wrong key is one failure; a flipped byte is another. AEAD should
-    /// catch tampering, and the vault must refuse rather than load partial
-    /// state.
+    /// A wrong key is one failure; a flipped byte is another. SQLCipher's
+    /// per-page MAC should catch tampering, and the vault must refuse rather
+    /// than load partial state.
     #[test]
     fn tampered_vault_is_rejected() {
         let (path, vault) = test_vault("tampered");
@@ -1218,19 +1277,87 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
-    /// Key material must never be readable on disk.
+    /// Key material must never be readable on disk: not in the database,
+    /// and not in the WAL or shared-memory files beside it.
     #[test]
     fn vault_file_is_encrypted() {
         let (path, vault) = test_vault("secretive");
         let mut member = Member::restore(vault, "secretive").unwrap();
         member.create_group().unwrap();
+        member.send("a message").unwrap();
 
-        let raw = std::fs::read(&path).unwrap();
-        assert!(raw.starts_with(b"OCV1"), "missing vault magic");
+        // Checked while still open, so the WAL is there to be read too.
+        let dir = path.parent().unwrap();
+        let mut files = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let raw = std::fs::read(entry.unwrap().path()).unwrap();
+            files += 1;
+            assert!(
+                !raw.starts_with(b"SQLite format 3"),
+                "a store file has a plaintext SQLite header"
+            );
+            assert!(
+                !raw.windows(9).any(|w| w == b"secretive"),
+                "identity readable in a store file"
+            );
+        }
         assert!(
-            !raw.windows(9).any(|w| w == b"secretive"),
-            "identity readable in the vault file"
+            files >= 2,
+            "expected the database and its WAL, found {files} files"
         );
+        drop(member);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A failed operation must leave nothing behind, on disk or in memory.
+    /// openmls writes several rows per operation, so without the savepoint a
+    /// failure partway would persist half of it.
+    #[test]
+    fn a_failed_operation_leaves_no_trace() {
+        let (path, vault) = test_vault("undone");
+        let mut alice = Member::restore(vault, "undone").unwrap();
+
+        // Create a group, then fail after it is written.
+        let failed = alice.atomically(|m| {
+            m.create_group_unit()?;
+            Err::<(), _>(Error::NoGroup)
+        });
+        assert!(failed.is_err());
+        assert_eq!(alice.channel(), None, "the group survived in memory");
+        drop(alice);
+
+        let alice = Member::restore(Vault::with_key(&path, [7u8; 32]), "undone").unwrap();
+        assert_eq!(alice.channel(), None, "the group survived on disk");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A joiner's private init key is stored when its `KeyPackage` is made,
+    /// so the `Welcome` can arrive after a restart: what lets someone ask to
+    /// join, go offline, and join when they come back.
+    #[test]
+    fn a_key_package_survives_a_restart() {
+        let (path, vault) = test_vault("joiner");
+        let offer = Member::restore(vault, "joiner")
+            .unwrap()
+            .key_package()
+            .unwrap();
+
+        let mut alice = Member::new("alice").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut carol);
+        let commit = alice.propose_add(&offer).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        carol.receive(&commit).unwrap();
+
+        let mut joiner = Member::restore(Vault::with_key(&path, [7u8; 32]), "joiner").unwrap();
+        joiner.join(&welcome).unwrap();
+        assert_eq!(joiner.member_count(), 3);
+        let wire = joiner.send("back, and in").unwrap();
+        assert_message(alice.receive(&wire).unwrap(), "back, and in");
+        assert_message(carol.receive(&wire).unwrap(), "back, and in");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

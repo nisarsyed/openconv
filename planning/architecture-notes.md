@@ -357,6 +357,12 @@ treat as orders of magnitude). The overhead is the MLS store being rewritten
 whole on every message (`crates/core/examples/measure.rs`). It is an
 algorithm problem, tracked as #107. No language change touches it.
 
+**Resolved by #107 (2026-11-01)**, which was an algorithm fix, as predicted.
+SQLite storage writes only the rows an operation touches. A persisted message
+went from 552 to 199 µs (5.0x to 1.8x over memory), and a persisted send at
+50 members from 0.99 to 0.15 ms, now flat with group size. The store is about
+200 KiB of database plus a WAL capped at 512 KiB.
+
 ### Erlang / BEAM — no
 
 WhatsApp needed Erlang because they ran **one service for billions**; all

@@ -8,6 +8,11 @@ PROFILE="${1:-release}"
 OUT=clients/macos/Sources
 GEN=$(mktemp -d)
 
+# The core compiles C (SQLCipher), and the C compiler otherwise targets the
+# macOS this machine runs, which the linker then warns about against the
+# app's floor. Keep in step with `platforms` in clients/macos/Package.swift.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+
 echo "building openconv-core ($PROFILE)..."
 cargo build -p openconv-core --"$PROFILE" >/dev/null
 
