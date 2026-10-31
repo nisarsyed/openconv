@@ -363,6 +363,13 @@ went from 552 to 199 µs (5.0x to 1.8x over memory), and a persisted send at
 50 members from 0.99 to 0.15 ms, now flat with group size. The store is about
 200 KiB of database plus a WAL capped at 512 KiB.
 
+Then, deliberately, sends got slower. On macOS a plain `fsync` does not
+survive a power cut, and a sender that comes back with an older ratchet would
+encrypt again under used keys. So anything other members will see (sends,
+commits, new groups, `KeyPackage`s) is flushed to the drive with
+`F_FULLFSYNC`: about 4 ms per send, measured 2026-11-01. Receives are not
+flushed and stay around 0.2 ms; one lost to a power cut is applied again.
+
 ### Erlang / BEAM — no
 
 WhatsApp needed Erlang because they ran **one service for billions**; all
