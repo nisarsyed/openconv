@@ -19,7 +19,22 @@ all-features = true
 # Deny by default. Unfixable transitive advisories go in `ignore` below with
 # a dated comment saying why, never as a blanket relaxation.
 yanked = "deny"
-ignore = []
+ignore = [
+    # 2026-11-01. Timing variability in crypto-bigint 0.5, which only the
+    # NIST curves use (p256, p384, k256 via elliptic-curve 0.13). openmls's
+    # crypto provider links them for every ciphersuite, but OpenConv runs
+    # MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 (`CIPHERSUITE` in
+    # crates/core/src/lib.rs), which goes through curve25519-dalek and never
+    # calls this code. The fix is crypto-bigint 0.7, which elliptic-curve
+    # 0.13 cannot take. Revisit when openmls moves to elliptic-curve 0.14, or
+    # immediately if the ciphersuite ever changes to a NIST curve.
+    { id = "RUSTSEC-2026-0387", reason = "NIST-curve code only; OpenConv uses X25519/Ed25519. No upgrade path under openmls 0.9." },
+    # 2026-11-01. basic-toml is unmaintained, not vulnerable. It reaches the
+    # tree only through askama, UniFFI's binding generator, as a proc-macro
+    # dependency: it runs at build time and is not linked into anything that
+    # ships. Revisit when UniFFI drops or replaces it.
+    { id = "RUSTSEC-2026-0374", reason = "Unmaintained, build-time only via UniFFI's binding generator; no maintained replacement upstream." },
+]
 
 [licenses]
 # Anything not listed fails the build. Adding to this list is a decision
