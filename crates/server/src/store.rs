@@ -402,7 +402,7 @@ impl Store {
     /// Delete the oldest frames across every address until the store holds
     /// at most `target` bytes, or until pins stop it. Returns how many went.
     ///
-    /// Oldest by acceptance time, so a flood of new addresses pushes out
+    /// Oldest first, so a flood of new addresses pushes out
     /// whatever has been stored longest, wherever it is. That is a real loss
     /// (members away that long cannot catch up), but a bounded one, where a
     /// full disk would stop the relay storing anything at all.
@@ -414,26 +414,28 @@ impl Store {
         if excess == 0 {
             return Ok(0);
         }
-        // The acceptance time up to which enough goes. Frames accepted in
-        // the same millisecond go together, so this can free a little more.
+        // The last frame that has to go, oldest first by insertion order.
+        // Not by acceptance time: a batch shares one, and cutting at a time
+        // would take every frame accepted then, the ones just written
+        // included, rather than only enough.
         let mut through = None;
         {
-            let mut oldest = self.conn.prepare_cached(
-                "SELECT accepted_ms, length(payload) FROM frames ORDER BY accepted_ms",
-            )?;
+            let mut oldest = self
+                .conn
+                .prepare_cached("SELECT rowid, length(payload) FROM frames ORDER BY rowid")?;
             let mut rows = oldest.query([])?;
             while let Some(row) = rows.next()? {
-                let (at, size): (i64, i64) = (row.get(0)?, row.get(1)?);
+                let (rowid, size): (i64, i64) = (row.get(0)?, row.get(1)?);
                 excess = excess.saturating_sub(u64::try_from(size).map_err(|_| Error::Corrupt)?);
                 if excess == 0 {
-                    through = Some(at);
+                    through = Some(rowid);
                     break;
                 }
             }
         }
         let through = through.unwrap_or(i64::MAX);
         self.delete_where(
-            "accepted_ms <= ?1 AND seq < COALESCE(
+            "rowid <= ?1 AND seq < COALESCE(
                  (SELECT seq FROM temp.pins WHERE pins.address = frames.address),
                  9223372036854775807)",
             params![through],
@@ -769,6 +771,21 @@ mod tests {
             "a pin was ignored"
         );
         assert!(stored_seqs(&store, &other).is_empty());
+    }
+
+    /// Frames accepted in the same millisecond (a batch always is) must not
+    /// all go because the cutoff landed on that millisecond: only enough to
+    /// get under the target, oldest first.
+    #[test]
+    fn trim_total_takes_only_enough_when_frames_share_a_millisecond() {
+        let mut store = Store::in_memory().unwrap();
+        let room = addr(b"room");
+        for i in 0..10u8 {
+            store.append(room.clone(), 7, vec![i; 100]).unwrap();
+        }
+        store.trim_total(500).unwrap();
+        assert_eq!(stored_seqs(&store, &room), [5, 6, 7, 8, 9]);
+        assert_eq!(store.total_bytes(), 500);
     }
 
     /// A store written before byte totals existed gets them computed when it
