@@ -56,6 +56,12 @@ and from there both can chat. Everything on the wire is MLS ciphertext.
 Each client keeps its MLS state — identity, group membership, ratchet state —
 in an encrypted SQLite database, so a restart resumes where it left off.
 
+The relay keeps every frame, so a client that was closed catches up on what
+it missed when it reconnects: messages, membership changes, and requests to
+join that arrived while nobody was online to answer. A new member does not
+get the history from before they joined, and cannot: MLS forward secrecy
+means those frames were never encrypted for them.
+
 - **Encrypted at rest.** SQLCipher encrypts and authenticates every page, and
   the files are `0600`. Each operation is one transaction, so a crash or an
   error cannot leave half an update on disk.
@@ -70,6 +76,20 @@ in an encrypted SQLite database, so a restart resumes where it left off.
 # two independent instances, neither touching your real state
 OPENCONV_DATA_DIR=/tmp/a just client alice
 OPENCONV_DATA_DIR=/tmp/b just client bob
+```
+
+**Relay and client data belong together.** Each client remembers how far it
+has read the relay's history, and the relay keeps that history in
+`OPENCONV_RELAY_DB`, which defaults to `openconv-relay.db` in the directory the
+relay starts in (`just relay` always uses the repo root). If the relay starts
+with a fresh store, clients find themselves ahead of it and follow its new
+numbering from the start, saying so; the relay logs a warning whenever it
+creates a new store. For throwaway runs, point both somewhere disposable and
+reset them together:
+
+```sh
+OPENCONV_RELAY_DB=/tmp/run/relay.db just relay
+OPENCONV_DATA_DIR=/tmp/run just client alice
 ```
 
 ## Checks

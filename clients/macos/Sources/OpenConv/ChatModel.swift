@@ -56,12 +56,6 @@ final class ChatModel: ObservableObject {
     /// The channel as shareable text, once there is one.
     @Published private(set) var channelText: String?
 
-    /// Highest relay sequence seen, per address. The relay numbers each
-    /// address's frames separately, so a gap on one means frames were missed
-    /// there and this client's view of that order — and therefore of who won
-    /// a commit race — can no longer be trusted.
-    private var lastSeq: [Data: UInt64] = [:]
-
     init(identity: String) throws {
         self.identity = identity
         let vault = Self.vaultPath(for: identity)
@@ -110,40 +104,44 @@ final class ChatModel: ObservableObject {
     ///
     /// A client restored with a group already rejoins that group's channel,
     /// whichever was asked for. Hosting again would start a second group and
-    /// strand everyone on the first.
+    /// strand everyone on the first. Either way, the core's `connect`
+    /// requests catch it up on whatever it missed before going live.
     func connect(to url: URL, hosting: Bool, channelText: String? = nil) {
         status = .connecting
-        lastSeq = [:]
         let task = URLSession.shared.webSocketTask(with: url)
         socket = task
         task.resume()
         receiveLoop()
 
         do {
-            if let existing = client.channel() {
-                try enter(existing)
+            if client.channel() != nil {
+                try resume()
+                try enterJoined()
                 note("rejoined the group")
                 sendAutoIfReady()
+            } else if try client.waitingToJoin() {
+                // Asked before quitting and not yet let in. The offer is
+                // re-sent, in case nobody was online to answer it before.
+                try resume()
+                status = .waitingForGroup
+                note("still waiting to be admitted; asked again")
             } else if hosting {
                 // Host opens the group and waits for others to ask in.
                 try client.createGroup()
-                guard let created = client.channel() else { throw ChatError.noChannel }
-                try enter(created)
+                try resume()
+                try enterJoined()
                 note("created the group")
                 sendAutoIfReady()
             } else {
                 // Everyone else offers a KeyPackage on the channel they were
-                // given, and waits for a Welcome in their own mailbox. Both
-                // are subscribed first, in one request: the relay handles a
-                // connection's requests in order, so the subscription is in
-                // place before anyone can reply to the offer.
+                // given, and reads their own mailbox for the Welcome. The
+                // mailbox is read first, in the same request stream: the
+                // relay handles a connection's requests in order, so it is
+                // being read before anyone can reply to the offer.
                 let wanted = try parseChannelId(text: channelText ?? "")
-                let offer = try client.keyPackage()
-                let mailbox = try client.mailbox(keyPackage: offer)
-                try subscribe([mailbox, wanted])
-                channel = wanted
+                try client.offer(channel: wanted)
+                try resume()
                 self.channelText = formatChannelId(channel: wanted)
-                try publish(to: wanted, kind: .keyPackage, body: offer)
                 status = .waitingForGroup
                 note("asked to join")
             }
@@ -152,9 +150,16 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// Start using a channel this client is a member of.
-    private func enter(_ joined: Data) throws {
-        try subscribe([joined])
+    /// Send the core's catch-up requests: everything missed, then live.
+    private func resume() throws {
+        for request in try client.connect() {
+            write(request)
+        }
+    }
+
+    /// Show the group this client is in.
+    private func enterJoined() throws {
+        guard let joined = client.channel() else { throw ChatError.noChannel }
         channel = joined
         let text = formatChannelId(channel: joined)
         channelText = text
@@ -198,10 +203,6 @@ final class ChatModel: ObservableObject {
         write(try encodePublish(to: address, kind: kind, body: body))
     }
 
-    private func subscribe(_ addresses: [Data]) throws {
-        write(try encodeSubscribe(addresses: addresses))
-    }
-
     private func write(_ request: Data) {
         socket?.send(.data(request)) { [weak self] error in
             guard let error else { return }
@@ -228,95 +229,56 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// Hand whatever the relay sent to the core, which applies it in order,
+    /// once, and says what to do about it.
     private func handle(_ data: Data) {
         do {
-            let frame = try decodeDelivery(wire: data)
-            checkOrder(frame.address, frame.seq)
-
-            switch frame.kind {
-            case .keyPackage:
-                // Any member may admit; the relay's ordering decides which
-                // commit takes effect if several land at the same epoch.
-                guard case .joined = status else { return }
-                let commit = try client.proposeAdd(keyPackage: frame.body)
-                try send(kind: .commit, body: commit)
-
-            case .welcome:
-                guard case .waitingForGroup = status else { return }
-                try client.join(welcome: frame.body)
-                guard let joined = client.channel() else { throw ChatError.noChannel }
-                try enter(joined)
-                note("joined the group")
-                sendAutoIfReady()
-
-            case .commit, .application:
-                // Traffic for a group this client has not joined yet. It
-                // cannot be decrypted and is not addressed to us; waiting for
-                // a Welcome is the whole point of this state.
-                guard case .joined = status else { return }
-                try apply(try client.receive(wire: frame.body))
+            for effect in try client.deliver(wire: data) {
+                try apply(effect)
             }
         } catch {
             fail(error)
         }
     }
 
-    /// Act on what the core made of a frame.
-    private func apply(_ event: ClientEvent) throws {
-        switch event {
+    private func apply(_ effect: ClientEffect) throws {
+        switch effect {
+        case .send(let request):
+            write(request)
+
         case .message(let text):
             print("[\(identity)] received: \(text)")
             lines.append(Line(author: "them", text: text, mine: false))
 
-        case .admitted(let welcome, let mailbox):
-            // Our commit was ordered first, so the add stands and the new
-            // member can be let in. The Welcome goes to their mailbox, not
-            // the channel: they are not a member of it yet.
-            try publish(to: mailbox, kind: .welcome, body: welcome)
+        case .joined:
+            try enterJoined()
+            note("joined the group")
+            sendAutoIfReady()
+
+        case .admitted:
             status = .joined(members: Int(client.memberCount()))
             note("admitted a new member")
 
         case .addSuperseded:
-            // Someone else's commit was ordered first. Theirs has been
-            // applied; the joiner was very likely admitted by it, so this is
-            // a notice rather than something to retry.
+            // Someone else's commit was ordered first, and the joiner was
+            // very likely admitted by it. A notice, not something to retry.
             status = .joined(members: Int(client.memberCount()))
             note("another member admitted them first")
 
         case .advanced:
             status = .joined(members: Int(client.memberCount()))
 
-        case .echo:
-            break
+        case .live:
+            // Logged, not shown: tells a headless run catch-up finished.
+            print("[\(identity)] caught up")
 
-        case .resend(let message):
-            // Our message landed behind a commit, so everyone discarded it.
-            // This is the same text encrypted for the epoch they are in now.
-            try send(kind: .application, body: message)
-            print("[\(identity)] resent a message that crossed a commit")
+        case .relayReset:
+            note("the relay's history was reset; following it from its start")
 
-        case .stale:
-            // Someone else's message that crossed a commit. They resend it,
-            // so the copy that arrives next is the one to show.
-            break
-        }
-    }
-
-    /// The relay numbers each address's frames. A gap means this client
-    /// missed traffic there and can no longer trust its view of the order, so
-    /// say so loudly rather than letting it surface later as an
-    /// undecryptable message.
-    private func checkOrder(_ address: Data, _ seq: UInt64) {
-        defer { lastSeq[address] = max(lastSeq[address] ?? seq, seq) }
-        guard let last = lastSeq[address] else { return }
-
-        if seq > last + 1 {
-            note("missed \(seq - last - 1) frame(s) from the relay; state may be stale")
-        } else if seq <= last {
-            // Never expected: the relay numbers and delivers under one lock.
-            // Worth saying out loud rather than computing a negative gap —
-            // `seq - last - 1` on UInt64 underflows and traps the process.
-            note("frame \(seq) arrived after \(last); relay ordering is broken")
+        case .unavailable(_, let floor, _):
+            note(
+                "the relay no longer holds what this client missed (it starts at \(floor)); "
+                    + "another member has to add it again")
         }
     }
 

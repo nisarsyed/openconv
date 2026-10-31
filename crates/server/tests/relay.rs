@@ -394,3 +394,345 @@ async fn frames_to_an_unwatched_address_are_stored() {
         (FrameKind::Welcome, &b"welcome"[..])
     );
 }
+
+/// The done condition's hard part: a client catching up while frames keep
+/// arriving ends with every frame exactly once, in order. Catch-up and live
+/// delivery must meet without a gap or an overlap.
+#[tokio::test]
+async fn catch_up_and_live_traffic_meet_without_a_gap() {
+    use openconv_wire::{Inbound, Request};
+    const STORED: u64 = 400;
+    const LIVE: u64 = 300;
+
+    let url = spawn_relay().await;
+    let room = Address::new(b"room".to_vec()).unwrap();
+
+    // Traffic while the client is away: stored, not delivered to anyone.
+    let mut sender = connect(&url).await;
+    for i in 0..STORED {
+        publish(
+            &mut sender,
+            b"room",
+            FrameKind::Application,
+            &i.to_be_bytes(),
+        )
+        .await;
+    }
+    subscribe(&mut sender, &[]).await; // sync: everything above is stored
+
+    // The client comes back and catches up while the sender keeps going.
+    let mut client = connect(&url).await;
+    let resume = |from| {
+        Request::Resume {
+            address: room.clone(),
+            from,
+        }
+        .encode()
+        .unwrap()
+    };
+    send(&mut client, resume(0)).await;
+    let flood = tokio::spawn(async move {
+        for i in STORED..STORED + LIVE {
+            publish(
+                &mut sender,
+                b"room",
+                FrameKind::Application,
+                &i.to_be_bytes(),
+            )
+            .await;
+        }
+        sender
+    });
+
+    // Done once every frame is in and the relay has said the client is
+    // live. The two can come in either order: if the flood finishes before
+    // the last page is read, that page holds the rest and ends with `live`.
+    let mut seen = Vec::new();
+    let mut live = false;
+    while (seen.len() as u64) < STORED + LIVE || !live {
+        let msg = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("stalled during catch-up")
+            .unwrap()
+            .unwrap();
+        match Inbound::decode(&msg.into_data()).unwrap() {
+            Inbound::Delivery(d) => seen.push(d.seq),
+            Inbound::Page {
+                live: false, next, ..
+            } => send(&mut client, resume(next)).await,
+            Inbound::Page { live: true, .. } => live = true,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let _sender = flood.await.unwrap();
+    assert_eq!(
+        seen,
+        (0..STORED + LIVE).collect::<Vec<_>>(),
+        "gap or duplicate"
+    );
+    assert!(
+        stays_quiet(&mut client).await,
+        "frames beyond what was published"
+    );
+}
+
+// ---- Catch-up with real members (#105) ----
+
+use openconv_core::{Effect, Vault};
+
+/// A member and its connection, applying what the relay sends the way the
+/// app does: every effect that says to send something is sent.
+struct Peer {
+    member: Member,
+    ws: Ws,
+    /// Messages from others, in the order this member decrypted them.
+    heard: Vec<String>,
+}
+
+impl Peer {
+    async fn online(member: Member, url: &str) -> Self {
+        let mut peer = Self {
+            member,
+            ws: connect(url).await,
+            heard: Vec::new(),
+        };
+        for request in peer.member.connect().unwrap() {
+            send(&mut peer.ws, request).await;
+        }
+        peer
+    }
+
+    /// Apply whatever has arrived. Returns whether anything did.
+    async fn pump(&mut self) -> bool {
+        let mut any = false;
+        while let Ok(Some(msg)) =
+            tokio::time::timeout(Duration::from_millis(150), self.ws.next()).await
+        {
+            any = true;
+            let Message::Binary(wire) = msg.unwrap() else {
+                continue;
+            };
+            for effect in self.member.deliver(&wire).unwrap() {
+                match effect {
+                    Effect::Send(request) => send(&mut self.ws, request).await,
+                    Effect::Message(text) => self.heard.push(text),
+                    Effect::Unavailable { .. } => panic!("cursor unavailable"),
+                    _ => {}
+                }
+            }
+        }
+        any
+    }
+
+    async fn say(&mut self, text: &str) {
+        let ct = self.member.send(text).unwrap();
+        let channel = self.member.channel().unwrap();
+        publish(&mut self.ws, &channel, FrameKind::Application, &ct).await;
+    }
+
+    /// Close the connection and the member, keeping only what is on disk.
+    async fn offline(mut self) {
+        self.ws.close(None).await.ok();
+    }
+}
+
+/// Everything said in the group, as a member who said some of it saw it:
+/// what alice heard, with bob's own lines placed where alice heard them.
+/// Alice heard everyone but herself, so this is checked against alice too.
+fn transcript(alice: &Peer, bob: &Peer) -> Vec<String> {
+    // Alice spoke "before" and "one"; she heard "two" and "three" from bob.
+    let mut all = vec!["before".to_owned(), "one".to_owned()];
+    all.extend(alice.heard.iter().cloned());
+    assert_eq!(bob.heard, ["before", "one"], "bob heard alice's lines");
+    all
+}
+
+/// Pump everyone until a whole round passes with nothing arriving.
+async fn settle(peers: &mut [&mut Peer]) {
+    for _ in 0..60 {
+        let mut any = false;
+        for peer in peers.iter_mut() {
+            any |= peer.pump().await;
+        }
+        if !any {
+            return;
+        }
+    }
+    panic!("never settled");
+}
+
+fn persisted(dir: &std::path::Path, name: &str) -> Member {
+    Member::restore(
+        Vault::with_key(dir.join(format!("{name}.db")), [5u8; 32]),
+        name,
+    )
+    .unwrap()
+}
+
+/// The done condition for #105: a member closes, misses traffic from two
+/// others (messages and a commit admitting someone new), reopens, and ends
+/// up with the same group state and message set as everyone else.
+#[tokio::test]
+async fn a_member_who_was_away_catches_up_to_the_same_state() {
+    let url = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut alice = Member::new("alice").unwrap();
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+
+    let mut bob = Member::new("bob").unwrap();
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    let mut carol = persisted(dir.path(), "carol");
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert_eq!(carol.member.member_count(), 3, "carol was not admitted");
+
+    alice.say("before").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    let mut carol_heard = carol.heard.clone();
+    carol.offline().await;
+
+    // While carol is away: messages from two members, and a commit.
+    alice.say("one").await;
+    bob.say("two").await;
+    let mut dave = Member::new("dave").unwrap();
+    dave.offer(&channel).unwrap();
+    let mut dave = Peer::online(dave, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut dave]).await;
+    assert_eq!(dave.member.member_count(), 4, "dave was not admitted");
+    bob.say("three, after dave").await;
+    settle(&mut [&mut alice, &mut bob, &mut dave]).await;
+
+    let mut carol = Peer::online(persisted(dir.path(), "carol"), &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+
+    assert_eq!(
+        carol.member.member_count(),
+        4,
+        "carol missed dave's admission"
+    );
+    carol_heard.extend(carol.heard.iter().cloned());
+    assert_eq!(
+        carol_heard,
+        ["before", "one", "two", "three, after dave"],
+        "carol's messages differ from what was said"
+    );
+    assert_eq!(
+        carol_heard,
+        transcript(&alice, &bob),
+        "carol and the others disagree"
+    );
+    // Same epoch as everyone: they can all read her.
+    carol.say("back").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    for peer in [&alice, &bob, &dave] {
+        assert_eq!(peer.heard.last().map(String::as_str), Some("back"));
+    }
+}
+
+/// A join request made while every member is offline is answered when one
+/// comes back, and a joiner who was offline too joins from the Welcome kept
+/// in its mailbox. Re-offering after being admitted adds nobody twice.
+#[tokio::test]
+async fn a_join_request_made_while_everyone_was_away_is_answered() {
+    let url = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut alice = persisted(dir.path(), "alice");
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+    settle(&mut [&mut alice]).await;
+    alice.offline().await;
+
+    // Nobody is online to answer. Bob asks, then goes away too.
+    let mut bob = persisted(dir.path(), "bob");
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    settle(&mut [&mut bob]).await;
+    assert!(bob.member.channel().is_none());
+    bob.offline().await;
+
+    // Alice returns, catches up, and answers the held request.
+    let mut alice = Peer::online(persisted(dir.path(), "alice"), &url).await;
+    settle(&mut [&mut alice]).await;
+    assert_eq!(
+        alice.member.member_count(),
+        2,
+        "the held request was not answered"
+    );
+
+    // Bob returns: re-offers, and finds his Welcome waiting.
+    let mut bob = Peer::online(persisted(dir.path(), "bob"), &url).await;
+    settle(&mut [&mut alice, &mut bob]).await;
+    assert_eq!(bob.member.channel(), Some(channel));
+    assert_eq!(
+        alice.member.member_count(),
+        2,
+        "bob's re-offer added him a second time"
+    );
+    bob.say("made it").await;
+    settle(&mut [&mut alice, &mut bob]).await;
+    assert_eq!(alice.heard, ["made it"]);
+}
+
+/// A relay whose store is replaced by an empty one (started from another
+/// directory, say) is behind every client. They follow its new numbering
+/// from the start and carry on, rather than stopping as though they had
+/// missed frames, and new members can still join through it.
+#[tokio::test]
+async fn members_carry_on_through_a_relay_whose_store_was_reset() {
+    let url = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut alice = persisted(dir.path(), "alice");
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+    let mut bob = persisted(dir.path(), "bob");
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    let mut carol = persisted(dir.path(), "carol");
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    for i in 0..5 {
+        alice.say(&format!("old {i}")).await;
+    }
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    for peer in [alice, bob, carol] {
+        peer.offline().await;
+    }
+
+    // A different relay, with nothing stored.
+    let url = spawn_relay().await;
+    let mut alice = Peer::online(persisted(dir.path(), "alice"), &url).await;
+    let mut bob = Peer::online(persisted(dir.path(), "bob"), &url).await;
+    let mut carol = Peer::online(persisted(dir.path(), "carol"), &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    bob.say("still here").await;
+    let mut dave = Member::new("dave").unwrap();
+    dave.offer(&channel).unwrap();
+    let mut dave = Peer::online(dave, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    assert_eq!(alice.heard, ["still here"]);
+    assert_eq!(carol.heard, ["still here"]);
+    assert_eq!(
+        dave.member.member_count(),
+        4,
+        "nobody could join after the reset"
+    );
+    dave.say("joined after the reset").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    for peer in [&alice, &bob, &carol] {
+        assert_eq!(
+            peer.heard.last().map(String::as_str),
+            Some("joined after the reset")
+        );
+    }
+}

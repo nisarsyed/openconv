@@ -233,6 +233,22 @@ impl Store {
         .collect()
     }
 
+    /// The oldest sequence number still stored for `address`, or the next one
+    /// if nothing is: below this, a cursor cannot be served.
+    ///
+    /// # Errors
+    /// If the read fails or a stored value is corrupt.
+    pub fn floor(&self, address: &Address) -> Result<u64> {
+        let oldest: Option<i64> = self
+            .conn
+            .prepare_cached("SELECT MIN(seq) FROM frames WHERE address = ?1")?
+            .query_row([address.as_bytes()], |r| r.get(0))?;
+        match oldest {
+            Some(seq) => u64::try_from(seq).map_err(|_| Error::Corrupt),
+            None => self.next_seq(address),
+        }
+    }
+
     /// The sequence number the next frame to `address` will get.
     ///
     /// # Errors
@@ -244,6 +260,17 @@ impl Store {
             .query_row([address.as_bytes()], |r| r.get(0))
             .optional()?;
         u64::try_from(next.unwrap_or(0)).map_err(|_| Error::Corrupt)
+    }
+
+    /// Delete `address`'s frames below `seq`, as retention (#106) will.
+    #[cfg(test)]
+    pub(crate) fn forget_before(&self, address: &Address, seq: u64) {
+        self.conn
+            .execute(
+                "DELETE FROM frames WHERE address = ?1 AND seq < ?2",
+                params![address.as_bytes(), i64::try_from(seq).unwrap()],
+            )
+            .expect("delete frames");
     }
 
     /// Make every write fail from now on, so tests can check what the relay

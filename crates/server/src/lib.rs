@@ -36,6 +36,11 @@
 //! one flush to disk (#117). A flush per frame capped the whole relay at
 //! about 250 frames a second with a true flush, however many clients were
 //! publishing; sharing it lets throughput grow with load.
+//!
+//! The writer also serves catch-up (`Resume`, see `openconv-wire`). Because
+//! it is the only thing that delivers, a page it reads from the store and the
+//! live subscription it registers after the last page cannot have a frame
+//! slip between them: nothing is published while the writer is busy serving.
 
 pub mod store;
 
@@ -50,7 +55,7 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-use openconv_wire::{Address, Request};
+use openconv_wire::{Address, Inbound, Request};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -77,6 +82,10 @@ const WRITE_QUEUE: usize = 1024;
 /// and how long the last frame in a batch waits behind the rest.
 const MAX_BATCH: usize = 256;
 
+/// Stored frames sent per catch-up page. Well under [`BACKLOG`], so a page
+/// plus its notice fits a connection's queue with room for live traffic.
+const PAGE_SIZE: usize = 128;
+
 /// A connection, as an address sees it.
 #[derive(Clone)]
 struct Subscriber {
@@ -99,12 +108,16 @@ fn now_ms() -> u64 {
 /// update means routing state can no longer be trusted.
 type Routes = Arc<Mutex<HashMap<Address, HashMap<usize, Subscriber>>>>;
 
-/// Why a publish did not land.
+/// Why the writer could not do what a connection asked.
 #[derive(Debug, Clone, thiserror::Error)]
-enum PublishError {
-    /// The store refused the batch this frame was in.
+enum WriteError {
+    /// The store failed: it refused the batch a frame was in, or could not
+    /// be read for catch-up.
     #[error(transparent)]
     Store(Arc<store::Error>),
+    /// The connection's queue was full, so a page could not be handed over.
+    #[error("connection too far behind to take a catch-up page")]
+    Lagged,
     /// The writer has stopped, so nothing can be stored.
     #[error("the relay's writer has stopped")]
     WriterStopped,
@@ -112,7 +125,13 @@ enum PublishError {
 
 /// Where a published frame landed: its sequence number, and how many
 /// subscribers it reached.
-type Landed = Result<(u64, usize), PublishError>;
+type Landed = Result<(u64, usize), WriteError>;
+
+/// Work for the writer, in the order connections asked for it.
+enum Job {
+    Publish(Publish),
+    Resume(Resume),
+}
 
 /// A publish waiting for the writer.
 struct Publish {
@@ -121,10 +140,19 @@ struct Publish {
     landed: oneshot::Sender<Landed>,
 }
 
+/// A connection asking to catch up on `address` from `from`.
+struct Resume {
+    id: usize,
+    subscriber: Subscriber,
+    address: Address,
+    from: u64,
+    served: oneshot::Sender<Result<(), WriteError>>,
+}
+
 #[derive(Clone)]
 struct Relay {
     /// The writer's queue. See the module docs for why there is one writer.
-    writes: mpsc::Sender<Publish>,
+    writes: mpsc::Sender<Job>,
     /// Changed by connections as they subscribe and leave; read by the writer
     /// as it delivers.
     routes: Routes,
@@ -169,10 +197,34 @@ impl Relay {
             landed,
         };
         self.writes
-            .send(publish)
+            .send(Job::Publish(publish))
             .await
-            .map_err(|_| PublishError::WriterStopped)?;
-        reply.await.map_err(|_| PublishError::WriterStopped)?
+            .map_err(|_| WriteError::WriterStopped)?;
+        reply.await.map_err(|_| WriteError::WriterStopped)?
+    }
+
+    /// Ask the writer for a page of catch-up, and wait until it is queued
+    /// for this connection.
+    async fn resume(
+        &self,
+        id: usize,
+        subscriber: &Subscriber,
+        address: Address,
+        from: u64,
+    ) -> Result<(), WriteError> {
+        let (served, reply) = oneshot::channel();
+        let resume = Resume {
+            id,
+            subscriber: subscriber.clone(),
+            address,
+            from,
+            served,
+        };
+        self.writes
+            .send(Job::Resume(resume))
+            .await
+            .map_err(|_| WriteError::WriterStopped)?;
+        reply.await.map_err(|_| WriteError::WriterStopped)?
     }
 
     fn unsubscribe_all(&self, id: usize, addresses: &HashSet<Address>) {
@@ -190,17 +242,91 @@ impl Relay {
 }
 
 /// The writer: take whatever publishes are waiting, commit them together,
-/// and repeat until every sender has gone.
-fn write_loop(mut store: Store, mut queue: mpsc::Receiver<Publish>, routes: &Routes) {
+/// serve resumes in turn, and repeat until every sender has gone.
+///
+/// Jobs are handled in the order they were queued. A run of publishes
+/// becomes one batch; a resume behind them waits for that batch to commit,
+/// so it sees them in the store.
+fn write_loop(mut store: Store, mut queue: mpsc::Receiver<Job>, routes: &Routes) {
     let mut batch = Vec::with_capacity(MAX_BATCH);
-    while let Some(first) = queue.blocking_recv() {
-        batch.push(first);
-        while batch.len() < MAX_BATCH {
-            let Ok(next) = queue.try_recv() else { break };
-            batch.push(next);
+    let mut held = None;
+    while let Some(job) = held.take().or_else(|| queue.blocking_recv()) {
+        match job {
+            Job::Resume(resume) => serve(&store, routes, resume),
+            Job::Publish(first) => {
+                batch.push(first);
+                while batch.len() < MAX_BATCH {
+                    match queue.try_recv() {
+                        Ok(Job::Publish(next)) => batch.push(next),
+                        Ok(resume) => {
+                            held = Some(resume);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                commit(&mut store, routes, &mut batch);
+            }
         }
-        commit(&mut store, routes, &mut batch);
     }
+}
+
+/// Send one page of catch-up to a connection, and subscribe it if that page
+/// was the last. See the wire crate's module docs for the exchange.
+fn serve(store: &Store, routes: &Routes, resume: Resume) {
+    let result = page(store, routes, &resume);
+    if result.is_err() {
+        resume.subscriber.kick.notify_one();
+    }
+    let _ = resume.served.send(result);
+}
+
+fn page(store: &Store, routes: &Routes, resume: &Resume) -> Result<(), WriteError> {
+    let Resume {
+        id,
+        subscriber,
+        address,
+        from,
+        ..
+    } = resume;
+    let read = |e| WriteError::Store(Arc::new(e));
+    let next = store.next_seq(address).map_err(read)?;
+    let floor = store.floor(address).map_err(read)?;
+    let push = |inbound: Inbound| {
+        subscriber
+            .frames
+            .try_send(Bytes::from(inbound.encode()))
+            .map_err(|_| WriteError::Lagged)
+    };
+    if *from < floor || *from > next {
+        return push(Inbound::Unavailable {
+            address: address.clone(),
+            floor,
+            next,
+        });
+    }
+
+    let frames = store.since(address, *from, PAGE_SIZE).map_err(read)?;
+    let reached = frames.last().map_or(*from, |d| d.seq + 1);
+    for frame in frames {
+        push(Inbound::Delivery(frame))?;
+    }
+    let live = reached == next;
+    if live {
+        // Registered here, between reading the last page and the next job,
+        // so the first live frame this connection gets is `next`.
+        routes
+            .lock()
+            .expect("routing state poisoned")
+            .entry(address.clone())
+            .or_default()
+            .insert(*id, subscriber.clone());
+    }
+    push(Inbound::Page {
+        address: address.clone(),
+        next: reached,
+        live,
+    })
 }
 
 /// Number and store `batch` in one transaction, and only then deliver it, in
@@ -220,7 +346,7 @@ fn commit(store: &mut Store, routes: &Routes, batch: &mut Vec<Publish>) {
             let error = Arc::new(error);
             for landed in replies {
                 // A publisher that has gone away no longer needs telling.
-                let _ = landed.send(Err(PublishError::Store(error.clone())));
+                let _ = landed.send(Err(WriteError::Store(error.clone())));
             }
             return;
         }
@@ -264,6 +390,22 @@ fn deliver(
         routes.remove(address);
     }
     reached
+}
+
+/// Record `addresses` as subscribed by a connection, returning those that are
+/// new, or `None` if that would take it past [`MAX_SUBSCRIPTIONS`].
+fn admit(subscribed: &Mutex<HashSet<Address>>, addresses: Vec<Address>) -> Option<Vec<Address>> {
+    let mut subscribed = subscribed.lock().expect("subscription set poisoned");
+    let mut added = Vec::new();
+    for address in addresses {
+        if subscribed.len() == MAX_SUBSCRIPTIONS && !subscribed.contains(&address) {
+            return None;
+        }
+        if subscribed.insert(address.clone()) {
+            added.push(address);
+        }
+    }
+    Some(added)
 }
 
 /// Build the relay router over `store`, starting the thread that writes to
@@ -331,20 +473,23 @@ async fn handle(socket: WebSocket, relay: Relay) {
             };
             match Request::decode(&bytes) {
                 Ok(Request::Subscribe(addresses)) => {
-                    let mut subscribed = inbound_subscribed
-                        .lock()
-                        .expect("subscription set poisoned");
-                    let mut added = Vec::new();
-                    for address in addresses {
-                        if subscribed.len() == MAX_SUBSCRIPTIONS && !subscribed.contains(&address) {
-                            tracing::warn!(id, "too many subscriptions; disconnecting");
-                            return;
-                        }
-                        if subscribed.insert(address.clone()) {
-                            added.push(address);
-                        }
-                    }
+                    let Some(added) = admit(&inbound_subscribed, addresses) else {
+                        tracing::warn!(id, "too many subscriptions; disconnecting");
+                        return;
+                    };
                     inbound_relay.subscribe(id, &me, added);
+                }
+                Ok(Request::Resume { address, from }) => {
+                    // Counted against the limit now, so cleanup knows about
+                    // it even if the connection ends before going live.
+                    if admit(&inbound_subscribed, vec![address.clone()]).is_none() {
+                        tracing::warn!(id, "too many subscriptions; disconnecting");
+                        return;
+                    }
+                    if let Err(error) = inbound_relay.resume(id, &me, address, from).await {
+                        tracing::warn!(id, %error, "could not serve catch-up; disconnecting");
+                        return;
+                    }
                 }
                 Ok(Request::Publish { to, payload }) => {
                     let bytes = payload.len();
@@ -449,6 +594,126 @@ mod tests {
         assert_eq!(seen, [(0, b"a".to_vec()), (1, b"b".to_vec())]);
     }
 
+    /// A resume as a connection would send it, with the reply to wait on.
+    fn resume(
+        address: &Address,
+        from: u64,
+    ) -> (
+        Resume,
+        mpsc::Receiver<Bytes>,
+        oneshot::Receiver<Result<(), WriteError>>,
+    ) {
+        let (frames, rx) = mpsc::channel(BACKLOG);
+        let (served, reply) = oneshot::channel();
+        let subscriber = Subscriber {
+            frames,
+            kick: Arc::new(Notify::new()),
+        };
+        let resume = Resume {
+            id: 7,
+            subscriber,
+            address: address.clone(),
+            from,
+            served,
+        };
+        (resume, rx, reply)
+    }
+
+    /// Everything queued for a connection, decoded.
+    fn drain(rx: &mut mpsc::Receiver<Bytes>) -> Vec<Inbound> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|b| Inbound::decode(&b).unwrap())
+            .collect()
+    }
+
+    fn seqs_and_notice(inbound: &[Inbound]) -> (Vec<u64>, Option<&Inbound>) {
+        let seqs = inbound
+            .iter()
+            .filter_map(|i| match i {
+                Inbound::Delivery(d) => Some(d.seq),
+                _ => None,
+            })
+            .collect();
+        (seqs, inbound.last())
+    }
+
+    /// Catch-up comes a page at a time, and only the last page subscribes
+    /// the connection, so it never receives one unbounded burst.
+    #[test]
+    fn catch_up_comes_in_pages_and_ends_live() {
+        let mut store = Store::in_memory().unwrap();
+        let routes = Routes::default();
+        let room = addr(b"room");
+        for i in 0..300u32 {
+            store
+                .append(room.clone(), 0, i.to_be_bytes().to_vec())
+                .unwrap();
+        }
+
+        let mut from = 0;
+        let mut pages = 0;
+        loop {
+            // 300 frames take three pages. Bounded, so a relay that never
+            // goes live fails this test rather than hanging it.
+            assert!(pages < 10, "still not live after {pages} pages");
+            let (job, mut rx, mut reply) = resume(&room, from);
+            serve(&store, &routes, job);
+            reply.try_recv().unwrap().unwrap();
+            let inbound = drain(&mut rx);
+            let (seqs, notice) = seqs_and_notice(&inbound);
+            assert!(seqs.len() <= PAGE_SIZE, "a page was {} frames", seqs.len());
+            assert_eq!(seqs, (from..from + seqs.len() as u64).collect::<Vec<_>>());
+            pages += 1;
+            let Some(Inbound::Page { next, live, .. }) = notice else {
+                panic!("a page must end with a Page notice, got {notice:?}");
+            };
+            let subscribed = routes.lock().unwrap().contains_key(&room);
+            assert_eq!(subscribed, *live, "live only once the last page is sent");
+            from = *next;
+            if *live {
+                break;
+            }
+        }
+        assert_eq!((from, pages), (300, 3));
+    }
+
+    /// A cursor the relay cannot serve gets a notice rather than whatever
+    /// history happens to be there.
+    #[test]
+    fn cursors_outside_the_store_are_unavailable() {
+        let mut store = Store::in_memory().unwrap();
+        let routes = Routes::default();
+        let room = addr(b"room");
+        for i in 0..5u8 {
+            store.append(room.clone(), 0, vec![i]).unwrap();
+        }
+        store.forget_before(&room, 2);
+
+        for from in [0, 1, 6] {
+            let (job, mut rx, mut reply) = resume(&room, from);
+            serve(&store, &routes, job);
+            reply.try_recv().unwrap().unwrap();
+            assert_eq!(
+                drain(&mut rx),
+                [Inbound::Unavailable {
+                    address: room.clone(),
+                    floor: 2,
+                    next: 5
+                }],
+                "from {from}"
+            );
+        }
+        assert!(
+            routes.lock().unwrap().is_empty(),
+            "an unavailable cursor subscribed"
+        );
+
+        // At the floor is fine.
+        let (job, mut rx, _reply) = resume(&room, 2);
+        serve(&store, &routes, job);
+        assert_eq!(seqs_and_notice(&drain(&mut rx)).0, [2, 3, 4]);
+    }
+
     /// Delivery is a promise that the frame is stored. A batch the store
     /// refused must reach nobody, and every publisher in it must hear so,
     /// or a crash could lose something a subscriber has already acted on.
@@ -466,7 +731,7 @@ mod tests {
         for mut reply in replies {
             assert!(matches!(
                 reply.try_recv().unwrap(),
-                Err(PublishError::Store(_))
+                Err(WriteError::Store(_))
             ));
         }
         assert!(rx.try_recv().is_err(), "an unstored frame was delivered");

@@ -506,7 +506,8 @@ have to resend for them anyway, and everyone else would then see it twice.
 What this does not cover: a sender that quits or restarts between sending and
 seeing its echo. The record of what it sent is not persisted, so that message
 can still be lost. #105 is where that becomes likely, since catch-up widens
-the window.
+the window. **Fixed in #105:** the record is persisted, as is a staged add, so
+a restarted client recognises both when catch-up delivers them.
 
 ---
 

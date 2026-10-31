@@ -20,8 +20,21 @@ async fn main() {
     // Where frames are kept. Relative to the working directory by default;
     // point it somewhere durable for anything that is not a dev run.
     let db = std::env::var("OPENCONV_RELAY_DB").unwrap_or_else(|_| "openconv-relay.db".into());
+    let existed = std::path::Path::new(&db).exists();
     let store = Store::open(&db).expect("open the relay store");
-    tracing::info!(db, "relay store open");
+    let path = std::fs::canonicalize(&db).map_or(db.clone(), |p| p.display().to_string());
+    if existed {
+        tracing::info!(store = path, "relay store open");
+    } else {
+        // Loud on purpose. A relay started from another directory quietly
+        // gets a fresh store, and every client that used the old one finds
+        // itself ahead of this one's history.
+        tracing::warn!(
+            store = path,
+            "created a new, empty relay store; clients that used another one will resync to it. \
+             Set OPENCONV_RELAY_DB to keep using a store across directories"
+        );
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!(%addr, "relay listening");

@@ -34,11 +34,13 @@ Encrypted group messaging works end to end: MLS via openmls, a blind relay
 that orders frames, a native SwiftUI client, and state that survives a
 restart. Three or more members, commit races resolved correctly.
 
-What that is not yet: **one implicit conversation, everyone online at once.**
-The relay routes frames by channel and stores them durably (#104), but a
-reconnecting client has no way yet to ask for what it missed (#105), so a
-message sent while you are disconnected never reaches you. There is no
-identity beyond a self-declared name.
+The relay routes frames by channel and stores them durably (#104), and a
+client that was away catches up on what it missed when it reconnects (#105):
+messages, commits, and join requests nobody was online to answer.
+
+What that is not yet: **one implicit conversation**, and no retention limit
+(#106), so a busy relay's storage grows without bound. There is no identity
+beyond a self-declared name.
 
 ## The ordering principle
 
