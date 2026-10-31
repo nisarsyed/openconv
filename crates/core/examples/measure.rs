@@ -22,6 +22,13 @@ fn admit(host: &mut Member, joiner: &mut Member) -> Vec<u8> {
     commit
 }
 
+/// The store's size on disk, as (database, WAL) in KiB. The WAL holds
+/// writes not yet checkpointed into the database.
+fn store_kib(db: &std::path::Path) -> (u64, u64) {
+    let size = |p: &std::path::Path| std::fs::metadata(p).map_or(0, |m| m.len()) / 1024;
+    (size(db), size(&db.with_extension("db-wal")))
+}
+
 fn tmp(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("openconv-measure-{}-{name}", std::process::id()))
 }
@@ -42,11 +49,10 @@ fn main() {
     let memory = t.elapsed();
     println!("  {n} round trips: {memory:?}  ({:?}/msg)", memory / n);
 
-    println!("\n== send/receive cost, persisted to an encrypted vault ==");
+    println!("\n== send/receive cost, both members persisted to the encrypted store ==");
     let dir = tmp("persisted");
-    let mut alice =
-        Member::restore(Vault::with_key(dir.join("a.vault"), [1u8; 32]), "alice").unwrap();
-    let mut bob = Member::restore(Vault::with_key(dir.join("b.vault"), [2u8; 32]), "bob").unwrap();
+    let mut alice = Member::restore(Vault::with_key(dir.join("a.db"), [1u8; 32]), "alice").unwrap();
+    let mut bob = Member::restore(Vault::with_key(dir.join("b.db"), [2u8; 32]), "bob").unwrap();
     alice.create_group().unwrap();
     admit(&mut alice, &mut bob);
 
@@ -56,24 +62,29 @@ fn main() {
         bob.receive(&wire).unwrap();
     }
     let persisted = t.elapsed();
-    let size = std::fs::metadata(dir.join("a.vault")).unwrap().len();
+    let size = store_kib(&dir.join("a.db"));
     println!(
         "  {n} round trips: {persisted:?}  ({:?}/msg)",
         persisted / n
     );
-    println!("  vault after {n} messages: {} KiB", size / 1024);
+    println!(
+        "  store after {n} messages: {} KiB database + {} KiB WAL",
+        size.0, size.1
+    );
     println!(
         "  persistence overhead: {:.1}x",
         persisted.as_secs_f64() / memory.as_secs_f64()
     );
     std::fs::remove_dir_all(&dir).ok();
 
-    println!("\n== group size scaling (in-memory) ==");
-    println!("  members   add commit   vault KiB   send    broadcast-receive");
+    // The host is persisted, so its add and send columns include the store.
+    // The other members are in memory, so broadcast-receive does not.
+    println!("\n== group size scaling (host persisted, others in memory) ==");
+    println!("  members   add commit   db+WAL KiB   send    broadcast-receive");
     for target in [2usize, 5, 10, 25, 50] {
         let dir = tmp(&format!("n{target}"));
         let mut host =
-            Member::restore(Vault::with_key(dir.join("h.vault"), [3u8; 32]), "host").unwrap();
+            Member::restore(Vault::with_key(dir.join("h.db"), [3u8; 32]), "host").unwrap();
         host.create_group().unwrap();
 
         let mut others = Vec::new();
@@ -104,9 +115,10 @@ fn main() {
         }
         let fanout = t.elapsed();
 
-        let size = std::fs::metadata(dir.join("h.vault")).unwrap().len() / 1024;
+        let size = store_kib(&dir.join("h.db"));
         println!(
-            "  {target:>7}   {last_add:>9.2?}   {size:>9}   {send:>5.2?}   {fanout:>8.2?}  (commit {commit_size}B)"
+            "  {target:>7}   {last_add:>9.2?}   {:>4}+{:<5}   {send:>5.2?}   {fanout:>8.2?}  (commit {commit_size}B)",
+            size.0, size.1
         );
         std::fs::remove_dir_all(&dir).ok();
     }

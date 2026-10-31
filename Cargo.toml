@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "crates/server", "crates/wire"]
+# A vendored dependency, not ours: kept out of our lints and formatting.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -62,3 +64,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# openmls_sqlite_storage on rusqlite 0.40, ahead of upstream's release of the
+# same change. Remove with the directory; see vendor/openmls_sqlite_storage/VENDORED.md.
+[patch.crates-io]
+openmls_sqlite_storage = { path = "vendor/openmls_sqlite_storage" }

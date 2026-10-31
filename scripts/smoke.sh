@@ -147,20 +147,30 @@ check() {
     fi
 }
 
-# Persistence: each client should have written an encrypted vault.
+# Persistence: each client should have written an encrypted database. Its
+# WAL holds recent writes, so it is checked too when present.
 for who in alice bob carol; do
-    vault="$OPENCONV_DATA_DIR/$who.vault"
-    if [ ! -f "$vault" ]; then
-        echo "  FAIL $who wrote no vault"
+    db="$OPENCONV_DATA_DIR/$who.db"
+    if [ ! -f "$db" ]; then
+        echo "  FAIL $who wrote no database"
         fail=1
-    elif ! head -c 4 "$vault" | grep -q "OCV1"; then
-        echo "  FAIL $who's vault has no magic header"
-        fail=1
-    elif LC_ALL=C grep -qa "$who" "$vault"; then
-        echo "  FAIL $who's identity is readable in its vault"
+        continue
+    fi
+    leaked=0
+    for f in "$db" "$db-wal"; do
+        [ -f "$f" ] || continue
+        if head -c 15 "$f" | LC_ALL=C grep -qa '^SQLite format 3'; then
+            echo "  FAIL $(basename "$f") has a plaintext SQLite header"
+            leaked=1
+        elif LC_ALL=C grep -qa "$who" "$f"; then
+            echo "  FAIL $who's identity is readable in $(basename "$f")"
+            leaked=1
+        fi
+    done
+    if [ "$leaked" = 1 ]; then
         fail=1
     else
-        echo "  ok   $who persisted an encrypted vault"
+        echo "  ok   $who persisted an encrypted database"
     fi
 done
 

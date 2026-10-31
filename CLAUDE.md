@@ -82,10 +82,13 @@ subscription exists before anyone can answer.
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.
 
-**State persists in an encrypted vault** (`crates/core/src/store.rs`): the whole
-MLS store snapshotted, XChaCha20-Poly1305, key from the macOS Keychain. The
-`StorageProvider` trait has 72 methods, which is why this snapshots rather than
-implementing it over SQLite.
+**State persists in an encrypted SQLite database** (`crates/core/src/store.rs`):
+openmls's own SQLite `StorageProvider` (`openmls_sqlite_storage`) over a
+SQLCipher connection, key from the macOS Keychain. Every `Member` operation runs
+in a savepoint and is rolled back, with the group reloaded from disk, if any
+part fails, so a failed operation leaves no trace. The storage crate is
+vendored in `vendor/` until upstream releases it on `rusqlite` 0.40; see
+`VENDORED.md` there. Do not edit it.
 
 ## Traps
 
@@ -121,7 +124,7 @@ most often gotten wrong:
 - **The build is warning-clean.** Lint policy is `[workspace.lints]`; an
   `#[allow]` needs a comment saying why.
 - **Types holding key material implement `Debug` by hand and redact.**
-  `Member`, `Vault`, `Provider`, `Snapshot`. A derived `Debug` prints identity
+  `Member`, `Vault`, `Provider`, `Database`. A derived `Debug` prints identity
   keys and ratchet state into any log line that formats one.
 - **Generated bindings are never formatted or linted.**
 - No `print!` in Rust — logging goes through `tracing`.

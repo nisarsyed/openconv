@@ -214,14 +214,9 @@ the product shape is settled.
 
 ## Known debt, carried
 
-- The whole MLS store is rewritten on every send and receive. Re-measured
-  2026-09-29 at 7.4x overhead per message. A persisted send already takes
-  1.21 ms at fifty members, and the store grows with group size: 26 KiB at two
-  members, 197 KiB at fifty. The fix no longer means writing 72 trait methods.
-  `openmls_sqlite_storage` 0.3 is published and matches our `openmls_traits`
-  0.6. What remains is encryption at rest, which that crate does not provide.
-  The trigger is milestone (1), which multiplies the cost by the number of
-  channels. Tracked as #107; see `crates/core/examples/measure.rs`.
+- `openmls_sqlite_storage` is vendored in `vendor/` with upstream's
+  `rusqlite` 0.40 bump (openmls#2256), which is merged but unreleased. Delete
+  the copy and its `[patch]` entry once upstream publishes it (#107).
 - `rust-version` was `1.85`, which could never have built: openmls 0.9
   declares 1.91. Corrected to 1.91; still not verified by CI.
 - The relay's lag-disconnect path has no test.

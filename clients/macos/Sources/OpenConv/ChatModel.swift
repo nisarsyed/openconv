@@ -66,6 +66,13 @@ final class ChatModel: ObservableObject {
         self.identity = identity
         let vault = Self.vaultPath(for: identity)
         self.client = try Client.open(path: vault.path, identity: identity)
+        // State used to be one encrypted snapshot file. It is not migrated:
+        // openmls cannot move group state between stores, and it only ever
+        // held development data. Say so, rather than appear to lose it.
+        let old = vault.deletingPathExtension().appendingPathExtension("vault")
+        if FileManager.default.fileExists(atPath: old.path) {
+            note("ignoring \(old.lastPathComponent) from an older version; it can be deleted")
+        }
     }
 
     /// Where this identity's encrypted state lives.
@@ -81,7 +88,7 @@ final class ChatModel: ObservableObject {
                 .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("OpenConv")
         }
-        return base.appendingPathComponent("\(identity).vault")
+        return base.appendingPathComponent("\(identity).db")
     }
 
     /// Fires `autoSay` the first time we reach a joined state.

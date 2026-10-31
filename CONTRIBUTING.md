@@ -65,7 +65,7 @@ continuing would be worse than panicking.
 ### Secrets and `Debug`
 
 **Types holding key material implement `Debug` by hand and redact.** `Member`,
-`Vault`, `Provider`, and `Snapshot` all do. A derived `Debug` would print
+`Vault`, `Provider`, and `Database` all do. A derived `Debug` would print
 identity keys and ratchet state into any log line or panic message that
 formats one. Use `finish_non_exhaustive()` so the omission is visible.
 
@@ -164,8 +164,9 @@ in that case.
 
 **A test earns its place by failing when the thing it names is broken.** The
 cheapest way to find out is to break that thing on purpose and check which
-tests go red. Three worth keeping honest: make `persist` a no-op, stop a
-losing member clearing its staged commit, and write the vault unencrypted.
+tests go red. Three worth keeping honest: make `Member::atomically` skip its
+rollback, stop a losing member clearing its staged commit, and open the store
+without its SQLCipher key.
 Each should take tests with it.
 
 When doing that, assert the mutation actually applied. A patch that silently

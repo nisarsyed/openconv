@@ -54,11 +54,12 @@ and from there both can chat. Everything on the wire is MLS ciphertext.
 ## State
 
 Each client keeps its MLS state — identity, group membership, ratchet state —
-in a single encrypted file, so a restart resumes where it left off.
+in an encrypted SQLite database, so a restart resumes where it left off.
 
-- **Encrypted at rest.** XChaCha20-Poly1305, written `0600` via a temp file and
-  rename so an interrupted save cannot truncate good state.
-- **The data key lives in the macOS Keychain**, not beside the vault.
+- **Encrypted at rest.** SQLCipher encrypts and authenticates every page, and
+  the files are `0600`. Each operation is one transaction, so a crash or an
+  error cannot leave half an update on disk.
+- **The data key lives in the macOS Keychain**, not beside the database.
 - **`OPENCONV_DATA_DIR` overrides the location** and switches the key to a file
   inside that directory. That is for development and testing: an unsigned
   binary changes code identity on every rebuild, and the Keychain then raises
