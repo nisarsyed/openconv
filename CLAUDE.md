@@ -14,7 +14,12 @@ just fmt                # format both languages
 just bindings           # regenerate Swift bindings from crates/core/src/ffi.rs
 just relay              # start the relay on 127.0.0.1:8080
 just client alice       # launch a client (click Host, or paste a channel id and Join)
+just labs               # real relay and apps through crashes, restarts, retention
 ```
+
+The labs (`labs/README.md`) are manual, not in `just check` or CI: run the
+ones touching your change before a PR. `just lab-setup` once for their Python;
+`just lab <name>` runs one against what is already built.
 
 Single test: `cargo test -p openconv-core group_state_survives_a_restart`
 

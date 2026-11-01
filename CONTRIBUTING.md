@@ -182,6 +182,13 @@ the thing under test are a common trap: a test that passes the commit to a
 member by hand proves openmls can apply commits, not that this codebase ever
 sends one.
 
+Some behaviour only shows with the real binaries: a client SIGKILLed between
+sending and saving, a relay that comes back without its store, a member away
+past retention. `labs/` drives the real relay and app through those, and is
+how several bugs that every test passed were found. The labs are not in CI;
+run the ones touching your change before opening a PR, and say in it which
+you ran. A new guarantee that a test cannot reach gets a lab.
+
 `BridgeCheck` is a plain executable, not a test target, because XCTest and
 swift-testing both require a full Xcode install and this builds with Command
 Line Tools only. Don't "fix" it into a test target.

@@ -9,3 +9,6 @@ clients/macos/Sources/openconv_coreFFI/include/openconv_coreFFI.h
 
 # The relay's frame store from `just relay`, plus its WAL side files.
 openconv-relay.db*
+
+# The labs' Python environment, from `just lab-setup`.
+labs/.venv/
