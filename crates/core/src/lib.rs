@@ -2204,6 +2204,19 @@ pub fn parse_channel_id(text: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A `KeyPackage` lifetime short enough to run out during a test.
+    ///
+    /// Not one second: openmls counts whole seconds, setting `not_after` to
+    /// now plus the lifetime and rejecting the package once `not_after <=
+    /// now`. A one-second package made late in a second can be expired by
+    /// the time it is first checked, a few milliseconds later.
+    const SHORT_LIFETIME: u64 = 2;
+
+    /// Wait until a `SHORT_LIFETIME` package made before the call has run out.
+    fn outlive_short_lifetime() {
+        std::thread::sleep(std::time::Duration::from_secs(SHORT_LIFETIME + 1));
+    }
+
     /// Assert an event is a message with the given text.
     #[track_caller]
     fn assert_message(event: Event, expected: &str) {
@@ -3193,10 +3206,10 @@ mod tests {
     fn a_group_can_be_joined_after_a_quiet_members_request_expired() {
         let mut alice = Member::new("alice").unwrap();
         let mut bob = Member::new("bob").unwrap();
-        bob.offer_lifetime = 1;
+        bob.offer_lifetime = SHORT_LIFETIME;
         alice.create_group().unwrap();
         admit(&mut alice, &mut bob);
-        std::thread::sleep(std::time::Duration::from_secs(2)); // bob's place expires
+        outlive_short_lifetime(); // bob's place expires
 
         let mut carol = Member::new("carol").unwrap();
         let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
@@ -3468,12 +3481,12 @@ mod tests {
     fn a_late_approval_lets_them_in_when_they_next_ask() {
         let (mut alice, channel) = live_host();
         let mut carol = Member::new("carol").unwrap();
-        carol.offer_lifetime = 1;
+        carol.offer_lifetime = SHORT_LIFETIME;
         let first = carol.key_package().unwrap();
         alice
             .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &first))
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(2)); // it runs out
+        outlive_short_lifetime(); // it runs out
 
         let waiting = alice.join_requests().unwrap();
         assert!(
