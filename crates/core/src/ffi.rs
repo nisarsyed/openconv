@@ -91,7 +91,8 @@ impl From<crate::Event> for ClientEvent {
     }
 }
 
-/// What the app should do after [`Client::deliver`], in order.
+/// What the app should do after [`Client::deliver`], in order. Each one
+/// about a group names its `channel`.
 #[derive(Debug, uniffi::Enum)]
 pub enum ClientEffect {
     /// Write `request` to the relay.
@@ -101,6 +102,8 @@ pub enum ClientEffect {
     },
     /// A decrypted message from another member.
     Message {
+        /// The group it was sent to.
+        channel: Vec<u8>,
         /// The text to show.
         text: String,
         /// Who sent it: their self-declared name.
@@ -109,20 +112,41 @@ pub enum ClientEffect {
         id: Vec<u8>,
     },
     /// This client joined the group.
-    Joined,
+    Joined {
+        /// The group.
+        channel: Vec<u8>,
+    },
     /// This client let a new member in.
-    Admitted,
+    Admitted {
+        /// The group.
+        channel: Vec<u8>,
+    },
     /// Another member's change to the group landed first.
-    Superseded,
+    Superseded {
+        /// The group.
+        channel: Vec<u8>,
+    },
     /// This client is no longer in the group: removed, or its leave was
     /// committed.
-    Removed,
+    Removed {
+        /// The group.
+        channel: Vec<u8>,
+    },
     /// This client was stranded and has asked to be added back.
-    Rejoining,
+    Rejoining {
+        /// The group.
+        channel: Vec<u8>,
+    },
     /// Someone asked to join; see [`Client::join_requests`].
-    JoinRequested,
-    /// Group state moved on; membership may have changed.
-    Advanced,
+    JoinRequested {
+        /// The group.
+        channel: Vec<u8>,
+    },
+    /// Group state moved on: membership, or the name, may have changed.
+    Advanced {
+        /// The group.
+        channel: Vec<u8>,
+    },
     /// Caught up on `address`; live from here.
     Live {
         /// The address.
@@ -149,18 +173,19 @@ impl From<Effect> for ClientEffect {
     fn from(e: Effect) -> Self {
         match e {
             Effect::Send(request) => Self::Send { request },
-            Effect::Message(received) => Self::Message {
-                text: received.text(),
-                sender: received.sender.clone(),
-                id: received.id.to_vec(),
+            Effect::Message { channel, message } => Self::Message {
+                channel,
+                text: message.text(),
+                sender: message.sender.clone(),
+                id: message.id.to_vec(),
             },
-            Effect::Joined => Self::Joined,
-            Effect::Admitted => Self::Admitted,
-            Effect::Superseded => Self::Superseded,
-            Effect::Removed => Self::Removed,
-            Effect::Rejoining => Self::Rejoining,
-            Effect::JoinRequested => Self::JoinRequested,
-            Effect::Advanced => Self::Advanced,
+            Effect::Joined { channel } => Self::Joined { channel },
+            Effect::Admitted { channel } => Self::Admitted { channel },
+            Effect::Superseded { channel } => Self::Superseded { channel },
+            Effect::Removed { channel } => Self::Removed { channel },
+            Effect::Rejoining { channel } => Self::Rejoining { channel },
+            Effect::JoinRequested { channel } => Self::JoinRequested { channel },
+            Effect::Advanced { channel } => Self::Advanced { channel },
             Effect::Live { address } => Self::Live { address },
             Effect::RelayReset { address } => Self::RelayReset { address },
             Effect::Unavailable {
@@ -218,11 +243,11 @@ impl Client {
         Ok(self.lock().key_package()?)
     }
 
-    /// Start a new group containing only this client.
+    /// Start a new group containing only this client, returning its channel.
     ///
     /// # Errors
     /// If the group cannot be created or its state cannot be saved.
-    pub fn create_group(&self) -> Result<()> {
+    pub fn create_group(&self) -> Result<Vec<u8>> {
         Ok(self.lock().create_group()?)
     }
 
@@ -235,47 +260,73 @@ impl Client {
         Ok(self.lock().mailbox(&key_package)?)
     }
 
-    /// The channel this client's group lives on, once it is in one.
-    #[must_use]
-    pub fn channel(&self) -> Option<Vec<u8>> {
-        self.lock().channel()
+    /// The channels of the groups this client is in, in the order it joined
+    /// them.
+    ///
+    /// # Errors
+    /// If saved state cannot be read.
+    pub fn channels(&self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.lock().channels()?)
+    }
+
+    /// The conversation's name, if a member has given it one. Show its
+    /// members' names when it has none.
+    ///
+    /// # Errors
+    /// If this client is not in that group.
+    pub fn name(&self, channel: Vec<u8>) -> Result<Option<String>> {
+        Ok(self.lock().name(&channel)?)
+    }
+
+    /// Name the conversation, or clear its name with an empty `name`,
+    /// returning the request to send. The name changes once the relay's
+    /// order confirms it: watch for [`ClientEffect::Advanced`] or
+    /// [`ClientEffect::Superseded`].
+    ///
+    /// # Errors
+    /// If the name is too long, this client is not in that group, another
+    /// change is in flight there, or the group predates names.
+    pub fn set_name(&self, channel: Vec<u8>, name: String) -> Result<Vec<u8>> {
+        let commit = self.lock().set_name(&channel, &name)?;
+        Ok(crate::encode_publish(&channel, FrameKind::Commit, &commit)?)
     }
 
     /// Stage admitting a member from their published `KeyPackage`, returning
     /// the commit to send.
     ///
     /// The add is not applied until the relay's ordering confirms it; watch
-    /// for [`ClientEvent::Admitted`] or [`ClientEvent::AddSuperseded`].
+    /// for [`ClientEvent::Admitted`] or [`ClientEvent::Superseded`].
     ///
     /// # Errors
-    /// If the key package is invalid, this client is not in a group, or an
-    /// add is already in flight.
-    pub fn propose_add(&self, key_package: Vec<u8>) -> Result<Vec<u8>> {
-        Ok(self.lock().propose_add(&key_package)?)
+    /// If the key package is invalid, this client is not in that group, or
+    /// a change is already in flight there.
+    pub fn propose_add(&self, channel: Vec<u8>, key_package: Vec<u8>) -> Result<Vec<u8>> {
+        Ok(self.lock().propose_add(&channel, &key_package)?)
     }
 
-    /// Join a group from a `Welcome`.
+    /// Join a group from a `Welcome`, returning its channel.
     ///
     /// # Errors
-    /// If the welcome is malformed or does not admit this client.
-    pub fn join(&self, welcome: Vec<u8>) -> Result<()> {
+    /// If the welcome is malformed, does not admit this client, or is to a
+    /// group it is already in.
+    pub fn join(&self, welcome: Vec<u8>) -> Result<Vec<u8>> {
         Ok(self.lock().join(&welcome)?)
     }
 
-    /// Encrypt a message for the group.
+    /// Encrypt a message for the group on `channel`.
     ///
     /// # Errors
-    /// If this client is not in a group, or encryption fails.
-    pub fn send(&self, text: String) -> Result<Vec<u8>> {
-        Ok(self.lock().send(&text)?)
+    /// If this client is not in that group, or encryption fails.
+    pub fn send(&self, channel: Vec<u8>, text: String) -> Result<Vec<u8>> {
+        Ok(self.lock().send(&channel, &text)?)
     }
 
-    /// Process an incoming frame.
+    /// Process an incoming frame for the group on `channel`.
     ///
     /// # Errors
     /// If the frame is malformed, or cannot be decrypted by this client.
-    pub fn receive(&self, wire: Vec<u8>) -> Result<ClientEvent> {
-        Ok(self.lock().receive(&wire)?.into())
+    pub fn receive(&self, channel: Vec<u8>, wire: Vec<u8>) -> Result<ClientEvent> {
+        Ok(self.lock().receive(&channel, &wire)?.into())
     }
 
     /// Requests to send on connecting to the relay: catch up on every
@@ -305,19 +356,20 @@ impl Client {
         Ok(self.lock().refresh_offers()?)
     }
 
-    /// Whether this client asked to join and is still waiting to be let in.
+    /// The channels this client asked to join and is still waiting to be
+    /// let into.
     ///
     /// # Errors
     /// If saved state cannot be read.
-    pub fn waiting_to_join(&self) -> Result<bool> {
+    pub fn waiting_to_join(&self) -> Result<Vec<Vec<u8>>> {
         Ok(self.lock().waiting_to_join()?)
     }
 
-    /// Everyone in the group, this client included.
+    /// Everyone in the group on `channel`, this client included.
     #[must_use]
-    pub fn members(&self) -> Vec<GroupMember> {
+    pub fn members(&self, channel: Vec<u8>) -> Vec<GroupMember> {
         self.lock()
-            .members()
+            .members(&channel)
             .into_iter()
             .map(|r| GroupMember {
                 index: r.index,
@@ -327,26 +379,23 @@ impl Client {
             .collect()
     }
 
-    /// Remove the member at `index`, returning the request to send.
+    /// Remove the member at `index` from the group on `channel`, returning
+    /// the request to send.
     ///
     /// # Errors
-    /// If there is no group, another change is in flight, or `index` is not
-    /// another member's.
-    pub fn remove_member(&self, index: u32) -> Result<Vec<u8>> {
-        let mut member = self.lock();
-        let commit = member.remove_member(index)?;
-        let channel = member.channel().ok_or(crate::Error::NoGroup)?;
+    /// If this client is not in that group, another change is in flight
+    /// there, or `index` is not another member's.
+    pub fn remove_member(&self, channel: Vec<u8>, index: u32) -> Result<Vec<u8>> {
+        let commit = self.lock().remove_member(&channel, index)?;
         Ok(crate::encode_publish(&channel, FrameKind::Commit, &commit)?)
     }
 
-    /// Ask to leave the group, returning the request to send.
+    /// Ask to leave the group on `channel`, returning the request to send.
     ///
     /// # Errors
-    /// If there is no group.
-    pub fn leave(&self) -> Result<Vec<u8>> {
-        let mut member = self.lock();
-        let proposal = member.leave()?;
-        let channel = member.channel().ok_or(crate::Error::NoGroup)?;
+    /// If this client is not in that group.
+    pub fn leave(&self, channel: Vec<u8>) -> Result<Vec<u8>> {
+        let proposal = self.lock().leave(&channel)?;
         Ok(crate::encode_publish(
             &channel,
             FrameKind::Proposal,
@@ -354,14 +403,15 @@ impl Client {
         )?)
     }
 
-    /// Requests to join waiting for an answer, oldest first.
+    /// Requests to join the group on `channel` waiting for an answer, oldest
+    /// first.
     ///
     /// # Errors
     /// If saved state cannot be read.
-    pub fn join_requests(&self) -> Result<Vec<PendingJoin>> {
+    pub fn join_requests(&self, channel: Vec<u8>) -> Result<Vec<PendingJoin>> {
         Ok(self
             .lock()
-            .join_requests()?
+            .join_requests(&channel)?
             .into_iter()
             .map(|r| PendingJoin {
                 id: r.id,
@@ -382,27 +432,30 @@ impl Client {
     /// so an expired one is answered when their next request arrives.
     ///
     /// # Errors
-    /// If `id` is not a pending request, or the add cannot be made.
-    pub fn accept(&self, id: Vec<u8>) -> Result<Accepted> {
-        Ok(match self.lock().accept(&id)? {
+    /// If `id` is not a request pending in that group, or the add cannot be
+    /// made.
+    pub fn accept(&self, channel: Vec<u8>, id: Vec<u8>) -> Result<Accepted> {
+        Ok(match self.lock().accept(&channel, &id)? {
             crate::Acceptance::Sending(requests) => Accepted::Sending { requests },
             crate::Acceptance::Queued => Accepted::Queued,
             crate::Acceptance::WhenTheyNextAsk => Accepted::WhenTheyNextAsk,
         })
     }
 
-    /// Turn down request `id`, and later ones from the same identity.
+    /// Turn down request `id` to join the group on `channel`, and later ones
+    /// there from the same identity.
     ///
     /// # Errors
-    /// If `id` is not a pending request.
-    pub fn decline(&self, id: Vec<u8>) -> Result<()> {
-        Ok(self.lock().decline(&id)?)
+    /// If `id` is not a request pending in that group.
+    pub fn decline(&self, channel: Vec<u8>, id: Vec<u8>) -> Result<()> {
+        Ok(self.lock().decline(&channel, &id)?)
     }
 
-    /// Whether this client has asked to leave and is still a member.
+    /// Whether this client has asked to leave the group on `channel` and is
+    /// still a member.
     #[must_use]
-    pub fn is_leaving(&self) -> bool {
-        self.lock().is_leaving()
+    pub fn is_leaving(&self, channel: Vec<u8>) -> bool {
+        self.lock().is_leaving(&channel)
     }
 
     /// Process anything the relay sent, returning what to do about it.
@@ -458,11 +511,11 @@ impl Client {
         self.lock().identity()
     }
 
-    /// How many members are currently in the group.
+    /// How many members are currently in the group on `channel`.
     #[must_use]
-    pub fn member_count(&self) -> u32 {
+    pub fn member_count(&self, channel: Vec<u8>) -> u32 {
         // A group cannot plausibly exceed u32::MAX; saturate rather than wrap.
-        u32::try_from(self.lock().member_count()).unwrap_or(u32::MAX)
+        u32::try_from(self.lock().member_count(&channel)).unwrap_or(u32::MAX)
     }
 }
 

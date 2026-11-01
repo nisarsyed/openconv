@@ -57,13 +57,114 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 7] = [
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+const MIGRATIONS: [&str; 8] = [
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
+
+const SCHEMA_V8: &str = "
+    -- Several groups per client (#134). The groups this client is in, in
+    -- the order it joined them, instead of one group id on the client row.
+    CREATE TABLE groups (channel BLOB PRIMARY KEY);
+    INSERT INTO groups (channel) SELECT group_id FROM client WHERE group_id IS NOT NULL;
+
+    -- What was this client's state about its one group becomes state about
+    -- a group, keyed by its channel. Rows that belonged to a group this
+    -- client is no longer in cannot be placed, and go: a removed member's
+    -- record of who it saw removed, for instance.
+    CREATE TABLE pending_commit_v8 (
+        channel BLOB PRIMARY KEY,
+        commit_ BLOB NOT NULL,
+        welcome BLOB,
+        mailbox BLOB,
+        until   INTEGER
+    );
+    INSERT INTO pending_commit_v8
+        SELECT c.group_id, p.commit_, p.welcome, p.mailbox, p.until
+        FROM pending_commit p, client c WHERE c.group_id IS NOT NULL;
+    DROP TABLE pending_commit;
+    ALTER TABLE pending_commit_v8 RENAME TO pending_commit;
+
+    CREATE TABLE leaving_v8 (
+        channel  BLOB PRIMARY KEY,
+        proposal BLOB NOT NULL,
+        epoch    INTEGER NOT NULL
+    );
+    INSERT INTO leaving_v8
+        SELECT c.group_id, l.proposal, l.epoch
+        FROM leaving l, client c WHERE c.group_id IS NOT NULL;
+    DROP TABLE leaving;
+    ALTER TABLE leaving_v8 RENAME TO leaving;
+
+    ALTER TABLE sent ADD COLUMN channel BLOB;
+    UPDATE sent SET channel = (SELECT group_id FROM client);
+    DELETE FROM sent WHERE channel IS NULL;
+
+    ALTER TABLE deferred ADD COLUMN channel BLOB;
+    UPDATE deferred SET channel = (SELECT group_id FROM client);
+    DELETE FROM deferred WHERE channel IS NULL;
+
+    CREATE TABLE join_requests_v8 (
+        channel       BLOB NOT NULL,
+        signature_key BLOB NOT NULL,
+        key_package   BLOB NOT NULL,
+        name          TEXT NOT NULL,
+        seen_at       INTEGER NOT NULL,
+        declined      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (channel, signature_key)
+    );
+    INSERT INTO join_requests_v8
+        SELECT c.group_id, j.signature_key, j.key_package, j.name, j.seen_at, j.declined
+        FROM join_requests j, client c WHERE c.group_id IS NOT NULL;
+    DROP TABLE join_requests;
+    ALTER TABLE join_requests_v8 RENAME TO join_requests;
+
+    CREATE TABLE removed_v8 (
+        channel       BLOB NOT NULL,
+        signature_key BLOB NOT NULL,
+        name          TEXT NOT NULL,
+        by            TEXT NOT NULL,
+        at            INTEGER NOT NULL,
+        PRIMARY KEY (channel, signature_key)
+    );
+    INSERT INTO removed_v8
+        SELECT c.group_id, r.signature_key, r.name, r.by, r.at
+        FROM removed r, client c WHERE c.group_id IS NOT NULL;
+    DROP TABLE removed;
+    ALTER TABLE removed_v8 RENAME TO removed;
+
+    CREATE TABLE approved_v8 (
+        channel       BLOB NOT NULL,
+        signature_key BLOB NOT NULL,
+        name          TEXT NOT NULL,
+        at            INTEGER NOT NULL,
+        PRIMARY KEY (channel, signature_key)
+    );
+    INSERT INTO approved_v8
+        SELECT c.group_id, a.signature_key, a.name, a.at
+        FROM approved a, client c WHERE c.group_id IS NOT NULL;
+    DROP TABLE approved;
+    ALTER TABLE approved_v8 RENAME TO approved;
+
+    -- A KeyPackage can be published to any channel, so whether it was
+    -- admitted is a fact about a group, not about the KeyPackage.
+    CREATE TABLE admitted_v8 (
+        channel         BLOB NOT NULL,
+        key_package_ref BLOB NOT NULL,
+        until           INTEGER NOT NULL,
+        PRIMARY KEY (channel, key_package_ref)
+    );
+    INSERT INTO admitted_v8
+        SELECT c.group_id, a.key_package_ref, a.until
+        FROM admitted a, client c WHERE c.group_id IS NOT NULL;
+    DROP TABLE admitted;
+    ALTER TABLE admitted_v8 RENAME TO admitted;
+
+    ALTER TABLE client DROP COLUMN group_id;
+";
 
 const SCHEMA_V7: &str = "
     -- The conversation as this client saw it (#129): every message it
@@ -288,8 +389,6 @@ pub(crate) struct Saved {
     pub(crate) identity: String,
     /// Identifies which key pair in the store belongs to this client.
     pub(crate) signature_public_key: Vec<u8>,
-    /// Present once the client has created or joined a group.
-    pub(crate) group_id: Option<Vec<u8>>,
 }
 
 /// One client's state: an open SQLite connection with the schema in place.
@@ -552,13 +651,12 @@ impl Database {
     pub(crate) fn load(&self) -> Result<Option<Saved>> {
         self.conn
             .query_row(
-                "SELECT identity, signature_public_key, group_id FROM client WHERE id = 0",
+                "SELECT identity, signature_public_key FROM client WHERE id = 0",
                 [],
                 |r| {
                     Ok(Saved {
                         identity: r.get(0)?,
                         signature_public_key: r.get(1)?,
-                        group_id: r.get(2)?,
                     })
                 },
             )
@@ -566,18 +664,47 @@ impl Database {
             .map_err(store)
     }
 
-    /// Record who this client is and which group it is in.
+    /// Record who this client is.
     pub(crate) fn save(&self, saved: &Saved) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO client (id, identity, signature_public_key, group_id)
-                 VALUES (0, ?1, ?2, ?3)
+                "INSERT INTO client (id, identity, signature_public_key)
+                 VALUES (0, ?1, ?2)
                  ON CONFLICT (id) DO UPDATE SET
                      identity = excluded.identity,
-                     signature_public_key = excluded.signature_public_key,
-                     group_id = excluded.group_id",
-                params![saved.identity, saved.signature_public_key, saved.group_id],
+                     signature_public_key = excluded.signature_public_key",
+                params![saved.identity, saved.signature_public_key],
             )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The channels of the groups this client is in, in the order it joined
+    /// them.
+    pub(crate) fn groups(&self) -> Result<Vec<Vec<u8>>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT channel FROM groups ORDER BY rowid")
+            .map_err(store)?;
+        let rows = stmt.query_map([], |r| r.get(0)).map_err(store)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(store)
+    }
+
+    /// Record that this client is in the group on `channel`.
+    pub(crate) fn add_group(&self, channel: &[u8]) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO groups (channel) VALUES (?1)",
+                [channel],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Record that this client is no longer in the group on `channel`.
+    pub(crate) fn remove_group(&self, channel: &[u8]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM groups WHERE channel = ?1", [channel])
             .map(drop)
             .map_err(store)
     }
@@ -686,11 +813,24 @@ impl Database {
             .map_err(store)
     }
 
-    /// Stop reading every mailbox: the offers they were for are answered.
-    pub(crate) fn unfollow_mailboxes(&self) -> Result<()> {
+    /// Stop reading every mailbox made for an offer to `channel`: the offers
+    /// are answered. Offers to other channels keep theirs.
+    pub(crate) fn unfollow_mailboxes(&self, channel: &[u8]) -> Result<()> {
         self.conn
-            .execute("DELETE FROM follows WHERE offer IS NOT NULL", [])
+            .execute(
+                "DELETE FROM follows WHERE offer IS NOT NULL AND offer_to = ?1",
+                [channel],
+            )
             .map(drop)
+            .map_err(store)
+    }
+
+    /// The channel an offer made from `mailbox` asked to join, if `mailbox`
+    /// is one of this client's mailboxes.
+    pub(crate) fn offered_to(&self, mailbox: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .prepare_cached("SELECT offer_to FROM follows WHERE address = ?1 AND offer IS NOT NULL")
+            .and_then(|mut stmt| stmt.query_row([mailbox], |r| r.get(0)).optional())
             .map_err(store)
     }
 
@@ -716,23 +856,27 @@ impl Database {
             .map_err(store)
     }
 
-    /// Sent messages awaiting their echo, oldest first.
-    pub(crate) fn sent(&self) -> Result<Vec<SentRow>> {
+    /// Messages sent to `channel` awaiting their echo, oldest first.
+    pub(crate) fn sent(&self, channel: &[u8]) -> Result<Vec<SentRow>> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT wire, epoch, content, text FROM sent ORDER BY id")
+            .prepare_cached(
+                "SELECT wire, epoch, content, text FROM sent WHERE channel = ?1 ORDER BY id",
+            )
             .map_err(store)?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map([channel], |r| {
                 Ok((r.get(0)?, to_u64(r.get(1)?)?, r.get(2)?, r.get(3)?))
             })
             .map_err(store)?;
         rows.collect::<rusqlite::Result<_>>().map_err(store)
     }
 
-    /// Record a sent message, keeping only the newest `keep`.
+    /// Record a message sent to `channel`, keeping only the newest `keep`
+    /// there.
     pub(crate) fn push_sent(
         &self,
+        channel: &[u8],
         wire: &[u8],
         epoch: u64,
         content: &[u8],
@@ -741,33 +885,45 @@ impl Database {
         let keep = i64::try_from(keep).unwrap_or(i64::MAX);
         self.conn
             .execute(
-                "INSERT INTO sent (wire, epoch, content, text) VALUES (?1, ?2, ?3, '')",
-                params![wire, to_i64(epoch)?, content],
+                "INSERT INTO sent (channel, wire, epoch, content, text) VALUES (?1, ?2, ?3, ?4, '')",
+                params![channel, wire, to_i64(epoch)?, content],
             )
             .and_then(|_| {
                 self.conn.execute(
-                    "DELETE FROM sent WHERE id NOT IN (SELECT id FROM sent ORDER BY id DESC LIMIT ?1)",
-                    [keep],
+                    "DELETE FROM sent WHERE channel = ?1 AND id NOT IN
+                         (SELECT id FROM sent WHERE channel = ?1 ORDER BY id DESC LIMIT ?2)",
+                    params![channel, keep],
                 )
             })
             .map(drop)
             .map_err(store)
     }
 
-    /// Forget a sent message whose echo has arrived.
-    pub(crate) fn remove_sent(&self, wire: &[u8]) -> Result<()> {
+    /// Forget a message sent to `channel` whose echo has arrived.
+    pub(crate) fn remove_sent(&self, channel: &[u8], wire: &[u8]) -> Result<()> {
         self.conn
-            .execute("DELETE FROM sent WHERE wire = ?1", [wire])
+            .execute(
+                "DELETE FROM sent WHERE channel = ?1 AND wire = ?2",
+                params![channel, wire],
+            )
             .map(drop)
             .map_err(store)
     }
 
-    /// The staged commit, if there is one.
-    pub(crate) fn pending_commit(&self) -> Result<Option<Staged>> {
+    /// Forget every message sent to `channel`: this client left its group.
+    pub(crate) fn clear_sent(&self, channel: &[u8]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM sent WHERE channel = ?1", [channel])
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The commit staged in the group on `channel`, if there is one.
+    pub(crate) fn pending_commit(&self, channel: &[u8]) -> Result<Option<Staged>> {
         self.conn
             .query_row(
-                "SELECT commit_, welcome, mailbox, until FROM pending_commit WHERE id = 0",
-                [],
+                "SELECT commit_, welcome, mailbox, until FROM pending_commit WHERE channel = ?1",
+                [channel],
                 |r| {
                     let admits = match (r.get(1)?, r.get(2)?, r.get::<_, Option<i64>>(3)?) {
                         (Some(welcome), Some(mailbox), until) => {
@@ -782,10 +938,14 @@ impl Database {
             .map_err(store)
     }
 
-    /// Record the staged commit, or clear it.
-    pub(crate) fn set_pending_commit(&self, pending: Option<StagedRef<'_>>) -> Result<()> {
+    /// Record the commit staged in the group on `channel`, or clear it.
+    pub(crate) fn set_pending_commit(
+        &self,
+        channel: &[u8],
+        pending: Option<StagedRef<'_>>,
+    ) -> Result<()> {
         self.conn
-            .execute("DELETE FROM pending_commit", [])
+            .execute("DELETE FROM pending_commit WHERE channel = ?1", [channel])
             .map_err(store)?;
         if let Some((commit, admits)) = pending {
             let (welcome, mailbox, until) = match admits {
@@ -794,47 +954,50 @@ impl Database {
             };
             self.conn
                 .execute(
-                    "INSERT INTO pending_commit (id, commit_, welcome, mailbox, until)
-                     VALUES (0, ?1, ?2, ?3, ?4)",
-                    params![commit, welcome, mailbox, until],
+                    "INSERT INTO pending_commit (channel, commit_, welcome, mailbox, until)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![channel, commit, welcome, mailbox, until],
                 )
                 .map_err(store)?;
         }
         Ok(())
     }
 
-    /// This client's standing request to leave, and the epoch it was made in.
-    pub(crate) fn leaving(&self) -> Result<Option<(Vec<u8>, u64)>> {
+    /// This client's standing request to leave the group on `channel`, and
+    /// the epoch it was made in.
+    pub(crate) fn leaving(&self, channel: &[u8]) -> Result<Option<(Vec<u8>, u64)>> {
         self.conn
             .query_row(
-                "SELECT proposal, epoch FROM leaving WHERE id = 0",
-                [],
+                "SELECT proposal, epoch FROM leaving WHERE channel = ?1",
+                [channel],
                 |r| Ok((r.get(0)?, to_u64(r.get(1)?)?)),
             )
             .optional()
             .map_err(store)
     }
 
-    /// Record a request to leave, or clear it.
-    pub(crate) fn set_leaving(&self, leaving: Option<(&[u8], u64)>) -> Result<()> {
+    /// Record a request to leave the group on `channel`, or clear it.
+    pub(crate) fn set_leaving(&self, channel: &[u8], leaving: Option<(&[u8], u64)>) -> Result<()> {
         self.conn
-            .execute("DELETE FROM leaving", [])
+            .execute("DELETE FROM leaving WHERE channel = ?1", [channel])
             .map_err(store)?;
         if let Some((proposal, epoch)) = leaving {
             self.conn
                 .execute(
-                    "INSERT INTO leaving (id, proposal, epoch) VALUES (0, ?1, ?2)",
-                    params![proposal, to_i64(epoch)?],
+                    "INSERT INTO leaving (channel, proposal, epoch) VALUES (?1, ?2, ?3)",
+                    params![channel, proposal, to_i64(epoch)?],
                 )
                 .map_err(store)?;
         }
         Ok(())
     }
 
-    /// Remember that the request with this `KeyPackageRef` was admitted,
-    /// until it expires. Forgets any that already have.
+    /// Remember that the request with this `KeyPackageRef` was admitted to
+    /// the group on `channel`, until it expires. Forgets any that already
+    /// have, in every group.
     pub(crate) fn remember_admitted(
         &self,
+        channel: &[u8],
         key_package_ref: &[u8],
         until: u64,
         now: u64,
@@ -844,19 +1007,21 @@ impl Database {
             .map_err(store)?;
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO admitted (key_package_ref, until) VALUES (?1, ?2)",
-                params![key_package_ref, to_i64(until)?],
+                "INSERT OR REPLACE INTO admitted (channel, key_package_ref, until)
+                 VALUES (?1, ?2, ?3)",
+                params![channel, key_package_ref, to_i64(until)?],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// Whether a request with this `KeyPackageRef` was already admitted.
-    pub(crate) fn was_admitted(&self, key_package_ref: &[u8]) -> Result<bool> {
+    /// Whether a request with this `KeyPackageRef` was already admitted to
+    /// the group on `channel`.
+    pub(crate) fn was_admitted(&self, channel: &[u8], key_package_ref: &[u8]) -> Result<bool> {
         self.conn
             .query_row(
-                "SELECT 1 FROM admitted WHERE key_package_ref = ?1",
-                [key_package_ref],
+                "SELECT 1 FROM admitted WHERE channel = ?1 AND key_package_ref = ?2",
+                params![channel, key_package_ref],
                 |_| Ok(()),
             )
             .optional()
@@ -864,11 +1029,12 @@ impl Database {
             .map_err(store)
     }
 
-    /// Record a request to join, or replace the identity's earlier one.
-    /// Returns false if that identity was declined, in which case nothing
-    /// changes.
+    /// Record a request to join the group on `channel`, or replace the
+    /// identity's earlier one. Returns false if that identity was declined
+    /// there, in which case nothing changes.
     pub(crate) fn note_request(
         &self,
+        channel: &[u8],
         signature_key: &[u8],
         key_package: &[u8],
         name: &str,
@@ -877,8 +1043,8 @@ impl Database {
         let declined: Option<bool> = self
             .conn
             .query_row(
-                "SELECT declined FROM join_requests WHERE signature_key = ?1",
-                [signature_key],
+                "SELECT declined FROM join_requests WHERE channel = ?1 AND signature_key = ?2",
+                params![channel, signature_key],
                 |r| r.get(0),
             )
             .optional()
@@ -888,88 +1054,98 @@ impl Database {
         }
         self.conn
             .execute(
-                "INSERT INTO join_requests (signature_key, key_package, name, seen_at)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (signature_key) DO UPDATE SET
+                "INSERT INTO join_requests (channel, signature_key, key_package, name, seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (channel, signature_key) DO UPDATE SET
                      key_package = excluded.key_package,
                      name = excluded.name",
-                params![signature_key, key_package, name, to_i64(now)?],
+                params![channel, signature_key, key_package, name, to_i64(now)?],
             )
             .map(|_| true)
             .map_err(store)
     }
 
-    /// Requests to join that nobody here has accepted or declined, oldest
-    /// first: `(signature key, name, first seen)`.
-    pub(crate) fn pending_requests(&self) -> Result<Vec<(Vec<u8>, String, u64)>> {
+    /// Requests to join the group on `channel` that nobody here has accepted
+    /// or declined, oldest first: `(signature key, name, first seen)`.
+    pub(crate) fn pending_requests(&self, channel: &[u8]) -> Result<Vec<(Vec<u8>, String, u64)>> {
         let mut stmt = self
             .conn
             .prepare_cached(
                 "SELECT signature_key, name, seen_at FROM join_requests
-                 WHERE declined = 0 ORDER BY seen_at",
+                 WHERE channel = ?1 AND declined = 0 ORDER BY seen_at, rowid",
             )
             .map_err(store)?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, to_u64(r.get(2)?)?)))
+            .query_map([channel], |r| {
+                Ok((r.get(0)?, r.get(1)?, to_u64(r.get(2)?)?))
+            })
             .map_err(store)?;
         rows.collect::<rusqlite::Result<_>>().map_err(store)
     }
 
-    /// The latest `KeyPackage` from a pending request, taking it off the list.
-    pub(crate) fn take_request(&self, signature_key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let key_package: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT key_package FROM join_requests WHERE signature_key = ?1 AND declined = 0",
-                [signature_key],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(store)?;
-        self.drop_request(signature_key)?;
+    /// The latest `KeyPackage` from a pending request to join the group on
+    /// `channel`, taking it off the list.
+    pub(crate) fn take_request(
+        &self,
+        channel: &[u8],
+        signature_key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        let key_package = self.request_of(channel, signature_key)?;
+        self.drop_request(channel, signature_key)?;
         Ok(key_package)
     }
 
-    /// Decline an identity's request; its later ones are ignored too.
-    pub(crate) fn decline_request(&self, signature_key: &[u8]) -> Result<bool> {
+    /// Decline an identity's request to join the group on `channel`; its
+    /// later ones there are ignored too.
+    pub(crate) fn decline_request(&self, channel: &[u8], signature_key: &[u8]) -> Result<bool> {
         self.conn
             .execute(
-                "UPDATE join_requests SET declined = 1 WHERE signature_key = ?1",
-                [signature_key],
+                "UPDATE join_requests SET declined = 1 WHERE channel = ?1 AND signature_key = ?2",
+                params![channel, signature_key],
             )
             .map(|n| n > 0)
             .map_err(store)
     }
 
-    /// Forget an identity's request: it was accepted, by anyone.
-    pub(crate) fn drop_request(&self, signature_key: &[u8]) -> Result<()> {
+    /// Forget an identity's request to join the group on `channel`: it was
+    /// accepted, by anyone.
+    pub(crate) fn drop_request(&self, channel: &[u8], signature_key: &[u8]) -> Result<()> {
         self.conn
             .execute(
-                "DELETE FROM join_requests WHERE signature_key = ?1 AND declined = 0",
-                [signature_key],
+                "DELETE FROM join_requests
+                 WHERE channel = ?1 AND signature_key = ?2 AND declined = 0",
+                params![channel, signature_key],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// Record that this client accepted an identity.
-    pub(crate) fn approve(&self, signature_key: &[u8], name: &str, at: u64) -> Result<()> {
+    /// Record that this client accepted an identity into the group on
+    /// `channel`.
+    pub(crate) fn approve(
+        &self,
+        channel: &[u8],
+        signature_key: &[u8],
+        name: &str,
+        at: u64,
+    ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO approved (signature_key, name, at) VALUES (?1, ?2, ?3)",
-                params![signature_key, name, to_i64(at)?],
+                "INSERT OR REPLACE INTO approved (channel, signature_key, name, at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![channel, signature_key, name, to_i64(at)?],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// Whether this client has accepted an identity it has not yet seen
-    /// admitted.
-    pub(crate) fn is_approved(&self, signature_key: &[u8]) -> Result<bool> {
+    /// Whether this client has accepted an identity into the group on
+    /// `channel` and not yet seen it admitted.
+    pub(crate) fn is_approved(&self, channel: &[u8], signature_key: &[u8]) -> Result<bool> {
         self.conn
             .query_row(
-                "SELECT 1 FROM approved WHERE signature_key = ?1",
-                [signature_key],
+                "SELECT 1 FROM approved WHERE channel = ?1 AND signature_key = ?2",
+                params![channel, signature_key],
                 |_| Ok(()),
             )
             .optional()
@@ -977,34 +1153,41 @@ impl Database {
             .map_err(store)
     }
 
-    /// Spend or cancel an approval: the identity was admitted, or removed.
-    pub(crate) fn unapprove(&self, signature_key: &[u8]) -> Result<()> {
+    /// Spend or cancel an approval to the group on `channel`: the identity
+    /// was admitted, or removed.
+    pub(crate) fn unapprove(&self, channel: &[u8], signature_key: &[u8]) -> Result<()> {
         self.conn
             .execute(
-                "DELETE FROM approved WHERE signature_key = ?1",
-                [signature_key],
+                "DELETE FROM approved WHERE channel = ?1 AND signature_key = ?2",
+                params![channel, signature_key],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// The latest `KeyPackage` from an identity's request, if it has one,
-    /// pending or not.
-    pub(crate) fn request_of(&self, signature_key: &[u8]) -> Result<Option<Vec<u8>>> {
+    /// The latest `KeyPackage` from an identity's request to join the group
+    /// on `channel`, if it has one that was not declined.
+    pub(crate) fn request_of(
+        &self,
+        channel: &[u8],
+        signature_key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
         self.conn
             .query_row(
-                "SELECT key_package FROM join_requests WHERE signature_key = ?1 AND declined = 0",
-                [signature_key],
+                "SELECT key_package FROM join_requests
+                 WHERE channel = ?1 AND signature_key = ?2 AND declined = 0",
+                params![channel, signature_key],
                 |r| r.get(0),
             )
             .optional()
             .map_err(store)
     }
 
-    /// Record that a member was removed (`by` someone else) or left (`by`
-    /// themselves).
+    /// Record that a member of the group on `channel` was removed (`by`
+    /// someone else) or left (`by` themselves).
     pub(crate) fn note_removed(
         &self,
+        channel: &[u8],
         signature_key: &[u8],
         name: &str,
         by: &str,
@@ -1012,59 +1195,64 @@ impl Database {
     ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO removed (signature_key, name, by, at) VALUES (?1, ?2, ?3, ?4)",
-                params![signature_key, name, by, to_i64(at)?],
+                "INSERT OR REPLACE INTO removed (channel, signature_key, name, by, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![channel, signature_key, name, by, to_i64(at)?],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// The latest removal of this identity, or failing that of anyone with
-    /// this name: `(same identity, name, by, at)`.
+    /// The latest removal of this identity from the group on `channel`, or
+    /// failing that of anyone there with this name: `(same identity, name,
+    /// by, at)`.
     pub(crate) fn removal_of(
         &self,
+        channel: &[u8],
         signature_key: &[u8],
         name: &str,
     ) -> Result<Option<(bool, String, String, u64)>> {
         self.conn
             .query_row(
-                "SELECT signature_key = ?1, name, by, at FROM removed
-                 WHERE signature_key = ?1 OR name = ?2
-                 ORDER BY signature_key = ?1 DESC, at DESC LIMIT 1",
-                params![signature_key, name],
+                "SELECT signature_key = ?2, name, by, at FROM removed
+                 WHERE channel = ?1 AND (signature_key = ?2 OR name = ?3)
+                 ORDER BY signature_key = ?2 DESC, at DESC LIMIT 1",
+                params![channel, signature_key, name],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, to_u64(r.get(3)?)?)),
             )
             .optional()
             .map_err(store)
     }
 
-    /// Forget every held request.
-    pub(crate) fn clear_deferred(&self) -> Result<()> {
+    /// Forget every request held for the group on `channel`.
+    pub(crate) fn clear_deferred(&self, channel: &[u8]) -> Result<()> {
         self.conn
-            .execute("DELETE FROM deferred", [])
+            .execute("DELETE FROM deferred WHERE channel = ?1", [channel])
             .map(drop)
             .map_err(store)
     }
 
-    /// Hold a request to join, or to be re-added, to answer later.
-    pub(crate) fn defer(&self, key_package: &[u8], rejoin: bool) -> Result<()> {
+    /// Hold a request to join, or to be re-added to, the group on `channel`,
+    /// to answer later.
+    pub(crate) fn defer(&self, channel: &[u8], key_package: &[u8], rejoin: bool) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO deferred (key_package, rejoin) VALUES (?1, ?2)",
-                params![key_package, rejoin],
+                "INSERT INTO deferred (channel, key_package, rejoin) VALUES (?1, ?2, ?3)",
+                params![channel, key_package, rejoin],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// The oldest held request, removed from the list, and whether it asks to
-    /// be re-added.
-    pub(crate) fn take_deferred(&self) -> Result<Option<(Vec<u8>, bool)>> {
+    /// The oldest request held for the group on `channel`, removed from the
+    /// list, and whether it asks to be re-added.
+    pub(crate) fn take_deferred(&self, channel: &[u8]) -> Result<Option<(Vec<u8>, bool)>> {
         let oldest: Option<(i64, Vec<u8>, bool)> = self
             .conn
             .query_row(
-                "SELECT id, key_package, rejoin FROM deferred ORDER BY id LIMIT 1",
-                [],
+                "SELECT id, key_package, rejoin FROM deferred
+                 WHERE channel = ?1 ORDER BY id LIMIT 1",
+                [channel],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -1413,4 +1601,66 @@ fn getrandom(buf: &mut [u8]) -> Result<()> {
     rand::rngs::OsRng
         .try_fill_bytes(buf)
         .map_err(|e| Error::Store(format!("rng: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store from before #134 named its one group on the client row. It
+    /// opens with that group in the list, and with what was in flight in it
+    /// moved under its channel.
+    #[test]
+    fn a_store_with_one_group_moves_to_the_group_list() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        SqliteStorageProvider::<JsonCodec, &mut Connection>::new(&mut conn)
+            .run_migrations()
+            .unwrap();
+        let tx = conn.transaction().unwrap();
+        for migration in &MIGRATIONS[..7] {
+            tx.execute_batch(migration).unwrap();
+        }
+        tx.pragma_update(None, "user_version", 7).unwrap();
+        tx.execute_batch(
+            "INSERT INTO client (id, identity, signature_public_key, group_id)
+                 VALUES (0, 'alice', x'01', x'c0ffee');
+             INSERT INTO pending_commit (id, commit_, welcome, mailbox, until)
+                 VALUES (0, x'aa', x'ab', x'ac', 9);
+             INSERT INTO leaving (id, proposal, epoch) VALUES (0, x'bb', 3);
+             INSERT INTO sent (wire, epoch, text, content) VALUES (x'cc', 3, '', x'cd');
+             INSERT INTO deferred (key_package, rejoin) VALUES (x'dd', 1);
+             INSERT INTO join_requests (signature_key, key_package, name, seen_at)
+                 VALUES (x'ee', x'ef', 'bob', 1);
+             INSERT INTO removed (signature_key, name, by, at) VALUES (x'f0', 'eve', 'alice', 2);
+             INSERT INTO approved (signature_key, name, at) VALUES (x'f1', 'dan', 3);
+             INSERT INTO admitted (key_package_ref, until) VALUES (x'f2', 99);",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let db = Database::init(conn, None).unwrap();
+        let channel = [0xc0, 0xff, 0xee];
+        assert!(db.load().unwrap().is_some(), "lost who this client is");
+        assert_eq!(db.groups().unwrap(), [channel.to_vec()]);
+        assert_eq!(
+            db.pending_commit(&channel).unwrap(),
+            Some((vec![0xaa], Some((vec![0xab], vec![0xac], 9))))
+        );
+        assert_eq!(db.leaving(&channel).unwrap(), Some((vec![0xbb], 3)));
+        assert_eq!(
+            db.sent(&channel).unwrap(),
+            [(vec![0xcc], 3, Some(vec![0xcd]), String::new())]
+        );
+        assert_eq!(
+            db.take_deferred(&channel).unwrap(),
+            Some((vec![0xdd], true))
+        );
+        assert_eq!(
+            db.pending_requests(&channel).unwrap(),
+            [(vec![0xee], "bob".to_owned(), 1)]
+        );
+        assert!(db.removal_of(&channel, &[0xf0], "eve").unwrap().is_some());
+        assert!(db.is_approved(&channel, &[0xf1]).unwrap());
+        assert!(db.was_admitted(&channel, &[0xf2]).unwrap());
+    }
 }
