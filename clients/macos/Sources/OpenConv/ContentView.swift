@@ -13,6 +13,10 @@ struct ContentView: View {
             if let channel = model.channelText {
                 channelBar(channel)
             }
+            if !model.joinRequests.isEmpty {
+                Divider()
+                requests
+            }
             Divider()
             transcript
             Divider()
@@ -60,6 +64,32 @@ struct ContentView: View {
                         }
                 }
                 Button("Disconnect") { model.disconnect() }
+            }
+        }
+        .padding(10)
+    }
+
+    /// Requests to join, each needing a member to let them in (#125). Names
+    /// are self-declared until identity exists, so they are marked as such,
+    /// and an earlier removal of the same identity or name is shown.
+    private var requests: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.joinRequests) { request in
+                HStack(spacing: 8) {
+                    Text(request.name).fontWeight(.semibold)
+                    Text(
+                        (request.expired
+                            ? "asked to join (request ran out; accepting still works)"
+                            : "wants to join")
+                            + " · name not verified"
+                            + ChatModel.describe(request.removedBefore)
+                    )
+                    .foregroundStyle(request.removedBefore == nil ? Color.secondary : Color.orange)
+                    .font(.caption)
+                    Spacer()
+                    Button("Decline") { model.decline(request) }
+                    Button("Accept") { model.accept(request) }
+                }
             }
         }
         .padding(10)

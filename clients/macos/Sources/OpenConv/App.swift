@@ -20,6 +20,7 @@ struct OpenConvApp: App {
         //   OpenConv bob join <channel> [message]
         //   OpenConv carol leave          (rejoin, then leave once caught up)
         //   OpenConv alice remove <name>  (rejoin, then remove them)
+        //   OpenConv alice accept <name>  (rejoin, then let them in when they ask)
         let args = Array(CommandLine.arguments.dropFirst())
         let name = args.first ?? "me"
         let autoConnect = args.dropFirst().first
@@ -38,6 +39,9 @@ struct OpenConvApp: App {
             if autoConnect == "remove" {
                 model.autoRemove = args.dropFirst(2).first
             }
+            if autoConnect == "accept" {
+                model.autoAccept = args.dropFirst(2).first
+            }
             let hosting = autoConnect != "join"
             // A joiner names the channel next; then, for either, an optional
             // message to send once in the group.
@@ -46,7 +50,7 @@ struct OpenConvApp: App {
             switch autoConnect {
             case "host": model.autoSay = rest.first
             case "join": model.autoSay = rest.dropFirst().first
-            default: model.autoSay = nil  // leave and remove take no message
+            default: model.autoSay = nil  // leave, remove and accept take no message
             }
             // Defer until the run loop is up so the socket has somewhere to live.
             Task { @MainActor in

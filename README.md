@@ -108,13 +108,15 @@ history with holes in it. It then asks to be re-added, and the first member
 online does so automatically; only that member can make the request, and it
 works once.
 
-**Removing someone is not a ban yet.** Anyone with a channel's id can ask to
-join, and members let them in automatically, so a removed member who still
-has the id can ask again and be back in. Removal is for someone leaving, a
-lost or compromised device, and members stranded by retention; it is not
-moderation until join requests need a member's approval (#125). Join requests
-are only good for an hour, so an old one cannot be replayed to put back
-someone who left (#123).
+**Joining needs a member's approval** (#125). A request to join shows up in
+every member's app, marked as an unverified name, and flagged if that
+identity, or someone with that name, was removed or left before. Any member
+can accept or decline it. Accepting approves the person: if their request has
+run out, they are let in when their app next asks. A decline sticks to the
+identity, but a new identity gets around it; only identity (milestone 3) can
+stop that. Requests are good for a week and renewed while the joiner waits,
+and members refuse one they have already seen admitted, so an old request
+cannot be replayed to let someone back in (#123).
 
 **Retention limits history, not abuse.** Until identity exists (milestone 3),
 anyone who can reach the relay can publish to any address, including made-up

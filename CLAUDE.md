@@ -102,13 +102,17 @@ signed by its identity key. Members re-add it only while that place still
 holds that key, so a request is spent once acted on and cannot be replayed.
 The app sends nothing until caught up on its channel.
 
-Removal is not a ban: anyone with the channel id is let in automatically, so
-a removed member can ask again (#125, join approval). Join requests are
-`KeyPackage`s good for one hour, renewed while waiting, and members remember
-what they admitted so an old request cannot be replayed (#123). Joining skips
-the lifetime check on existing places (`skip_lifetime_validation`): a quiet
-member's place keeps its `KeyPackage`'s lifetime, and checking it would lock
-newcomers out once it expired.
+Joining needs a member's approval (#125): a `KeyPackage` frame becomes a
+pending `JoinRequest`, and `Member::accept` approves the identity (single use,
+cancelled on removal), so an expired request is answered when the next one
+arrives. Declines and removals are remembered locally; there is no shared
+control message, because the content format is milestone 2's decision.
+Re-adds of stranded members stay automatic. Requests are `KeyPackage`s good
+for a week, renewed while waiting; members remember what they admitted so an
+old request cannot be replayed (#123). Joining skips the lifetime check on
+existing places (`skip_lifetime_validation`): a quiet member's place keeps
+its `KeyPackage`'s lifetime, and checking it would lock newcomers out. Headless
+runs set `OPENCONV_AUTO_ACCEPT=1`; the app never auto-accepts on its own.
 
 Joining: learn the channel id out of band, then `offer(channel)` and send
 `connect()`'s requests: `Resume` on the mailbox, then the `KeyPackage`

@@ -19,7 +19,7 @@ final class ChatModel: ObservableObject {
             switch self {
             case .offline: "offline"
             case .connecting: "connecting…"
-            case .waitingForGroup: "waiting to be admitted"
+            case .waitingForGroup: "waiting for a member to let you in"
             case .joined(let n): "in group · \(n) member\(n == 1 ? "" : "s")"
             case .removed: "not in the group"
             }
@@ -43,6 +43,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var lines: [Line] = []
     /// Everyone in the group, this client included.
     @Published private(set) var members: [GroupMember] = []
+    /// Requests to join waiting for this client, or another member, to answer.
+    @Published private(set) var joinRequests: [PendingJoin] = []
     /// Asked to leave, and not yet removed.
     @Published private(set) var leaving = false
     /// Caught up on the group's channel since connecting. Nothing is sent
@@ -63,6 +65,13 @@ final class ChatModel: ObservableObject {
     var autoLeave = false
     /// Remove the member with this name once caught up. Likewise.
     var autoRemove: String?
+    /// Accept the request from this name once it arrives. Likewise.
+    var autoAccept: String?
+    /// Accept every request as it arrives. For headless runs only (the smoke
+    /// test, labs), set by OPENCONV_AUTO_ACCEPT; it undoes what approval is
+    /// for, so the app never does this on its own.
+    private let acceptEveryone =
+        ProcessInfo.processInfo.environment["OPENCONV_AUTO_ACCEPT"] == "1"
 
     private let client: Client
     private var socket: URLSessionWebSocketTask?
@@ -318,6 +327,12 @@ final class ChatModel: ObservableObject {
         case .advanced:
             refresh()
 
+        case .joinRequested:
+            refreshRequests()
+            for request in joinRequests where acceptEveryone || request.name == autoAccept {
+                accept(request)
+            }
+
         case .removed:
             let wasLeaving = leaving
             status = .removed
@@ -369,21 +384,77 @@ final class ChatModel: ObservableObject {
     func remove(_ member: GroupMember) {
         do {
             write(try client.removeMember(index: member.index))
-            // Said plainly, because it is easy to assume otherwise: removal
-            // is not a ban until join requests need approval (#125).
-            note(
-                "removing \(member.name); while they have the channel id, they can ask to join again"
-            )
+            // They can still ask to join again; a member has to accept them,
+            // and their request is flagged as coming from someone removed.
+            note("removing \(member.name)")
         } catch {
             fail(error)
         }
     }
 
-    /// Bring the status and member list in line with the core.
+    /// Bring the status, member list and requests in line with the core.
     private func refresh() {
         guard client.channel() != nil else { return }
         status = .joined(members: Int(client.memberCount()))
         members = client.members()
+        refreshRequests()
+    }
+
+    private func refreshRequests() {
+        do {
+            let before = Set(joinRequests.map(\.id))
+            joinRequests = try client.joinRequests()
+            for request in joinRequests where !before.contains(request.id) {
+                note("\(request.name) asked to join\(Self.describe(request.removedBefore))")
+            }
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// Let someone in. This approves the person, so even a request that has
+    /// run out lets them in when their app next asks.
+    func accept(_ request: PendingJoin) {
+        do {
+            switch try client.accept(id: request.id) {
+            case .sending(let requests):
+                for message in requests {
+                    write(message)
+                }
+                note("letting \(request.name) in")
+            case .queued:
+                note("will let \(request.name) in once caught up")
+            case .whenTheyNextAsk:
+                note(
+                    "\(request.name)'s request has run out; they will be let in when their app next asks"
+                )
+            }
+            refreshRequests()
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// Turn someone down. Their later requests are ignored too.
+    func decline(_ request: PendingJoin) {
+        do {
+            try client.decline(id: request.id)
+            note("declined \(request.name)")
+            refreshRequests()
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// What to say about an earlier removal beside a request, if there was one.
+    static func describe(_ past: EarlierRemoval?) -> String {
+        guard let past else { return "" }
+        let when = Date(timeIntervalSince1970: TimeInterval(past.at))
+            .formatted(date: .abbreviated, time: .shortened)
+        let left = past.by == past.name
+        return past.sameIdentity
+            ? " (they \(left ? "left" : "were removed by \(past.by)") on \(when))"
+            : " (someone else named \(past.name) \(left ? "left" : "was removed by \(past.by)") on \(when))"
     }
 
     /// The headless `leave` and `remove` launch arguments, once caught up.
@@ -397,6 +468,10 @@ final class ChatModel: ObservableObject {
         if let name = autoRemove, let member = members.first(where: { $0.name == name && !$0.me }) {
             autoRemove = nil
             remove(member)
+        }
+        // A request saved from before this launch raises no new event.
+        for request in joinRequests where acceptEveryone || request.name == autoAccept {
+            accept(request)
         }
     }
 
@@ -416,3 +491,5 @@ final class ChatModel: ObservableObject {
 extension GroupMember: Identifiable {
     public var id: UInt32 { index }
 }
+
+extension PendingJoin: Identifiable {}

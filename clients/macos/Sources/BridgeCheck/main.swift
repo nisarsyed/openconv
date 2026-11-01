@@ -224,6 +224,8 @@ do {
         try bob.removeMember(index: alicePlace.index).first == 0x02)
     let leaving = try Client(identity: "leaver")
     check("leaving without a group throws", (try? leaving.leave()) == nil)
+    check("a new group has no join requests", try alice.joinRequests().isEmpty)
+    check("accepting an unknown request throws", (try? alice.accept(id: Data([1, 2, 3]))) == nil)
 } catch {
     print("  FAIL membership — \(error)")
     failures += 1
