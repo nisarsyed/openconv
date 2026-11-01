@@ -147,6 +147,20 @@ pub enum ClientEffect {
         /// The group.
         channel: Vec<u8>,
     },
+    /// The conversation was renamed, or its name cleared. Comes after the
+    /// `Advanced` or `Superseded` for the same commit. Never sent for a
+    /// rename that lost its race, nor to a joiner for the name it joined
+    /// with.
+    Renamed {
+        /// The group.
+        channel: Vec<u8>,
+        /// Who renamed it: their self-declared name.
+        by: String,
+        /// Their provisional URI.
+        by_uri: String,
+        /// The new name, or none if it was cleared.
+        name: Option<String>,
+    },
     /// Caught up on `address`; live from here.
     Live {
         /// The address.
@@ -186,6 +200,12 @@ impl From<Effect> for ClientEffect {
             Effect::Rejoining { channel } => Self::Rejoining { channel },
             Effect::JoinRequested { channel } => Self::JoinRequested { channel },
             Effect::Advanced { channel } => Self::Advanced { channel },
+            Effect::Renamed { channel, by } => Self::Renamed {
+                channel,
+                by: by.by,
+                by_uri: by.by_uri,
+                name: by.name,
+            },
             Effect::Live { address } => Self::Live { address },
             Effect::RelayReset { address } => Self::RelayReset { address },
             Effect::Unavailable {

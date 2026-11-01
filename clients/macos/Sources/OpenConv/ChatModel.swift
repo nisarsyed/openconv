@@ -337,6 +337,12 @@ final class ChatModel: ObservableObject {
             guard group == channel else { return }
             refresh()
 
+        case .renamed(let group, let by, _, let name):
+            guard group == channel else { return }
+            note(
+                name.map { "\(by) named the conversation \"\($0)\"" }
+                    ?? "\(by) cleared the conversation's name")
+
         case .joinRequested(let group):
             guard group == channel else { return }
             refreshRequests()

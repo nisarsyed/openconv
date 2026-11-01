@@ -164,7 +164,11 @@ still a one-conversation harness; its real UI follows the design (#133).
 extension (`NAME_EXTENSION`, 0xF0C0): changed by a `GroupContextExtensions`
 commit staged and resolved by the relay's order like any other change, and
 delivered to joiners in the `Welcome`. Commits are `PrivateMessage`s, so the
-relay never sees a name. openmls accepts such an extension only if the group
+relay never sees a name. Applying a commit that changes the name, one's own or
+another member's, yields `Effect::Renamed` after the `Advanced` or
+`Superseded` for it, crediting the MLS-authenticated sender of the proposal.
+A rename that lost its race is never applied, so never announced, and a
+joiner reads the name rather than being told of it. openmls accepts such an extension only if the group
 requires every member to support it, so groups are created with a
 `RequiredCapabilities` extension, every `KeyPackage` lists the capability,
 and a `KeyPackage` without it is refused as a request: adding it would fail

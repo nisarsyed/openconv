@@ -508,7 +508,7 @@ async fn catch_up_and_live_traffic_meet_without_a_gap() {
 
 // ---- Catch-up with real members (#105) ----
 
-use openconv_core::{Acceptance, Effect, Vault};
+use openconv_core::{Acceptance, Effect, Rename, Vault};
 
 /// A member and its connection, applying what the relay sends the way the
 /// app does: every effect that says to send something is sent.
@@ -523,6 +523,8 @@ struct Peer {
     heard: Vec<String>,
     /// The same, with the group each was sent to.
     heard_on: Vec<(Vec<u8>, String)>,
+    /// Every rename announced to this member, with its group.
+    renames: Vec<(Vec<u8>, Rename)>,
     /// Set once this member is no longer in the group.
     removed: bool,
     /// Set if the relay said this member's cursor is gone. Fails the test
@@ -544,6 +546,7 @@ impl Peer {
             ws: connect(url).await,
             heard: Vec::new(),
             heard_on: Vec::new(),
+            renames: Vec::new(),
             removed: false,
             stranded: false,
             expect_stranding: false,
@@ -582,6 +585,7 @@ impl Peer {
                         self.stranded = true;
                     }
                     Effect::Removed { .. } => self.removed = true,
+                    Effect::Renamed { channel, by } => self.renames.push((channel, by)),
                     Effect::JoinRequested { channel } if self.accepts => {
                         for request in self.member.join_requests(&channel).unwrap() {
                             if let Acceptance::Sending(out) =
@@ -1524,5 +1528,122 @@ async fn a_name_is_shared_raced_in_relay_order_and_seen_by_a_later_joiner() {
             peer.member.name(&channel).unwrap().as_deref(),
             Some("Final")
         );
+    }
+}
+
+/// The provisional URI of `name`, as `peer` stored it beside a message they
+/// sent: what the MLS-authenticated key gives, which a rename must match.
+fn uri_of(peer: &Peer, channel: &[u8], name: &str) -> String {
+    peer.member
+        .history(channel, None, 100)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sender == name)
+        .unwrap_or_else(|| panic!("no message from {name}"))
+        .sender_uri
+}
+
+/// Three members, each of whom has said something, so each can find the
+/// others' URIs in their transcript.
+async fn three_who_spoke(url: &str) -> (Peer, Peer, Peer, Vec<u8>) {
+    let (mut alice, mut bob, mut carol, channel) = Box::pin(three(url)).await;
+    alice.say("a").await;
+    bob.say("b").await;
+    carol.say("c").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    (alice, bob, carol, channel)
+}
+
+/// A rename is announced to everyone, the renamer included, with the name
+/// and who made it, and so is clearing the name.
+#[tokio::test]
+async fn a_rename_is_announced_to_the_renamer_and_everyone_else() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, channel) = three_who_spoke(&url).await;
+    let alice_uri = uri_of(&carol, &channel, "alice");
+    let bob_uri = uri_of(&carol, &channel, "bob");
+
+    alice.rename(&channel, "Design crit").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    bob.rename(&channel, "").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    let expected = [
+        (
+            channel.clone(),
+            Rename {
+                by: "alice".to_owned(),
+                by_uri: alice_uri,
+                name: Some("Design crit".to_owned()),
+            },
+        ),
+        (
+            channel.clone(),
+            Rename {
+                by: "bob".to_owned(),
+                by_uri: bob_uri,
+                name: None,
+            },
+        ),
+    ];
+    for (who, peer) in [("alice", &alice), ("bob", &bob), ("carol", &carol)] {
+        assert_eq!(peer.renames, expected, "{who}'s announcements");
+    }
+}
+
+/// Two renames race in one epoch. Only the one the relay ordered first is
+/// announced, to everyone: the loser hears the winner's, and nobody hears
+/// the losing name.
+#[tokio::test]
+async fn in_a_rename_race_only_the_winner_is_announced() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, channel) = three_who_spoke(&url).await;
+
+    alice.rename(&channel, "From alice").await;
+    bob.rename(&channel, "From bob").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    let agreed = carol.member.name(&channel).unwrap().unwrap();
+    let winner = if agreed == "From alice" {
+        "alice"
+    } else {
+        "bob"
+    };
+    let expected = [(
+        channel.clone(),
+        Rename {
+            by: winner.to_owned(),
+            by_uri: uri_of(&carol, &channel, winner),
+            name: Some(agreed.clone()),
+        },
+    )];
+    for (who, peer) in [("alice", &alice), ("bob", &bob), ("carol", &carol)] {
+        assert_eq!(peer.member.name(&channel).unwrap(), Some(agreed.clone()));
+        assert_eq!(peer.renames, expected, "{who}'s announcements");
+    }
+}
+
+/// A joiner reads the name it was let in with, and is not told of it as a
+/// change; letting it in announces nothing to anyone else either.
+#[tokio::test]
+async fn a_joiner_gets_the_name_without_an_announcement() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, channel) = Box::pin(three(&url)).await;
+    alice.rename(&channel, "Design crit").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    let mut dave = Member::new("dave").unwrap();
+    dave.offer(&channel).unwrap();
+    let mut dave = Peer::online(dave, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+
+    assert_eq!(dave.member.count(), 4);
+    assert_eq!(
+        dave.member.name(&channel).unwrap().as_deref(),
+        Some("Design crit")
+    );
+    assert!(dave.renames.is_empty(), "got {:?}", dave.renames);
+    for peer in [&alice, &bob, &carol] {
+        assert_eq!(peer.renames.len(), 1, "admitting dave was announced");
     }
 }

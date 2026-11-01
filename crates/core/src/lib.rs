@@ -500,6 +500,18 @@ pub enum Effect {
         /// The group.
         channel: Vec<u8>,
     },
+    /// A commit that changed the conversation's name was applied: this
+    /// client's own once the relay confirmed it, or another member's. Comes
+    /// after the [`Effect::Advanced`] or [`Effect::Superseded`] for the same
+    /// commit. A rename that lost its race never takes effect, so it is never
+    /// announced; a joiner reads the name it was let in with from
+    /// [`Member::name`] and is not told of it as a change.
+    Renamed {
+        /// The group.
+        channel: Vec<u8>,
+        /// Who renamed it.
+        by: Rename,
+    },
     /// Caught up on `address`; frames from here on are live.
     Live {
         /// The address.
@@ -525,6 +537,18 @@ pub enum Effect {
         /// The next sequence number the relay will assign.
         next: u64,
     },
+}
+
+/// A change of a conversation's name, as applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rename {
+    /// The display name of whoever renamed it, from the credential MLS
+    /// authenticated their proposal with. Self-declared until milestone 3.
+    pub by: String,
+    /// Their provisional URI, from the key MLS authenticated it with.
+    pub by_uri: String,
+    /// The new name, or `None` if they cleared it.
+    pub name: Option<String>,
 }
 
 /// Redacting by hand rather than deriving: this type holds identity keys and
@@ -1243,46 +1267,51 @@ impl Member {
         // Receiving advances ratchet state whether or not it was a message,
         // and a failure must leave none of that behind.
         self.atomically(|m| m.receive_unit(channel, wire, None))
+            .map(|(event, _)| event)
     }
 
     /// One of this client's own frames to `channel`, back from the relay:
     /// what it means, or `None` if `wire` is not one of them. Recognised by
-    /// exact bytes, which keeps sender identity off the wire.
+    /// exact bytes, which keeps sender identity off the wire. With it, the
+    /// rename the frame applied, if it was a commit that made one.
     fn own_frame(
         &mut self,
         channel: &[u8],
         wire: &[u8],
         relayed: Option<Relayed>,
-    ) -> Result<Option<Event>> {
+    ) -> Result<Option<(Event, Option<Rename>)>> {
         let group = self.groups.get_mut(channel).ok_or(Error::NoGroup)?;
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = group.pending.take_if(|p| p.commit == wire) {
             self.db.set_pending_commit(channel, None)?;
             let provider = self.db.provider(&self.crypto);
+            let mut renamed = None;
             if let Some(staged) = group.mls.pending_commit() {
                 note_commit(&self.db, &self.crypto, channel, &group.mls, staged)?;
+                renamed = rename_in(&group.mls, staged);
             }
             group.mls.merge_pending_commit(&provider).map_err(mls)?;
-            return Ok(Some(match pending.admits {
+            let event = match pending.admits {
                 Some((welcome, mailbox, until)) => {
                     self.db
                         .remember_admitted(channel, &mailbox, until, now_secs())?;
                     Event::Admitted { welcome, mailbox }
                 }
                 None => Event::Committed,
-            }));
+            };
+            return Ok(Some((event, renamed)));
         }
         // This client's own request to leave, coming back. Others queue it;
         // this client already has, when it made it.
         if group.leaving.as_ref().is_some_and(|(p, _)| p == wire) {
-            return Ok(Some(Event::Echo));
+            return Ok(Some((Event::Echo, None)));
         }
         if let Some(sent) = self.take_sent(channel, wire)? {
             if sent.epoch == self.group(channel)?.mls.epoch().as_u64() {
                 // Everyone else read it here, so this is its place.
                 self.log_own(channel, &sent.content, Placement::Applied(relayed))?;
-                return Ok(Some(Event::Echo));
+                return Ok(Some((Event::Echo, None)));
             }
             // A commit was ordered between sending this and seeing it come
             // back, so every member has left the epoch it was encrypted in
@@ -1295,22 +1324,23 @@ impl Member {
             // had the old epoch's keys, so some members would see the message
             // and others would not.
             let message = self.send_content(channel, sent.content)?;
-            return Ok(Some(Event::Resend { message }));
+            return Ok(Some((Event::Resend { message }, None)));
         }
         Ok(None)
     }
 
     /// [`Member::receive`], minus the unit-of-work wrapper. `relayed` is where
     /// the relay put the frame, if it came through the relay; a message is
-    /// written to the transcript with it.
+    /// written to the transcript with it. With the event, the rename the
+    /// frame applied, if it was a commit that made one.
     fn receive_unit(
         &mut self,
         channel: &[u8],
         wire: &[u8],
         relayed: Option<Relayed>,
-    ) -> Result<Event> {
-        if let Some(event) = self.own_frame(channel, wire, relayed)? {
-            return Ok(event);
+    ) -> Result<(Event, Option<Rename>)> {
+        if let Some(applied) = self.own_frame(channel, wire, relayed)? {
+            return Ok(applied);
         }
 
         let msg = MlsMessageIn::tls_deserialize_exact(wire)?;
@@ -1340,10 +1370,11 @@ impl Member {
         // message will be resent by its sender, and must not be reported as
         // though nothing had arrived.
         if protocol.epoch() < group.mls.epoch() {
-            return Ok(match protocol.content_type() {
+            let event = match protocol.content_type() {
                 ContentType::Application => Event::Stale,
                 ContentType::Commit | ContentType::Proposal => Event::Advanced,
-            });
+            };
+            return Ok((event, None));
         }
         let processed = group
             .mls
@@ -1354,6 +1385,7 @@ impl Member {
             _ => None,
         };
 
+        let mut renamed = None;
         let event = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 let bytes = app.into_bytes();
@@ -1381,6 +1413,7 @@ impl Member {
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 let removed = commit.self_removed();
                 note_commit(&self.db, &self.crypto, channel, &group.mls, &commit)?;
+                renamed = rename_in(&group.mls, &commit);
                 group
                     .mls
                     .merge_staged_commit(&provider, *commit)
@@ -1402,7 +1435,7 @@ impl Member {
             }
             _ => Event::Advanced,
         };
-        Ok(event)
+        Ok((event, renamed))
     }
 
     /// Write this client's own message to `channel`'s transcript, or place
@@ -1820,7 +1853,8 @@ impl Member {
             FrameKind::Commit | FrameKind::Application | FrameKind::Proposal if in_group => {
                 let channel = address.to_vec();
                 let mut effects = Vec::new();
-                match self.receive_unit(address, &body, Some(relayed))? {
+                let (event, renamed) = self.receive_unit(address, &body, Some(relayed))?;
+                match event {
                     Event::Message(message) => effects.push(Effect::Message {
                         channel: channel.clone(),
                         message,
@@ -1852,6 +1886,12 @@ impl Member {
                         &message,
                     )?)),
                     Event::Proposed | Event::Echo | Event::Stale => {}
+                }
+                if let Some(by) = renamed {
+                    effects.push(Effect::Renamed {
+                        channel: channel.clone(),
+                        by,
+                    });
                 }
                 // The epoch may have moved, or a staged commit resolved, or a
                 // proposal arrived: answer what is waiting, and restate a
@@ -2184,6 +2224,43 @@ fn required_capabilities() -> Extension {
         &[],
         &[],
     ))
+}
+
+/// The rename `commit` makes in `group`, read before it is merged: whoever
+/// proposed the new name, and the name, if the commit changes it. A commit
+/// that sets the name it already had changes nothing and announces nothing.
+///
+/// The renamer is the MLS-authenticated sender of the group context
+/// extensions proposal. A rename made by [`Member::set_name`] is an inline
+/// proposal, so that is the committer; one proposed by reference and
+/// committed by someone else is credited to whoever proposed it, not to the
+/// member who happened to commit it.
+fn rename_in(group: &MlsGroup, commit: &StagedCommit) -> Option<Rename> {
+    let (proposal, sender) =
+        commit
+            .queued_proposals()
+            .find_map(|queued| match queued.proposal() {
+                Proposal::GroupContextExtensions(proposal) => Some((proposal, queued.sender())),
+                _ => None,
+            })?;
+    let read = |extensions: &Extensions<GroupContext>| {
+        extensions
+            .unknown(NAME_EXTENSION)
+            .map(|name| decode_name(&name.0))
+    };
+    let name = read(proposal.extensions());
+    if name == read(group.extensions()) {
+        return None;
+    }
+    let Sender::Member(index) = sender else {
+        return None;
+    };
+    let renamer = group.members().find(|m| m.index == *index)?;
+    Some(Rename {
+        by: String::from_utf8_lossy(renamer.credential.serialized_content()).into_owned(),
+        by_uri: content::sender_uri(&renamer.signature_key),
+        name,
+    })
 }
 
 /// A conversation name as carried in the group context, cut to
