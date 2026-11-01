@@ -102,6 +102,14 @@ signed by its identity key. Members re-add it only while that place still
 holds that key, so a request is spent once acted on and cannot be replayed.
 The app sends nothing until caught up on its channel.
 
+Removal is not a ban: anyone with the channel id is let in automatically, so
+a removed member can ask again (#125, join approval). Join requests are
+`KeyPackage`s good for one hour, renewed while waiting, and members remember
+what they admitted so an old request cannot be replayed (#123). Joining skips
+the lifetime check on existing places (`skip_lifetime_validation`): a quiet
+member's place keeps its `KeyPackage`'s lifetime, and checking it would lock
+newcomers out once it expired.
+
 Joining: learn the channel id out of band, then `offer(channel)` and send
 `connect()`'s requests: `Resume` on the mailbox, then the `KeyPackage`
 published to the channel. The order matters: the relay handles a connection's

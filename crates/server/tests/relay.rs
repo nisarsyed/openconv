@@ -517,6 +517,7 @@ impl Peer {
             sent: Vec::new(),
         };
         for request in peer.member.connect().unwrap() {
+            peer.sent.push(request.clone());
             send(&mut peer.ws, request).await;
         }
         peer
@@ -1035,4 +1036,33 @@ async fn a_rejoin_from_outside_the_group_is_ignored() {
     assert_eq!(alice.names(), ["alice", "bob", "carol"]);
     assert!(!carol.removed, "the stranger's request replaced carol");
     let _ = &mut stranger;
+}
+
+/// A join request stays in the relay's history. Republished after its
+/// sender was removed, it must not put them back (#123).
+#[tokio::test]
+async fn a_removed_members_old_request_cannot_put_them_back() {
+    let url = spawn_relay().await;
+    let (mut alice, mut bob, mut carol, _) = Box::pin(three(&url)).await;
+    let request = carol
+        .sent
+        .iter()
+        .find(|r| {
+            matches!(
+                openconv_wire::Request::decode(r),
+                Ok(openconv_wire::Request::Publish { payload, .. }) if payload.first() == Some(&1)
+            )
+        })
+        .expect("carol never sent a join request")
+        .clone();
+
+    alice.remove("carol").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert!(carol.removed);
+
+    let mut replayer = connect(&url).await;
+    send(&mut replayer, request).await;
+    settle(&mut [&mut alice, &mut bob]).await;
+    assert_eq!(alice.names(), ["alice", "bob"], "the replay put carol back");
+    assert_eq!(bob.names(), alice.names());
 }

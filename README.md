@@ -108,6 +108,14 @@ history with holes in it. It then asks to be re-added, and the first member
 online does so automatically; only that member can make the request, and it
 works once.
 
+**Removing someone is not a ban yet.** Anyone with a channel's id can ask to
+join, and members let them in automatically, so a removed member who still
+has the id can ask again and be back in. Removal is for someone leaving, a
+lost or compromised device, and members stranded by retention; it is not
+moderation until join requests need a member's approval (#125). Join requests
+are only good for an hour, so an old one cannot be replayed to put back
+someone who left (#123).
+
 **Retention limits history, not abuse.** Until identity exists (milestone 3),
 anyone who can reach the relay can publish to any address, including made-up
 ones, and a per-channel cap does nothing against frames spread across

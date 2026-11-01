@@ -10,7 +10,7 @@ use openmls_rust_crypto::RustCrypto;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::crypto::OpenMlsCrypto;
 use openmls_traits::signatures::Signer;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 pub mod store;
@@ -142,6 +142,9 @@ pub struct Member {
     /// Addresses this client has asked the relay to resume, after finding a
     /// gap, and not yet heard are live again.
     resuming: HashSet<Vec<u8>>,
+    /// How long this client's `KeyPackage`s are good for: [`OFFER_LIFETIME`],
+    /// shortened by tests that need one to expire.
+    offer_lifetime: u64,
 }
 
 /// A message sent and not yet seen coming back.
@@ -165,9 +168,9 @@ struct PendingCommit {
     /// Exactly the bytes sent, used to spot this commit coming back.
     commit: Vec<u8>,
     /// For a commit that adds someone: the `Welcome`, held until the commit
-    /// is confirmed, and the mailbox it goes to (the joiner's
-    /// `KeyPackageRef`). A removal has none.
-    welcome: Option<(Vec<u8>, Vec<u8>)>,
+    /// is confirmed, the mailbox it goes to (the joiner's `KeyPackageRef`),
+    /// and when that `KeyPackage` expires. A removal has none.
+    admits: Option<store::Admits>,
 }
 
 /// A member of the group, as the app lists it.
@@ -185,6 +188,24 @@ pub struct Roster {
 /// How many recently sent frames to remember. Only needs to outlive a round
 /// trip through the relay.
 const SENT_HISTORY: usize = 32;
+
+/// How long a join request's `KeyPackage` is good for (#123). The relay keeps
+/// every frame and anyone can publish one again, so a request still valid
+/// can be replayed to put back someone who has left or been removed. An hour
+/// keeps that window short; a joiner left waiting makes a new request
+/// before the old one runs out.
+const OFFER_LIFETIME: u64 = 60 * 60;
+
+/// Make a new request once the current one has less than this left, so
+/// there is always one a member can still act on.
+const OFFER_RENEW_BEFORE: u64 = 10 * 60;
+
+/// Seconds since the Unix epoch, the clock `KeyPackage` lifetimes use.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 /// What processing a relayed frame produced.
 #[derive(Debug)]
@@ -330,6 +351,7 @@ impl Member {
             sent: VecDeque::new(),
             live: HashSet::new(),
             resuming: HashSet::new(),
+            offer_lifetime: OFFER_LIFETIME,
         })
     }
 
@@ -375,7 +397,7 @@ impl Member {
 
         let pending = db
             .pending_commit()?
-            .map(|(commit, welcome)| PendingCommit { commit, welcome });
+            .map(|(commit, admits)| PendingCommit { commit, admits });
         let leaving = db.leaving()?;
         let sent = db
             .sent()?
@@ -394,6 +416,7 @@ impl Member {
             sent,
             live: HashSet::new(),
             resuming: HashSet::new(),
+            offer_lifetime: OFFER_LIFETIME,
         })
     }
 
@@ -490,6 +513,7 @@ impl Member {
         self.db.atomically(|| {
             self.db.flush_on_commit();
             let bundle = KeyPackage::builder()
+                .key_package_lifetime(Lifetime::new(self.offer_lifetime))
                 .build(
                     CIPHERSUITE,
                     &provider,
@@ -549,6 +573,7 @@ impl Member {
     /// unit-of-work wrapper.
     fn propose_add_unit(&mut self, kp: KeyPackage) -> Result<Vec<u8>> {
         let mailbox = self.key_package_ref(&kp)?;
+        let until = expiry(&kp);
         self.db.flush_on_commit();
         let provider = self.db.provider(&self.crypto);
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
@@ -558,18 +583,18 @@ impl Member {
 
         self.stage(PendingCommit {
             commit: commit.tls_serialize_detached()?,
-            welcome: Some((welcome.tls_serialize_detached()?, mailbox)),
+            admits: Some((welcome.tls_serialize_detached()?, mailbox, until)),
         })
     }
 
     /// Record a staged commit, here and in the store, and return it to send.
     fn stage(&mut self, pending: PendingCommit) -> Result<Vec<u8>> {
-        let welcome = pending
-            .welcome
+        let admits = pending
+            .admits
             .as_ref()
-            .map(|(w, m)| (w.as_slice(), m.as_slice()));
+            .map(|(w, m, u)| (w.as_slice(), m.as_slice(), *u));
         self.db
-            .set_pending_commit(Some((&pending.commit, welcome)))?;
+            .set_pending_commit(Some((&pending.commit, admits)))?;
         let commit = pending.commit.clone();
         self.pending = Some(pending);
         Ok(commit)
@@ -598,7 +623,7 @@ impl Member {
                 .map_err(mls)?;
             m.stage(PendingCommit {
                 commit: commit.tls_serialize_detached()?,
-                welcome: None,
+                admits: None,
             })
         })
     }
@@ -674,15 +699,19 @@ impl Member {
     /// wrapper.
     fn join_unit(&mut self, welcome: Welcome) -> Result<()> {
         let provider = self.db.provider(&self.crypto);
-        let group = StagedWelcome::new_from_welcome(
-            &provider,
-            Self::config().join_config(),
-            welcome,
-            None, // ratchet tree travels in the Welcome
-        )
-        .map_err(mls)?
-        .into_group(&provider)
-        .map_err(mls)?;
+        // The ratchet tree travels in the Welcome. Its places keep the
+        // lifetime of the KeyPackage each member joined with until that
+        // member commits, so a quiet member's runs out; checking them here
+        // would stop anyone joining the group from then on. A new member's
+        // KeyPackage is still checked, by whoever adds it.
+        let group =
+            StagedWelcome::build_from_welcome(&provider, Self::config().join_config(), welcome)
+                .map_err(mls)?
+                .skip_lifetime_validation()
+                .build()
+                .map_err(mls)?
+                .into_group(&provider)
+                .map_err(mls)?;
 
         self.group = Some(group);
         self.record_group()
@@ -735,8 +764,11 @@ impl Member {
             let provider = self.db.provider(&self.crypto);
             let group = self.group.as_mut().ok_or(Error::NoGroup)?;
             group.merge_pending_commit(&provider).map_err(mls)?;
-            return Ok(match pending.welcome {
-                Some((welcome, mailbox)) => Event::Admitted { welcome, mailbox },
+            return Ok(match pending.admits {
+                Some((welcome, mailbox, until)) => {
+                    self.db.remember_admitted(&mailbox, until, now_secs())?;
+                    Event::Admitted { welcome, mailbox }
+                }
                 None => Event::Committed,
             });
         }
@@ -803,6 +835,12 @@ impl Member {
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 let removed = commit.self_removed();
+                for add in commit.add_proposals() {
+                    let kp = add.add_proposal().key_package();
+                    let reference = kp.hash_ref(provider.crypto()).map_err(mls)?;
+                    self.db
+                        .remember_admitted(reference.as_slice(), expiry(kp), now_secs())?;
+                }
                 group.merge_staged_commit(&provider, *commit).map_err(mls)?;
                 if removed {
                     Event::Removed
@@ -871,14 +909,83 @@ impl Member {
                 }
                 .encode()?,
             );
-            if let Some(offer) = follow.offer {
-                let kind = if offer.rejoin {
-                    FrameKind::Rejoin
-                } else {
-                    FrameKind::KeyPackage
-                };
-                requests.push(encode_publish(&offer.to, kind, &offer.key_package)?);
+        }
+        requests.extend(self.atomically(|m| m.offer_requests(true))?);
+        Ok(requests)
+    }
+
+    /// Requests that keep this client's outstanding request to join (or to
+    /// be re-added) one a member can still act on. Call it every few minutes
+    /// while waiting; it returns nothing unless the request needs renewing.
+    ///
+    /// # Errors
+    /// If a new request cannot be made or recorded.
+    pub fn refresh_offers(&mut self) -> Result<Vec<Vec<u8>>> {
+        self.atomically(|m| m.offer_requests(false))
+    }
+
+    /// For each channel this client has asked to join, the newest request:
+    /// published again if `republish` and it has a while left, or replaced
+    /// by a new one, read from a new mailbox, if it has not. Older mailboxes
+    /// stay read, since a member may have answered an older request before
+    /// it ran out.
+    fn offer_requests(&mut self, republish: bool) -> Result<Vec<Vec<u8>>> {
+        let mut newest: HashMap<Vec<u8>, (u64, store::Offer)> = HashMap::new();
+        for offer in self.db.follows()?.into_iter().filter_map(|f| f.offer) {
+            let key_package = if offer.rejoin {
+                decode_rejoin(&offer.key_package)?.0
+            } else {
+                &offer.key_package
+            };
+            let until = self
+                .validate_key_package(key_package)
+                .map_or(0, |kp| expiry(&kp));
+            if newest.get(&offer.to).is_none_or(|(best, _)| until > *best) {
+                newest.insert(offer.to.clone(), (until, offer));
             }
+        }
+        let mut requests = Vec::new();
+        for (channel, (until, offer)) in newest {
+            let (mailbox, offer) = if until > now_secs() + OFFER_RENEW_BEFORE {
+                if !republish {
+                    continue;
+                }
+                (None, offer)
+            } else if offer.rejoin {
+                let (_, named, _) = decode_rejoin(&offer.key_package)?;
+                let (request, mailbox) = self.rejoin_body(named)?;
+                let renewed = store::Offer {
+                    to: channel.clone(),
+                    key_package: request,
+                    rejoin: true,
+                };
+                (Some(mailbox), renewed)
+            } else {
+                let key_package = self.key_package()?;
+                let mailbox = self.mailbox(&key_package)?;
+                let renewed = store::Offer {
+                    to: channel.clone(),
+                    key_package,
+                    rejoin: false,
+                };
+                (Some(mailbox), renewed)
+            };
+            if let Some(mailbox) = mailbox {
+                self.db.follow(&mailbox, 0, Some(&offer))?;
+                requests.push(
+                    Request::Resume {
+                        address: Address::new(mailbox)?,
+                        from: 0,
+                    }
+                    .encode()?,
+                );
+            }
+            let kind = if offer.rejoin {
+                FrameKind::Rejoin
+            } else {
+                FrameKind::KeyPackage
+            };
+            requests.push(encode_publish(&channel, kind, &offer.key_package)?);
         }
         Ok(requests)
     }
@@ -932,13 +1039,20 @@ impl Member {
             .find(|m| m.index == me)
             .ok_or(Error::CorruptState("own place missing from the group"))?
             .encryption_key;
+        self.rejoin_body(&current)
+    }
+
+    /// A request to be re-added in place of the key `named`, and the mailbox
+    /// its `Welcome` will come to. Made again with the same `named` when an
+    /// earlier one is about to run out.
+    fn rejoin_body(&self, named: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         let key_package = self.key_package()?;
         let signature = self
             .signer
-            .sign(&rejoin_signed(&current, &key_package))
+            .sign(&rejoin_signed(named, &key_package))
             .map_err(|e| Error::Mls(format!("signing a re-add request: {e:?}")))?;
         let mailbox = self.mailbox(&key_package)?;
-        Ok((encode_rejoin(&key_package, &current, &signature), mailbox))
+        Ok((encode_rejoin(&key_package, named, &signature), mailbox))
     }
 
     /// Process anything the relay sent, returning what to do about it.
@@ -1184,7 +1298,7 @@ impl Member {
             .map_err(mls)?;
         self.stage(PendingCommit {
             commit: commit.tls_serialize_detached()?,
-            welcome: None,
+            admits: None,
         })
     }
 
@@ -1195,6 +1309,9 @@ impl Member {
                 let Some((index, kp)) = self.check_rejoin(&request) else {
                     continue;
                 };
+                if self.was_admitted(&kp)? {
+                    continue;
+                }
                 self.readd_unit(index, kp)?
             } else {
                 // Expired or malformed: nothing to answer.
@@ -1203,6 +1320,11 @@ impl Member {
                 };
                 if self.leaf_of(&kp).is_some() {
                     continue; // already a member
+                }
+                // A request admitted before, made again: a replay, which would
+                // put back someone who has since left or been removed.
+                if self.was_admitted(&kp)? {
+                    continue;
                 }
                 self.propose_add_unit(kp)?
             };
@@ -1237,6 +1359,7 @@ impl Member {
     /// commit, so a member stranded by retention can follow the group again.
     fn readd_unit(&mut self, index: LeafNodeIndex, kp: KeyPackage) -> Result<Vec<u8>> {
         let mailbox = self.key_package_ref(&kp)?;
+        let until = expiry(&kp);
         self.db.flush_on_commit();
         let provider = self.db.provider(&self.crypto);
         let group = self.group.as_mut().ok_or(Error::NoGroup)?;
@@ -1257,7 +1380,7 @@ impl Member {
         let commit = bundle.commit().tls_serialize_detached()?;
         self.stage(PendingCommit {
             commit,
-            welcome: Some((welcome, mailbox)),
+            admits: Some((welcome, mailbox, until)),
         })
     }
 
@@ -1329,6 +1452,11 @@ impl Member {
         ])
     }
 
+    /// Whether a request with `kp` has been seen admitted before.
+    fn was_admitted(&self, kp: &KeyPackage) -> Result<bool> {
+        self.db.was_admitted(&self.key_package_ref(kp)?)
+    }
+
     /// The position and encryption key of the member that shares `kp`'s
     /// signature key, if there is one.
     fn leaf_of(&self, kp: &KeyPackage) -> Option<(LeafNodeIndex, Vec<u8>)> {
@@ -1363,6 +1491,11 @@ impl Member {
     pub fn member_count(&self) -> usize {
         self.group.as_ref().map_or(0, |g| g.members().count())
     }
+}
+
+/// When `kp` stops being valid, in seconds since the Unix epoch.
+fn expiry(kp: &KeyPackage) -> u64 {
+    kp.life_time().not_after()
 }
 
 /// The group `id` names, from the store, or `None` if there is no id.
@@ -2577,6 +2710,132 @@ mod tests {
             .unwrap();
         assert_eq!(commits(&effects), 0, "a replayed re-add was answered again");
         assert_eq!(alice.member_count(), 3);
+    }
+
+    /// A member who joins and never commits keeps the lifetime of the
+    /// `KeyPackage` it joined with. Once that runs out, joining must still work:
+    /// checking every existing place's lifetime would lock the group to
+    /// newcomers for good. Found while working on #123, with openmls's
+    /// default 84-day lifetime as much as with a short one.
+    #[test]
+    fn a_group_can_be_joined_after_a_quiet_members_request_expired() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        bob.offer_lifetime = 1;
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        std::thread::sleep(std::time::Duration::from_secs(2)); // bob's place expires
+
+        let mut carol = Member::new("carol").unwrap();
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        assert_eq!(carol.member_count(), 3);
+    }
+
+    /// A join request stays in the relay's history, and anyone can publish it
+    /// again. Admitted once, it must not admit again: otherwise someone who
+    /// left or was removed is put back. Refused both by the member who
+    /// admitted it and by one who only saw the commit (#123).
+    #[test]
+    fn a_replayed_join_request_is_refused() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let channel = alice.channel().unwrap();
+        // Bob joined through `join`, which reads nothing by itself; have him
+        // read the channel as the app would, or `deliver` ignores his frames
+        // and his half of this test proves nothing.
+        bob.db.follow(&channel, 0, None).unwrap();
+        for m in [&mut alice, &mut bob] {
+            let live = openconv_wire::Inbound::Page {
+                address: Address::new(channel.clone()).unwrap(),
+                next: 0,
+                live: true,
+            };
+            m.deliver(&live.encode()).unwrap();
+        }
+        let request = carol.key_package().unwrap();
+        let sends = |effects: &[Effect]| {
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Send(_)))
+                .count()
+        };
+
+        // Alice admits carol; bob applies the commit.
+        let effects = alice
+            .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &request))
+            .unwrap();
+        assert_eq!(sends(&effects), 1);
+        let add = alice.pending.as_ref().unwrap().commit.clone();
+        let Event::Admitted { welcome, .. } = alice.receive(&add).unwrap() else {
+            panic!("alice's add should have been admitted");
+        };
+        bob.receive(&add).unwrap();
+        bob.db.advance(&channel, 1).unwrap(); // as if he had read it at seq 0
+        carol.join(&welcome).unwrap();
+
+        // Carol is removed.
+        let carol_place = alice
+            .members()
+            .into_iter()
+            .find(|m| m.name == "carol")
+            .unwrap()
+            .index;
+        let removal = alice.remove_member(carol_place).unwrap();
+        alice.receive(&removal).unwrap();
+        bob.receive(&removal).unwrap();
+        assert_eq!(alice.member_count(), 2);
+
+        // Her old request, replayed, puts her back with neither.
+        for (who, m) in [("alice", &mut alice), ("bob", &mut bob)] {
+            let replay = delivery(&channel, 1, FrameKind::KeyPackage, &request);
+            assert_eq!(
+                sends(&m.deliver(&replay).unwrap()),
+                0,
+                "{who} answered a replayed request"
+            );
+        }
+    }
+
+    /// A joiner left waiting keeps a request members can act on: one about to
+    /// run out is replaced by a new one, from a new mailbox, and the old
+    /// mailbox stays read in case someone answered it in time.
+    #[test]
+    fn a_waiting_joiner_renews_its_request_before_it_runs_out() {
+        let mut joiner = Member::new("joiner").unwrap();
+        joiner.offer_lifetime = 1;
+        joiner.offer(b"channel").unwrap();
+        joiner.offer_lifetime = OFFER_LIFETIME;
+        let kinds = |requests: &[Vec<u8>]| -> Vec<u8> { requests.iter().map(|r| r[0]).collect() };
+
+        let renewed = joiner.refresh_offers().unwrap();
+        assert_eq!(
+            kinds(&renewed),
+            [0x03, 0x02],
+            "expected a resume and a new request"
+        );
+        assert!(
+            joiner.refresh_offers().unwrap().is_empty(),
+            "renewed a request with an hour left"
+        );
+
+        let on_connect = joiner.connect().unwrap();
+        assert_eq!(
+            kinds(&on_connect),
+            [0x03, 0x03, 0x02],
+            "both mailboxes, then the newest request"
+        );
+        assert_eq!(
+            on_connect[2], renewed[1],
+            "republished something other than the newest request"
+        );
     }
 
     /// The roster lists everyone, by position, and marks the asker.

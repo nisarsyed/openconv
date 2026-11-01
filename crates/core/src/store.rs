@@ -57,11 +57,23 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 3] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+const MIGRATIONS: [&str; 4] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+
+const SCHEMA_V4: &str = "
+    -- Join requests this client has seen admitted, by KeyPackageRef, until
+    -- the KeyPackage expires. A request that repeats one is a replay (#123).
+    CREATE TABLE admitted (
+        key_package_ref BLOB PRIMARY KEY,
+        until           INTEGER NOT NULL
+    );
+    -- For a staged add: when its KeyPackage expires, so that admission can
+    -- be remembered that long once the commit is confirmed.
+    ALTER TABLE pending_commit ADD COLUMN until INTEGER;
+";
 
 const SCHEMA_V3: &str = "
     -- A staged commit of any kind (#112): an add carries a Welcome and the
@@ -476,12 +488,15 @@ impl Database {
     }
 }
 
-/// A staged commit as stored: the commit, and for an add, the `Welcome` and
-/// the mailbox it goes to.
-pub(crate) type Staged = (Vec<u8>, Option<(Vec<u8>, Vec<u8>)>);
+/// A staged add's `Welcome`, the mailbox it goes to (the joiner's
+/// `KeyPackageRef`), and when that `KeyPackage` expires.
+pub(crate) type Admits = (Vec<u8>, Vec<u8>, u64);
 
-/// [`Staged`], borrowed: the commit, and for an add its `Welcome` and mailbox.
-pub(crate) type StagedRef<'a> = (&'a [u8], Option<(&'a [u8], &'a [u8])>);
+/// A staged commit as stored: the commit, and for an add, what it admits.
+pub(crate) type Staged = (Vec<u8>, Option<Admits>);
+
+/// [`Staged`], borrowed.
+pub(crate) type StagedRef<'a> = (&'a [u8], Option<(&'a [u8], &'a [u8], u64)>);
 
 /// An offer to join, as made from a mailbox.
 pub(crate) struct Offer {
@@ -644,14 +659,16 @@ impl Database {
     pub(crate) fn pending_commit(&self) -> Result<Option<Staged>> {
         self.conn
             .query_row(
-                "SELECT commit_, welcome, mailbox FROM pending_commit WHERE id = 0",
+                "SELECT commit_, welcome, mailbox, until FROM pending_commit WHERE id = 0",
                 [],
                 |r| {
-                    let welcome = match (r.get(1)?, r.get(2)?) {
-                        (Some(welcome), Some(mailbox)) => Some((welcome, mailbox)),
+                    let admits = match (r.get(1)?, r.get(2)?, r.get::<_, Option<i64>>(3)?) {
+                        (Some(welcome), Some(mailbox), until) => {
+                            Some((welcome, mailbox, to_u64(until.unwrap_or(0))?))
+                        }
                         _ => None,
                     };
-                    Ok((r.get(0)?, welcome))
+                    Ok((r.get(0)?, admits))
                 },
             )
             .optional()
@@ -663,13 +680,16 @@ impl Database {
         self.conn
             .execute("DELETE FROM pending_commit", [])
             .map_err(store)?;
-        if let Some((commit, welcome)) = pending {
-            let (welcome, mailbox) = welcome.unzip();
+        if let Some((commit, admits)) = pending {
+            let (welcome, mailbox, until) = match admits {
+                Some((w, m, u)) => (Some(w), Some(m), Some(to_i64(u)?)),
+                None => (None, None, None),
+            };
             self.conn
                 .execute(
-                    "INSERT INTO pending_commit (id, commit_, welcome, mailbox)
-                     VALUES (0, ?1, ?2, ?3)",
-                    params![commit, welcome, mailbox],
+                    "INSERT INTO pending_commit (id, commit_, welcome, mailbox, until)
+                     VALUES (0, ?1, ?2, ?3, ?4)",
+                    params![commit, welcome, mailbox, until],
                 )
                 .map_err(store)?;
         }
@@ -702,6 +722,39 @@ impl Database {
                 .map_err(store)?;
         }
         Ok(())
+    }
+
+    /// Remember that the request with this `KeyPackageRef` was admitted,
+    /// until it expires. Forgets any that already have.
+    pub(crate) fn remember_admitted(
+        &self,
+        key_package_ref: &[u8],
+        until: u64,
+        now: u64,
+    ) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM admitted WHERE until <= ?1", [to_i64(now)?])
+            .map_err(store)?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO admitted (key_package_ref, until) VALUES (?1, ?2)",
+                params![key_package_ref, to_i64(until)?],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Whether a request with this `KeyPackageRef` was already admitted.
+    pub(crate) fn was_admitted(&self, key_package_ref: &[u8]) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM admitted WHERE key_package_ref = ?1",
+                [key_package_ref],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|found| found.is_some())
+            .map_err(store)
     }
 
     /// Forget every held request.
