@@ -1221,7 +1221,7 @@ impl Member {
     ///
     /// Kept after this client leaves the group or is removed, and while it is
     /// re-added after being stranded, so `channel` is taken rather than
-    /// assumed. Nothing is deleted yet: local retention is undecided.
+    /// assumed. It is kept until the user deletes it (#133).
     ///
     /// # Errors
     /// If the store cannot be read, or holds content that no longer parses.

@@ -143,8 +143,9 @@ sent one is written unplaced when encrypted, and placed when its echo comes
 back in the current epoch (not a stale echo, which nobody could read; the
 resend keeps the id and so the row). Order is a local `position` assigned as
 frames are applied, not the relay's `seq`, which restarts after a relay
-reset. `Member::history` pages by position. It is kept after removal, and
-nothing is deleted yet: local retention is undecided.
+reset. `Member::history` pages by position. It is kept after removal or
+leaving and until the user deletes it (decided in #133); deleting is the
+app's to build.
 
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.
