@@ -896,6 +896,87 @@ async fn an_oversized_message_closes_only_that_connection() {
     );
 }
 
+// ---- The transcript (#129) ----
+
+/// What `peer` has stored of `channel`: `(text, sender, mine, placed)`.
+fn stored(peer: &Peer, channel: &[u8]) -> Vec<(String, String, bool, bool)> {
+    peer.member
+        .history(channel, None, u32::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.text(), e.sender.clone(), e.mine, e.position.is_some()))
+        .collect()
+}
+
+/// The done condition for #129: members restarted, or away and caught up,
+/// show the conversation in the relay's order, without duplicates, with
+/// their own messages in it, and agree on every message's id.
+#[tokio::test]
+async fn reopened_and_caught_up_members_show_the_same_conversation() {
+    let url = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut alice = persisted(dir.path(), "alice");
+    alice.create_group().unwrap();
+    let channel = alice.channel().unwrap();
+    let mut alice = Peer::online(alice, &url).await;
+    let mut bob = persisted(dir.path(), "bob");
+    bob.offer(&channel).unwrap();
+    let mut bob = Peer::online(bob, &url).await;
+    let mut carol = persisted(dir.path(), "carol");
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert_eq!(carol.member.member_count(), 3);
+
+    // Settled between lines, so the relay's order is the order said.
+    for (who, text) in [(0, "a1"), (1, "b1"), (2, "c1")] {
+        [&mut alice, &mut bob, &mut carol][who].say(text).await;
+        settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    }
+
+    // Carol goes away; alice speaks, then restarts while bob carries on.
+    carol.offline().await;
+    alice.say("a2").await;
+    settle(&mut [&mut alice, &mut bob]).await;
+    alice.offline().await;
+    bob.say("b2").await;
+    settle(&mut [&mut bob]).await;
+
+    let mut alice = Peer::online(persisted(dir.path(), "alice"), &url).await;
+    let mut carol = Peer::online(persisted(dir.path(), "carol"), &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    carol.say("c2").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+
+    let said = ["a1", "b1", "c1", "a2", "b2", "c2"];
+    let mut agreed = None;
+    for (name, peer) in [("alice", &alice), ("bob", &bob), ("carol", &carol)] {
+        let entries = stored(peer, &channel);
+        let texts: Vec<&str> = entries.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(texts, said, "{name}'s transcript");
+        for (text, sender, mine, placed) in &entries {
+            assert!(placed, "{name} never placed {text}");
+            assert_eq!(*mine, sender == name, "{name}: {text} from {sender}");
+            assert_eq!(&text[..1], &sender[..1], "{text} attributed to {sender}");
+        }
+        let ids: Vec<_> = peer
+            .member
+            .history(&channel, None, u32::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(*agreed.get_or_insert(ids.clone()), ids, "{name}'s ids");
+    }
+
+    // Reopened once more, with nothing new: the same, from disk.
+    let before = stored(&alice, &channel);
+    alice.offline().await;
+    let alice = Peer::online(persisted(dir.path(), "alice"), &url).await;
+    assert_eq!(stored(&alice, &channel), before);
+}
+
 // ---- Membership (#112) ----
 
 /// Alice, bob and carol in one group, all online.
@@ -920,7 +1001,9 @@ async fn three(url: &str) -> (Peer, Peer, Peer, Vec<u8>) {
 #[tokio::test]
 async fn a_member_can_be_removed() {
     let url = spawn_relay().await;
-    let (mut alice, mut bob, mut carol, _) = Box::pin(three(&url)).await;
+    let (mut alice, mut bob, mut carol, channel) = Box::pin(three(&url)).await;
+    alice.say("before the removal").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
 
     alice.remove("carol").await;
     settle(&mut [&mut alice, &mut bob, &mut carol]).await;
@@ -932,7 +1015,16 @@ async fn a_member_can_be_removed() {
     bob.say("without carol").await;
     settle(&mut [&mut alice, &mut bob, &mut carol]).await;
     assert_eq!(alice.heard, ["without carol"]);
-    assert!(carol.heard.is_empty());
+    assert_eq!(carol.heard, ["before the removal"]);
+    // Removal takes carol's keys, not what she already read (#129).
+    let kept: Vec<String> = carol
+        .member
+        .history(&channel, None, 10)
+        .unwrap()
+        .iter()
+        .map(openconv_core::TranscriptEntry::text)
+        .collect();
+    assert_eq!(kept, ["before the removal"]);
 }
 
 /// A member asks to leave, and whoever is online commits it.

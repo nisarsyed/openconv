@@ -135,6 +135,17 @@ The sender URI comes from the key MLS authenticated, never from the content.
 A resend reuses the original bytes, so it keeps its id. The id derivation is
 tested against the draft's own example; change it only with the draft.
 
+**The transcript (#129)** is the `transcript` table in the same store, one
+row per channel and message id. A received message is written inside
+`receive_unit`, in the transaction that decrypts it and advances the cursor,
+so a message that cannot be stored is not decrypted either and is retried. A
+sent one is written unplaced when encrypted, and placed when its echo comes
+back in the current epoch (not a stale echo, which nobody could read; the
+resend keeps the id and so the row). Order is a local `position` assigned as
+frames are applied, not the relay's `seq`, which restarts after a relay
+reset. `Member::history` pages by position. It is kept after removal, and
+nothing is deleted yet: local retention is undecided.
+
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.
 

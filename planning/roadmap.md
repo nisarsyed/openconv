@@ -233,3 +233,7 @@ the product shape is settled.
 - `rust-version` was `1.85`, which could never have built: openmls 0.9
   declares 1.91. Corrected to 1.91; still not verified by CI.
 - The relay's lag-disconnect path has no test.
+- The local transcript (#129) keeps every message for good: no retention,
+  no size cap, and nothing deleted when a member is removed. Deciding that is
+  a product question (how long, whether removal or leaving clears it, whether
+  the user can), not a storage one, so it was left rather than invented.

@@ -419,6 +419,39 @@ impl Client {
             .collect())
     }
 
+    /// The stored transcript of `channel`, oldest first: up to `limit` of
+    /// the latest messages, or with `before`, of those just before that
+    /// position. Page back by passing the smallest position you have, or
+    /// `u64::MAX` if nothing you have has one yet.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn history(
+        &self,
+        channel: Vec<u8>,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<TranscriptMessage>> {
+        Ok(self
+            .lock()
+            .history(&channel, before, limit)?
+            .into_iter()
+            .map(|e| TranscriptMessage {
+                text: e.text(),
+                id: e.id.to_vec(),
+                position: e.position,
+                seq: e.seq,
+                accepted_ms: e.accepted_ms,
+                stored_ms: e.stored_ms,
+                mine: e.mine,
+                sender: e.sender,
+                sender_uri: e.sender_uri,
+                replaces: e.content.replaces.map(|id| id.to_vec()),
+                in_reply_to: e.content.in_reply_to.map(|id| id.to_vec()),
+            })
+            .collect())
+    }
+
     /// This client's display name.
     #[must_use]
     pub fn identity(&self) -> String {
@@ -545,6 +578,47 @@ pub struct GroupMember {
     pub name: String,
     /// Whether this is the client asking.
     pub me: bool,
+}
+
+/// A message in the stored transcript.
+#[derive(uniffi::Record)]
+pub struct TranscriptMessage {
+    /// Its MIMI message id, stable across resends.
+    pub id: Vec<u8>,
+    /// Its place in the conversation, increasing in the relay's order: what
+    /// [`Client::history`] pages by. Absent for this client's own message
+    /// until the relay has it back; those come last.
+    pub position: Option<u64>,
+    /// The relay's sequence number for it. Shown, not sorted by: a reset
+    /// relay numbers from the start again.
+    pub seq: Option<u64>,
+    /// When the relay accepted it, in milliseconds since the Unix epoch.
+    pub accepted_ms: Option<u64>,
+    /// When this client stored it, by its own clock, in milliseconds.
+    pub stored_ms: u64,
+    /// Whether this client sent it.
+    pub mine: bool,
+    /// Who sent it: their self-declared name.
+    pub sender: String,
+    /// Their provisional URI, from the key MLS authenticated it with.
+    pub sender_uri: String,
+    /// The text to show.
+    pub text: String,
+    /// For an edit or delete: the id of the message it replaces.
+    pub replaces: Option<Vec<u8>>,
+    /// For a reply or reaction: the id of the message it answers.
+    pub in_reply_to: Option<Vec<u8>>,
+}
+
+/// Leaves out the text, as the core's message types do.
+impl std::fmt::Debug for TranscriptMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranscriptMessage")
+            .field("position", &self.position)
+            .field("sender", &self.sender)
+            .field("mine", &self.mine)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A delivery split into its parts.

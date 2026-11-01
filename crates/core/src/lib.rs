@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 pub mod content;
 pub mod store;
-use store::{Database, Saved};
+use store::{Database, LogEntry, Placement, Relayed, Saved};
 pub use store::{JsonCodec, Provider, Vault};
 
 uniffi::setup_scaffolding!();
@@ -180,6 +180,22 @@ pub struct Received {
 }
 
 impl Received {
+    /// MIMI content `bytes`, sent on `channel` by `sender`, whose signature
+    /// key MLS authenticated it with is `signature_key`. Its sender URI and id
+    /// come from those, never from the content (§3.3).
+    fn decode(channel: &[u8], signature_key: &[u8], sender: String, bytes: &[u8]) -> Result<Self> {
+        let content = content::Content::decode(bytes)
+            .map_err(|e| Error::Mls(format!("unreadable message content: {e}")))?;
+        let sender_uri = content::sender_uri(signature_key);
+        let room = content::room_uri(channel);
+        Ok(Self {
+            id: content::message_id(&sender_uri, &room, bytes, &content.salt),
+            sender,
+            sender_uri,
+            content,
+        })
+    }
+
     /// The text to show, or a placeholder for content this client cannot
     /// show yet.
     #[must_use]
@@ -195,6 +211,60 @@ impl std::fmt::Debug for Received {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Received")
             .field("sender", &self.sender)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A message in the local transcript (#129): one this client decrypted, or
+/// one it sent.
+///
+/// Deliberately no derived `Debug`, for the reason [`Sent`] gives.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TranscriptEntry {
+    /// Its MIMI message id, stable across resends.
+    pub id: content::MessageId,
+    /// Its place in the conversation: what [`Member::history`] pages by.
+    /// Increases in the relay's order. `None` for this client's own message
+    /// until the relay's echo shows where it landed; such messages come last.
+    pub position: Option<u64>,
+    /// The relay's sequence number for it on its channel, if it came through
+    /// the relay. Not an order to sort by: a relay whose store was reset
+    /// numbers from the start again.
+    pub seq: Option<u64>,
+    /// When the relay accepted it, in milliseconds since the Unix epoch, if it
+    /// came through the relay.
+    pub accepted_ms: Option<u64>,
+    /// When this client stored it, by its own clock, in milliseconds since
+    /// the Unix epoch.
+    pub stored_ms: u64,
+    /// Whether this client sent it.
+    pub mine: bool,
+    /// The display name its sender's credential carries.
+    pub sender: String,
+    /// Its sender's provisional URI, from the key MLS authenticated it with.
+    pub sender_uri: String,
+    /// What it says, including what it replaces or replies to.
+    pub content: content::Content,
+}
+
+impl TranscriptEntry {
+    /// The text to show, or a placeholder for content this client cannot
+    /// show yet.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.content.as_text().map_or_else(
+            || "[a message this version cannot show]".to_owned(),
+            str::to_owned,
+        )
+    }
+}
+
+impl std::fmt::Debug for TranscriptEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranscriptEntry")
+            .field("position", &self.position)
+            .field("sender", &self.sender)
+            .field("mine", &self.mine)
             .finish_non_exhaustive()
     }
 }
@@ -296,6 +366,13 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// Milliseconds since the Unix epoch, the relay's clock.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// What processing a relayed frame produced.
@@ -963,6 +1040,9 @@ impl Member {
                 .create_message(&provider, &m.signer, &content)
                 .map_err(mls)?
                 .tls_serialize_detached()?;
+            // In the transcript from the moment it exists, placed once the
+            // relay's echo shows where it landed. A resend is the same row.
+            m.log_own(&content, Placement::Unsent)?;
             m.remember_sent(Sent {
                 wire: wire.clone(),
                 epoch,
@@ -981,11 +1061,13 @@ impl Member {
     pub fn receive(&mut self, wire: &[u8]) -> Result<Event> {
         // Receiving advances ratchet state whether or not it was a message,
         // and a failure must leave none of that behind.
-        self.atomically(|m| m.receive_unit(wire))
+        self.atomically(|m| m.receive_unit(wire, None))
     }
 
-    /// [`Member::receive`], minus the unit-of-work wrapper.
-    fn receive_unit(&mut self, wire: &[u8]) -> Result<Event> {
+    /// [`Member::receive`], minus the unit-of-work wrapper. `relayed` is where
+    /// the relay put the frame, if it came through the relay; a message is
+    /// written to the transcript with it.
+    fn receive_unit(&mut self, wire: &[u8], relayed: Option<Relayed>) -> Result<Event> {
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = self.pending.take_if(|p| p.commit == wire) {
@@ -1012,6 +1094,8 @@ impl Member {
         if let Some(sent) = self.take_sent(wire)? {
             let group = self.group.as_ref().ok_or(Error::NoGroup)?;
             if sent.epoch == group.epoch().as_u64() {
+                // Everyone else read it here, so this is its place.
+                self.log_own(&sent.content, Placement::Applied(relayed))?;
                 return Ok(Event::Echo);
             }
             // A commit was ordered between sending this and seeing it come
@@ -1064,24 +1148,30 @@ impl Member {
             Sender::Member(index) => group.members().find(|m| m.index == *index),
             _ => None,
         };
-        let room = content::room_uri(group.group_id().as_slice());
 
         let event = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 let bytes = app.into_bytes();
-                let decoded = content::Content::decode(&bytes)
-                    .map_err(|e| Error::Mls(format!("unreadable message content: {e}")))?;
                 let sender = sender.ok_or(Error::UnexpectedMessage {
                     expected: "a message from a member",
                 })?;
-                let sender_uri = content::sender_uri(&sender.signature_key);
-                Event::Message(Box::new(Received {
-                    id: content::message_id(&sender_uri, &room, &bytes, &decoded.salt),
-                    sender: String::from_utf8_lossy(sender.credential.serialized_content())
-                        .into_owned(),
-                    sender_uri,
-                    content: decoded,
-                }))
+                let received = Received::decode(
+                    group.group_id().as_slice(),
+                    &sender.signature_key,
+                    String::from_utf8_lossy(sender.credential.serialized_content()).into_owned(),
+                    &bytes,
+                )?;
+                // Written in the transaction that decrypted it, beside the
+                // ratchet step that spent its key and the cursor past it.
+                log_message(
+                    &self.db,
+                    group.group_id().as_slice(),
+                    &received,
+                    &bytes,
+                    false,
+                    Placement::Applied(relayed),
+                )?;
+                Event::Message(Box::new(received))
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 let removed = commit.self_removed();
@@ -1104,6 +1194,64 @@ impl Member {
             _ => Event::Advanced,
         };
         Ok(event)
+    }
+
+    /// Write this client's own message to the transcript, or place it.
+    fn log_own(&self, bytes: &[u8], placement: Placement) -> Result<()> {
+        let channel = self.channel().ok_or(Error::NoGroup)?;
+        let own = Received::decode(
+            &channel,
+            &self.signer.to_public_vec(),
+            self.identity(),
+            bytes,
+        )?;
+        log_message(&self.db, &channel, &own, bytes, true, placement)
+    }
+
+    /// The transcript of `channel`, oldest first: up to `limit` of the latest
+    /// messages, or with `before`, up to `limit` of those just before that
+    /// [`TranscriptEntry::position`].
+    ///
+    /// The latest page ends with this client's own messages that have not
+    /// yet come back from the relay. To page back, pass the smallest
+    /// position in what you have; if nothing you have has one, pass
+    /// `u64::MAX`. One that never comes back stays unplaced: the app quit
+    /// after encrypting it and before handing it to the relay, so nobody
+    /// else has it.
+    ///
+    /// Kept after this client leaves the group or is removed, and while it is
+    /// re-added after being stranded, so `channel` is taken rather than
+    /// assumed. Nothing is deleted yet: local retention is undecided.
+    ///
+    /// # Errors
+    /// If the store cannot be read, or holds content that no longer parses.
+    pub fn history(
+        &self,
+        channel: &[u8],
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<TranscriptEntry>> {
+        self.db
+            .history(channel, before, limit)?
+            .into_iter()
+            .map(|row| {
+                Ok(TranscriptEntry {
+                    id: row
+                        .id
+                        .try_into()
+                        .map_err(|_| Error::CorruptState("transcript id is not 32 bytes"))?,
+                    position: row.position,
+                    seq: row.seq,
+                    accepted_ms: row.accepted_ms,
+                    stored_ms: row.stored_ms,
+                    mine: row.mine,
+                    sender: row.sender,
+                    sender_uri: row.sender_uri,
+                    content: content::Content::decode(&row.content)
+                        .map_err(|_| Error::CorruptState("transcript content does not parse"))?,
+                })
+            })
+            .collect()
     }
 
     /// Record a message so the relay's echo of it can be recognised, even
@@ -1349,8 +1497,12 @@ impl Member {
                     return Ok(vec![Effect::Send(resume.encode()?)]);
                 }
                 let seq = delivery.seq;
+                let relayed = Relayed {
+                    seq,
+                    accepted_ms: delivery.accepted_ms,
+                };
                 let applied = self.atomically(|m| {
-                    let effects = m.apply(&address, seq, &delivery.payload)?;
+                    let effects = m.apply(&address, relayed, &delivery.payload)?;
                     m.db.advance(&address, seq + 1)?;
                     Ok(effects)
                 });
@@ -1428,8 +1580,9 @@ impl Member {
         }
     }
 
-    /// Apply one frame from `address`, at `seq`.
-    fn apply(&mut self, address: &[u8], seq: u64, payload: &[u8]) -> Result<Vec<Effect>> {
+    /// Apply one frame from `address`, where the relay put it.
+    fn apply(&mut self, address: &[u8], relayed: Relayed, payload: &[u8]) -> Result<Vec<Effect>> {
+        let seq = relayed.seq;
         let (kind, body) = decode_frame(payload)?;
         let channel = self.channel();
         let on_channel = channel.as_deref() == Some(address);
@@ -1466,7 +1619,7 @@ impl Member {
             FrameKind::Commit | FrameKind::Application | FrameKind::Proposal if on_channel => {
                 let channel = channel.unwrap_or_default();
                 let mut effects = Vec::new();
-                match self.receive_unit(&body)? {
+                match self.receive_unit(&body, Some(relayed))? {
                     Event::Message(text) => effects.push(Effect::Message(text)),
                     Event::Admitted { welcome, mailbox } => {
                         let body = join_welcome(seq, &welcome);
@@ -1780,6 +1933,36 @@ fn note_commit(
         db.unapprove(&key)?;
     }
     Ok(())
+}
+
+/// Write a message to `channel`'s transcript: `bytes` is its MIMI content as
+/// sent, which `message` was decoded from.
+fn log_message(
+    db: &Database,
+    channel: &[u8],
+    message: &Received,
+    bytes: &[u8],
+    mine: bool,
+    placement: Placement,
+) -> Result<()> {
+    db.log_message(
+        &LogEntry {
+            channel,
+            id: &message.id,
+            sender: &message.sender,
+            sender_uri: &message.sender_uri,
+            mine,
+            content: bytes,
+            replaces: message.content.replaces.as_ref().map(<[u8; 32]>::as_slice),
+            in_reply_to: message
+                .content
+                .in_reply_to
+                .as_ref()
+                .map(<[u8; 32]>::as_slice),
+        },
+        placement,
+        now_ms(),
+    )
 }
 
 /// When `kp` stops being valid, in seconds since the Unix epoch.
@@ -3581,6 +3764,338 @@ mod tests {
         #[cfg(target_os = "macos")]
         security_framework::passwords::delete_generic_password("com.openconv.vault", &account).ok();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- The transcript (#129) ----
+
+    /// Alice, bob and carol in one group. Alice follows the channel from 0,
+    /// so frames can be delivered to her as the relay would.
+    fn trio() -> (Member, Member, Member, Vec<u8>) {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        let channel = alice.channel().unwrap();
+        (alice, bob, carol, channel)
+    }
+
+    /// A delivery as [`delivery`] makes one, accepted by the relay at `at`.
+    fn delivery_at(address: &[u8], seq: u64, at: u64, body: &[u8]) -> Vec<u8> {
+        openconv_wire::Delivery {
+            address: openconv_wire::Address::new(address.to_vec()).unwrap(),
+            seq,
+            accepted_ms: at,
+            payload: encode_frame(FrameKind::Application, body),
+        }
+        .encode()
+    }
+
+    /// Everything in `member`'s transcript of `channel`, oldest first.
+    fn transcript(member: &Member, channel: &[u8]) -> Vec<TranscriptEntry> {
+        member.history(channel, None, u32::MAX).unwrap()
+    }
+
+    fn texts(entries: &[TranscriptEntry]) -> Vec<String> {
+        entries.iter().map(TranscriptEntry::text).collect()
+    }
+
+    fn ids(entries: &[TranscriptEntry]) -> Vec<content::MessageId> {
+        entries.iter().map(|e| e.id).collect()
+    }
+
+    /// The done condition, in one client: messages in the relay's order,
+    /// this client's own among them where the relay put them, and the
+    /// relay's position and time kept. Every member agrees on the order and
+    /// the ids. A frame delivered again adds nothing.
+    #[test]
+    fn the_transcript_is_in_relay_order_and_includes_my_own_messages() {
+        let (mut alice, mut bob, mut carol, channel) = trio();
+        let from_bob = bob.send("bob first").unwrap();
+        let from_carol = carol.send("carol third").unwrap();
+        let mine = alice.send("alice second").unwrap();
+
+        let pending = transcript(&alice, &channel);
+        assert_eq!(texts(&pending), ["alice second"]);
+        assert_eq!(
+            pending[0].position, None,
+            "placed before the relay said where"
+        );
+        assert!(pending[0].mine);
+
+        // The relay orders bob's, then alice's, then carol's.
+        let order = [&from_bob, &mine, &from_carol];
+        for (seq, wire) in (0..).zip(order) {
+            alice
+                .deliver(&delivery_at(&channel, seq, 1000 + seq, wire))
+                .unwrap();
+        }
+        let seen = transcript(&alice, &channel);
+        assert_eq!(texts(&seen), ["bob first", "alice second", "carol third"]);
+        assert!(
+            seen.windows(2).all(|w| w[0].position < w[1].position),
+            "positions do not increase: {seen:?}"
+        );
+        assert!(seen.iter().all(|e| e.position.is_some()));
+        let relay: Vec<_> = seen.iter().map(|e| (e.seq, e.accepted_ms)).collect();
+        assert_eq!(
+            relay,
+            [
+                (Some(0), Some(1000)),
+                (Some(1), Some(1001)),
+                (Some(2), Some(1002))
+            ]
+        );
+        let who: Vec<_> = seen.iter().map(|e| (e.sender.as_str(), e.mine)).collect();
+        assert_eq!(who, [("bob", false), ("alice", true), ("carol", false)]);
+        assert_eq!(
+            seen[0].sender_uri,
+            content::sender_uri(&bob.signer.to_public_vec())
+        );
+        assert_eq!(
+            seen[1].sender_uri,
+            content::sender_uri(&alice.signer.to_public_vec())
+        );
+
+        // Bob and carol see the same frames in the same order.
+        for member in [&mut bob, &mut carol] {
+            for wire in order {
+                member.receive(wire).unwrap();
+            }
+        }
+        assert_eq!(ids(&transcript(&bob, &channel)), ids(&seen));
+        assert_eq!(ids(&transcript(&carol, &channel)), ids(&seen));
+
+        // A repeat of a frame already applied changes nothing.
+        alice
+            .deliver(&delivery_at(&channel, 1, 1001, &mine))
+            .unwrap();
+        assert_eq!(transcript(&alice, &channel), seen);
+    }
+
+    /// One message id is one entry, at the place it was first read. A second
+    /// frame carrying the same content (the same id) must neither add a row
+    /// nor move the first.
+    #[test]
+    fn a_message_seen_twice_is_stored_once_where_it_first_landed() {
+        let (mut alice, mut bob, mut carol, channel) = trio();
+        let content = content::Content::text("said once", salt()).encode();
+        let first = bob.send_content(content.clone()).unwrap();
+        let between = carol.send("in between").unwrap();
+        let again = bob.send_content(content).unwrap();
+
+        for wire in [&first, &between, &again] {
+            assert!(matches!(alice.receive(wire).unwrap(), Event::Message(_)));
+        }
+        assert_eq!(
+            texts(&transcript(&alice, &channel)),
+            ["said once", "in between"]
+        );
+    }
+
+    /// A message that lands behind a commit is resent, keeping its id. The
+    /// sender has one entry for it, placed where everyone read it: at the
+    /// resend, not at the stale original nobody could read.
+    #[test]
+    fn a_resent_message_is_one_entry_placed_where_it_was_read() {
+        let (mut alice, mut bob, mut carol, channel) = trio();
+        let dave = Member::new("dave").unwrap();
+        let commit = alice.propose_add(&dave.key_package().unwrap()).unwrap();
+        let raced = bob.send("crossed").unwrap();
+
+        // The relay orders: the commit, bob's stale message, a message from
+        // alice, then bob's resend.
+        alice.receive(&commit).unwrap();
+        carol.receive(&commit).unwrap();
+        bob.receive(&commit).unwrap();
+        let Event::Resend { message: resend } = bob.receive(&raced).unwrap() else {
+            panic!("the raced message should be resent");
+        };
+        let after = alice.send("alice, before the resend").unwrap();
+        for member in [&mut bob, &mut carol] {
+            member.receive(&after).unwrap();
+        }
+        alice.receive(&after).unwrap();
+        for member in [&mut alice, &mut bob, &mut carol] {
+            member.receive(&resend).unwrap();
+        }
+
+        let at_bob = transcript(&bob, &channel);
+        assert_eq!(
+            texts(&at_bob),
+            ["alice, before the resend", "crossed"],
+            "bob placed his message at the stale copy"
+        );
+        assert!(at_bob.iter().all(|e| e.position.is_some()));
+        assert_eq!(ids(&transcript(&alice, &channel)), ids(&at_bob));
+        assert_eq!(ids(&transcript(&carol, &channel)), ids(&at_bob));
+    }
+
+    /// The transcript is written with the decryption, so a message that
+    /// cannot be stored is not decrypted either: the cursor stays, the key
+    /// is not spent, and the frame is applied when it comes again.
+    #[test]
+    fn a_message_that_fails_to_store_is_retried_not_lost() {
+        let (mut alice, mut bob, _carol, channel) = trio();
+        let wire = delivery_at(&channel, 0, 7, &bob.send("keep me").unwrap());
+
+        alice.db.fail_transcript_writes(true);
+        let failed = alice.deliver(&wire);
+        assert!(matches!(failed, Err(Error::Store(_))), "got {failed:?}");
+        alice.db.fail_transcript_writes(false);
+        assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
+        assert!(transcript(&alice, &channel).is_empty());
+
+        assert!(matches!(
+            alice.deliver(&wire).unwrap().as_slice(),
+            [Effect::Message(_)]
+        ));
+        assert_eq!(texts(&transcript(&alice, &channel)), ["keep me"]);
+    }
+
+    /// An operation that fails after decrypting leaves no entry, on disk or
+    /// otherwise, and the message can still be read afterwards.
+    #[test]
+    fn a_failed_operation_leaves_no_transcript_entry() {
+        let (path, vault) = test_vault("unlogged");
+        let mut alice = Member::restore(vault, "unlogged").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+        let channel = alice.channel().unwrap();
+        let wire = bob.send("not yet").unwrap();
+
+        let failed = alice.atomically(|m| {
+            m.receive_unit(&wire, None)?;
+            Err::<(), _>(Error::NoGroup)
+        });
+        assert!(failed.is_err());
+        assert!(transcript(&alice, &channel).is_empty(), "kept in this run");
+        drop(alice);
+
+        let mut alice = Member::restore(Vault::with_key(&path, [7u8; 32]), "unlogged").unwrap();
+        assert!(transcript(&alice, &channel).is_empty(), "kept on disk");
+        assert_message(alice.receive(&wire).unwrap(), "not yet");
+        assert_eq!(texts(&transcript(&alice, &channel)), ["not yet"]);
+        drop(alice);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// Reopening shows the conversation: everything read, and this client's
+    /// own message still waiting for its echo, which places it after the
+    /// restart.
+    #[test]
+    fn the_transcript_survives_a_restart() {
+        let (path, vault) = test_vault("rememberer");
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let (channel, mine) = {
+            let mut alice = Member::restore(vault, "rememberer").unwrap();
+            alice.create_group().unwrap();
+            admit(&mut alice, &mut bob);
+            let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+            let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+                panic!("uncontested commit should have been admitted");
+            };
+            bob.receive(&commit).unwrap();
+            carol.join(&welcome).unwrap();
+            assert_message(
+                alice.receive(&bob.send("from bob").unwrap()).unwrap(),
+                "from bob",
+            );
+            assert_message(
+                alice.receive(&carol.send("from carol").unwrap()).unwrap(),
+                "from carol",
+            );
+            let mine = alice.send("mine, in flight").unwrap();
+            (alice.channel().unwrap(), mine)
+        };
+
+        let mut alice = Member::restore(Vault::with_key(&path, [7u8; 32]), "rememberer").unwrap();
+        let reopened = transcript(&alice, &channel);
+        assert_eq!(
+            texts(&reopened),
+            ["from bob", "from carol", "mine, in flight"]
+        );
+        assert_eq!(reopened[2].position, None);
+        assert!(matches!(alice.receive(&mine).unwrap(), Event::Echo));
+        let placed = transcript(&alice, &channel);
+        assert_eq!(ids(&placed), ids(&reopened), "the echo added a row");
+        assert!(placed[2].position > placed[1].position);
+        drop(alice);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A relay whose store was reset numbers from the start again. The
+    /// transcript keeps the order this client read things in, not the
+    /// relay's numbers, which now repeat.
+    #[test]
+    fn the_transcript_keeps_its_order_through_a_reset_relay() {
+        let (mut alice, mut bob, _carol, channel) = trio();
+        for (seq, text) in (0..).zip(["old one", "old two"]) {
+            alice
+                .deliver(&delivery_at(&channel, seq, 0, &bob.send(text).unwrap()))
+                .unwrap();
+        }
+        let reset = openconv_wire::Inbound::Unavailable {
+            address: Address::new(channel.clone()).unwrap(),
+            floor: 0,
+            next: 1,
+        };
+        assert!(matches!(
+            alice.deliver(&reset.encode()).unwrap().as_slice(),
+            [Effect::RelayReset { .. }, Effect::Send(_)]
+        ));
+        alice
+            .deliver(&delivery_at(&channel, 0, 0, &bob.send("new").unwrap()))
+            .unwrap();
+
+        let seen = transcript(&alice, &channel);
+        assert_eq!(texts(&seen), ["old one", "old two", "new"]);
+        let seqs: Vec<_> = seen.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, [Some(0), Some(1), Some(0)]);
+    }
+
+    /// History pages back from the latest messages without skipping or
+    /// repeating any. The latest page ends with what is still in flight.
+    #[test]
+    fn history_pages_back_without_gaps_or_overlap() {
+        let (mut alice, mut bob, _carol, channel) = trio();
+        for i in 1..=5 {
+            alice.receive(&bob.send(&format!("m{i}")).unwrap()).unwrap();
+        }
+        alice.send("in flight").unwrap();
+
+        let latest = alice.history(&channel, None, 3).unwrap();
+        assert_eq!(texts(&latest), ["m4", "m5", "in flight"]);
+        let oldest_here = latest.iter().filter_map(|e| e.position).min().unwrap();
+        let older = alice.history(&channel, Some(oldest_here), 3).unwrap();
+        assert_eq!(texts(&older), ["m1", "m2", "m3"]);
+        let start = older[0].position.unwrap();
+        assert!(alice.history(&channel, Some(start), 3).unwrap().is_empty());
+
+        // A page of nothing but messages in flight pages back from the top.
+        let placed = alice.history(&channel, Some(u64::MAX), 2).unwrap();
+        assert_eq!(texts(&placed), ["m4", "m5"]);
+        assert!(
+            alice
+                .history(b"another channel", None, 9)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
