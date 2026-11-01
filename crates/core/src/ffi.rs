@@ -283,6 +283,15 @@ impl Client {
         Ok(self.lock().offer(&channel)?)
     }
 
+    /// Requests that keep this client's request to join one a member can
+    /// still act on. Call every few minutes while waiting; usually empty.
+    ///
+    /// # Errors
+    /// If a new request cannot be made or recorded.
+    pub fn refresh_offers(&self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.lock().refresh_offers()?)
+    }
+
     /// Whether this client asked to join and is still waiting to be let in.
     ///
     /// # Errors

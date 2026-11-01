@@ -66,6 +66,9 @@ final class ChatModel: ObservableObject {
 
     private let client: Client
     private var socket: URLSessionWebSocketTask?
+    /// While waiting to be let in, renews the request before it runs out: a
+    /// join request is only good for an hour (#123).
+    private var offerRefresher: Task<Void, Never>?
     private var saidAuto = false
 
     /// The channel this client publishes to: its group's, or the one it is
@@ -146,6 +149,7 @@ final class ChatModel: ObservableObject {
                 // re-sent, in case nobody was online to answer it before.
                 try resume()
                 status = .waitingForGroup
+                keepRequestFresh()
                 note("still waiting to be admitted; asked again")
             } else if hosting {
                 // Host opens the group and waits for others to ask in.
@@ -165,6 +169,7 @@ final class ChatModel: ObservableObject {
                 try resume()
                 self.channelText = formatChannelId(channel: wanted)
                 status = .waitingForGroup
+                keepRequestFresh()
                 note("asked to join")
             }
         } catch {
@@ -182,6 +187,7 @@ final class ChatModel: ObservableObject {
     /// Show the group this client is in.
     private func enterJoined() throws {
         guard let joined = client.channel() else { throw ChatError.noChannel }
+        offerRefresher?.cancel()
         channel = joined
         let text = formatChannelId(channel: joined)
         channelText = text
@@ -192,7 +198,26 @@ final class ChatModel: ObservableObject {
         print("[\(identity)] channel \(text)")
     }
 
+    /// Renew the request to join every few minutes while waiting.
+    private func keepRequestFresh() {
+        offerRefresher?.cancel()
+        offerRefresher = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                guard let self, case .waitingForGroup = self.status else { return }
+                do {
+                    for request in try self.client.refreshOffers() {
+                        self.write(request)
+                    }
+                } catch {
+                    self.fail(error)
+                }
+            }
+        }
+    }
+
     func disconnect() {
+        offerRefresher?.cancel()
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         status = .offline
@@ -304,6 +329,7 @@ final class ChatModel: ObservableObject {
         case .rejoining:
             status = .waitingForGroup
             caughtUp = false
+            keepRequestFresh()
             note("asked the group to add this client back")
 
         case .live(let address):
@@ -343,7 +369,11 @@ final class ChatModel: ObservableObject {
     func remove(_ member: GroupMember) {
         do {
             write(try client.removeMember(index: member.index))
-            note("removing \(member.name)")
+            // Said plainly, because it is easy to assume otherwise: removal
+            // is not a ban until join requests need approval (#125).
+            note(
+                "removing \(member.name); while they have the channel id, they can ask to join again"
+            )
         } catch {
             fail(error)
         }
