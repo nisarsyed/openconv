@@ -5,8 +5,12 @@ review rounds, signed off 2026-11-01). The SwiftUI build (#130 and the issues
 split from it) follows this file and the canvas. Where they disagree, ask:
 neither one is automatically right.
 
-**Canvas:** https://claude.ai/artifact/8dJr9w1ZyUTyV9bMAZV5qQ. It's private
-to its owner, so ask them for access. There are three pages:
+**In the repo:** [`design/`](../design/) holds the tokens and PNG snapshots
+of every agreed frame.
+
+**Canvas:** https://claude.ai/artifact/8dJr9w1ZyUTyV9bMAZV5qQ is the
+workspace where the design was made. It's private to its owner, so ask them
+for access. There are three pages:
 
 - **Round 3 · Every state:** what to build.
 - **Round 2 · Screens:** the core screens and the design system.
@@ -140,85 +144,26 @@ These rules hold in every state:
 
 ## Tokens
 
-### Type
+The values live in [`design/tokens.json`](../design/tokens.json). Don't copy
+them here or into Swift by hand: the SwiftUI theme is generated from that
+file (#130).
 
-The system font throughout: SF Pro, with SF Pro Display for titles.
+[`design/frames/`](../design/frames/) has PNG snapshots of every agreed frame,
+in light and dark. Build and review against those. [`design/README.md`](../design/README.md)
+covers how both are exported from the canvas.
 
-| Style | Weight | Size / line |
-|---|---|---|
-| Large title | Semibold | 26 / 32 |
-| Title 1 | Semibold | 22 / 28 |
-| Title 2 | Semibold | 17 / 22 |
-| Title 3 | Semibold | 15 / 20 |
-| Headline | Semibold | 13 / 18 |
-| Body | Regular | 13 / 18 |
-| Callout | Regular | 12 / 16 |
-| Caption | Regular | 11 / 14 |
-| Caption strong | Semibold | 11 / 14 |
+In short:
 
-The text size setting moves Headline, Body, Callout and the Captions one
-point down or up together (Smaller is 12, 12, 11, 10; Larger is 15, 15, 13,
-12). Monospace (SF Mono) is used for join codes and relay addresses.
-
-### Space, radii, metrics
-
-- **Space:** a 4pt grid (4, 8, 12, 16, 20, 24, 32).
-- **Radii:** control 6, list row 8, card 10, window 12, pill fully round.
-- **Bars** (header, message bar, account bar): 52; 44 at compact density.
-- **Sidebar:** 272. **Right panel:** 320. **Settings window:** 880 wide,
-  with a 210 sidebar.
-- **Avatar:** 32; 24 at compact density. Small 24, large 44. Conversation
-  avatars are rounded squares (radius 9) with initials.
-
-### Colour
-
-| Token | Light | Dark | Use |
-|---|---|---|---|
-| window | #FFFFFF | #1E1E20 | transcript ground |
-| sidebar | #F2F2F5 | #262629 | list and Settings sidebar |
-| panel | #FAFAFB | #222225 | right panel, banners |
-| elevated | #FFFFFF | #2C2C2F | cards, grouped rows, dialogs |
-| fill | #EBEBEF | #333337 | segmented controls, disabled field |
-| fill-hover | #E3E3E8 | #3B3B40 | hover |
-| field | #FFFFFF | #2A2A2D | text fields |
-| text | #1C1C1F | #F2F2F4 | primary text |
-| text-2 | #5C5C63 | #A9A9B0 | secondary text, notices |
-| text-3 | #8B8B92 | #7C7C84 | tertiary |
-| line | #E3E3E8 | #333337 | hairlines, notice rules |
-| line-strong | #CFCFD6 | #46464C | the message-bar and account-bar top border, control borders |
-| warn-text | #8A4B00 | #F4B65A | away-too-long bar and banner text |
-| warn-bg | #FFF2DB | #3A2A12 | its ground |
-| danger | #C2271D | #FF6A5F | Not sent, destructive text |
-| online | #2F8A4E | #5BC57F | the connected dot |
-
-The connecting and catching-up dot is #C98A12; the offline dot is text-3. A
-filled destructive button is #C2271D with white text in both appearances,
-because white on the dark-mode red fails contrast.
-
-**Accents.** `accent` fills selection, filled buttons, badges and the jump
-pill (white text on it passes 4.5:1). `accent-text` is accent-coloured text
-on the ground. `accent-tint` is the selected row, tinted buttons and the send
-button.
-
-| Accent | accent | accent-text (light / dark) | accent-tint (light / dark) |
-|---|---|---|---|
-| Teal | #0B7470 | #0B7470 / #45C7BD | 11,116,112 at 14% / 69,199,189 at 18% |
-| Ink | #2453CC | #2453CC / #86A6FF | 36,83,204 at 13% / 134,166,255 at 18% |
-| Persimmon | #B93E10 | #B93E10 / #FF8A5C | 185,62,16 at 13% / 255,138,92 at 18% |
-| Moss | #3B7027 | #3B7027 / #8FCC72 | 59,112,39 at 14% / 143,204,114 at 18% |
-
-**Avatars** are coloured from the member's key, never their name, so two
-people who claim the same name look different. There are six pairs
-(background / initials):
-
-| | Light | Dark |
-|---|---|---|
-| 1 | #D7E6F5 / #1F4E7A | #22384F / #A9CCF0 |
-| 2 | #DDEFE3 / #1F6037 | #1F3B2A / #A6DDB8 |
-| 3 | #F6E3D4 / #7A3E12 | #44301F / #F1C29C |
-| 4 | #E9E1F4 / #4B2F78 | #352A49 / #CDB8EE |
-| 5 | #F5DDE2 / #7D2335 | #46262E / #F2B3C0 |
-| 6 | #E4E6D2 / #4F5418 | #393B22 / #D6DB9E |
+- **Type:** the system font, at macOS sizes (Body 13/18).
+- **Space:** a 4pt grid.
+- **Radii:** control 6, row 8, card 10, window 12.
+- **Bars:** 52pt; 44pt at compact density.
+- **Accent:** Teal (#0B7470) by default, plus three alternatives. Each has
+  separate values for fills, text and tints in light and dark.
+- **Avatars:** six colour pairs, chosen from the member's key, never their
+  name.
+- **Destructive fill:** stays #C2271D with white text in both appearances,
+  because white on the dark-mode red fails contrast.
 
 ## Privacy shown in the UI
 

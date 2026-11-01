@@ -239,8 +239,10 @@ proposing what to build next — it exists because that decision was previously
 made per-session and drifted.
 
 `planning/design.md` is the agreed design for the macOS app (#133): structure,
-decisions, every state and its wording, and the tokens. Build UI from it and
-the canvas it links, and don't reopen a decision recorded there without asking.
+decisions, and every state and its wording. Token values live in
+`design/tokens.json`, and `design/frames/` has PNG snapshots of every agreed
+frame (`design/README.md`). Build UI from these, and don't reopen a decision
+recorded there without asking.
 
 `planning/v2-design-requirements.md` carries forward findings from an audit of
 the previous implementation, tagged by the milestone where each applies.
