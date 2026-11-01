@@ -159,10 +159,10 @@ async fn two_members_talk_through_the_relay() {
         let env = next(&mut alice_ws).await;
         assert_eq!(env.address, channel, "alice received off-channel traffic");
         if env.kind == FrameKind::Application {
-            let Event::Message(text) = alice.receive(&env.body).unwrap() else {
+            let Event::Message(message) = alice.receive(&env.body).unwrap() else {
                 panic!("expected a message");
             };
-            break text;
+            break message.text();
         }
     };
     assert_eq!(text, "got it");
@@ -548,7 +548,7 @@ impl Peer {
                         self.sent.push(request.clone());
                         send(&mut self.ws, request).await;
                     }
-                    Effect::Message(text) => self.heard.push(text),
+                    Effect::Message(message) => self.heard.push(message.text()),
                     Effect::Unavailable { .. } => {
                         assert!(self.expect_stranding, "cursor unavailable");
                         self.stranded = true;

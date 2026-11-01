@@ -311,10 +311,15 @@ costs nothing now, and retrofitting it later would not be cheap.
   already knows it without parsing anything, and #106's time window needs it
   stored anyway. Delivery order stays the sequence number, not the timestamp,
   consistent with `v2-design-requirements.md`.
-- **Message content format.** MIMI content (CBOR, message ids derived from
-  sender and room URIs, replies, edits, reactions) is the most interop-relevant
-  thing inside the encryption. Milestone 2 defines the transcript and is the
-  natural point to adopt it or deliberately not.
+- **Message content format** — decided 2026-11-01, at milestone 2 as planned:
+  **adopted**, pinned to `draft-ietf-mimi-content-09` (still the current
+  version then; Informational, not yet at the IESG). Messages are
+  deterministic-CBOR MIMI content with stable message ids, which the
+  transcript, deduplication and replies hang off, and which a resend keeps.
+  Until identity (milestone 3) the URIs in the id are provisional
+  (`openconv-provisional:`): the room's from the group id, the sender's from
+  the signature key MLS authenticated, never from the content. The id
+  derivation is tested against the draft's own worked example (§5.1).
 - **Credentials.** MIMI identifies users and clients by URI. Milestone 3
   replaces `BasicCredential` and should pick a form that can carry one.
 

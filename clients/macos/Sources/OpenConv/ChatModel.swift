@@ -305,9 +305,9 @@ final class ChatModel: ObservableObject {
         case .send(let request):
             write(request)
 
-        case .message(let text):
+        case .message(let text, let sender, _):
             print("[\(identity)] received: \(text)")
-            lines.append(Line(author: "them", text: text, mine: false))
+            lines.append(Line(author: sender, text: text, mine: false))
 
         case .joined:
             try enterJoined()
