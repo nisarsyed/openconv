@@ -13,6 +13,7 @@ use openmls_traits::signatures::Signer;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
+pub mod content;
 pub mod store;
 use store::{Database, Saved};
 pub use store::{JsonCodec, Provider, Vault};
@@ -149,8 +150,8 @@ pub struct Member {
 
 /// A message sent and not yet seen coming back.
 ///
-/// Holds the plaintext, because an echo arriving after a commit means the
-/// message has to be encrypted again. Deliberately no derived `Debug`: it
+/// Holds the plaintext content, because an echo arriving after a commit means
+/// the message has to be encrypted again. Deliberately no derived `Debug`: it
 /// would print message contents into any log line that formats one.
 #[derive(Clone)]
 struct Sent {
@@ -158,8 +159,44 @@ struct Sent {
     wire: Vec<u8>,
     /// The epoch it was encrypted in.
     epoch: u64,
-    /// What to resend if that epoch turns out to be stale.
-    text: String,
+    /// The MIMI content, salt and all, resent unchanged if that epoch turns
+    /// out to be stale, so the message keeps its id.
+    content: Vec<u8>,
+}
+
+/// A message from another member.
+///
+/// Deliberately no derived `Debug`, for the reason [`Sent`] gives.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Received {
+    /// Its MIMI message id, stable across resends.
+    pub id: content::MessageId,
+    /// The display name its sender's credential carries.
+    pub sender: String,
+    /// Its sender's provisional URI, from the key MLS authenticated it with.
+    pub sender_uri: String,
+    /// What it says.
+    pub content: content::Content,
+}
+
+impl Received {
+    /// The text to show, or a placeholder for content this client cannot
+    /// show yet.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.content.as_text().map_or_else(
+            || "[a message this version cannot show]".to_owned(),
+            str::to_owned,
+        )
+    }
+}
+
+impl std::fmt::Debug for Received {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Received")
+            .field("sender", &self.sender)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A commit waiting to find out whether it won its epoch.
@@ -247,6 +284,13 @@ const OFFER_LIFETIME: u64 = 7 * 24 * 60 * 60;
 /// there is always one a member can still act on.
 const OFFER_RENEW_BEFORE: u64 = 24 * 60 * 60;
 
+/// A fresh random salt for MIMI content (§3.3).
+fn salt() -> [u8; 16] {
+    let mut salt = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
+    salt
+}
+
 /// Seconds since the Unix epoch, the clock `KeyPackage` lifetimes use.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -258,7 +302,7 @@ fn now_secs() -> u64 {
 #[derive(Debug)]
 pub enum Event {
     /// A decrypted application message.
-    Message(String),
+    Message(Box<Received>),
     /// A staged commit that adds someone won its epoch. Send this `Welcome`
     /// to the new member.
     Admitted {
@@ -303,7 +347,7 @@ pub enum Effect {
     /// Write these bytes to the relay.
     Send(Vec<u8>),
     /// A decrypted message from another member.
-    Message(String),
+    Message(Box<Received>),
     /// This client joined the group from a `Welcome`.
     Joined,
     /// This client's add won its epoch; the new member has been let in.
@@ -452,7 +496,14 @@ impl Member {
         let sent = db
             .sent()?
             .into_iter()
-            .map(|(wire, epoch, text)| Sent { wire, epoch, text })
+            .map(|(wire, epoch, content, text)| Sent {
+                wire,
+                epoch,
+                // Recorded before #128 kept the content: the text alone. A
+                // resend of it gets a new salt, and so a new id; it was never
+                // seen by anyone, so nothing can refer to the old one.
+                content: content.unwrap_or_else(|| content::Content::text(&text, salt()).encode()),
+            })
             .collect();
 
         Ok(Self {
@@ -894,6 +945,12 @@ impl Member {
     /// # Errors
     /// If this member has no group, or encryption fails.
     pub fn send(&mut self, text: &str) -> Result<Vec<u8>> {
+        self.send_content(content::Content::text(text, salt()).encode())
+    }
+
+    /// Encrypt MIMI content for the group, as is: a resend passes the
+    /// original bytes back in, so the message keeps its id.
+    fn send_content(&mut self, content: Vec<u8>) -> Result<Vec<u8>> {
         // Encrypting ratchets the sender key. The ciphertext is returned only
         // once that step is flushed to the drive, so neither a crash nor a
         // power cut can make this client encrypt again with the same key.
@@ -903,13 +960,13 @@ impl Member {
             let group = m.group.as_mut().ok_or(Error::NoGroup)?;
             let epoch = group.epoch().as_u64();
             let wire = group
-                .create_message(&provider, &m.signer, text.as_bytes())
+                .create_message(&provider, &m.signer, &content)
                 .map_err(mls)?
                 .tls_serialize_detached()?;
             m.remember_sent(Sent {
                 wire: wire.clone(),
                 epoch,
-                text: text.to_owned(),
+                content,
             })?;
             Ok(wire)
         })
@@ -967,7 +1024,7 @@ impl Member {
             // considered and rejected: a member admitted by that commit never
             // had the old epoch's keys, so some members would see the message
             // and others would not.
-            let message = self.send(&sent.text)?;
+            let message = self.send_content(sent.content)?;
             return Ok(Event::Resend { message });
         }
 
@@ -1003,10 +1060,28 @@ impl Member {
             });
         }
         let processed = group.process_message(&provider, protocol).map_err(mls)?;
+        let sender = match processed.sender() {
+            Sender::Member(index) => group.members().find(|m| m.index == *index),
+            _ => None,
+        };
+        let room = content::room_uri(group.group_id().as_slice());
 
         let event = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
-                Event::Message(String::from_utf8_lossy(&app.into_bytes()).into_owned())
+                let bytes = app.into_bytes();
+                let decoded = content::Content::decode(&bytes)
+                    .map_err(|e| Error::Mls(format!("unreadable message content: {e}")))?;
+                let sender = sender.ok_or(Error::UnexpectedMessage {
+                    expected: "a message from a member",
+                })?;
+                let sender_uri = content::sender_uri(&sender.signature_key);
+                Event::Message(Box::new(Received {
+                    id: content::message_id(&sender_uri, &room, &bytes, &decoded.salt),
+                    sender: String::from_utf8_lossy(sender.credential.serialized_content())
+                        .into_owned(),
+                    sender_uri,
+                    content: decoded,
+                }))
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 let removed = commit.self_removed();
@@ -1035,7 +1110,7 @@ impl Member {
     /// after a restart.
     fn remember_sent(&mut self, sent: Sent) -> Result<()> {
         self.db
-            .push_sent(&sent.wire, sent.epoch, &sent.text, SENT_HISTORY)?;
+            .push_sent(&sent.wire, sent.epoch, &sent.content, SENT_HISTORY)?;
         if self.sent.len() == SENT_HISTORY {
             self.sent.pop_front();
         }
@@ -1950,7 +2025,7 @@ mod tests {
     #[track_caller]
     fn assert_message(event: Event, expected: &str) {
         match event {
-            Event::Message(text) => assert_eq!(text, expected),
+            Event::Message(received) => assert_eq!(received.text(), expected),
             other => panic!("expected a message, got {other:?}"),
         }
     }
@@ -2578,7 +2653,7 @@ mod tests {
         );
 
         let first = alice.deliver(&wire).unwrap();
-        assert!(matches!(first.as_slice(), [Effect::Message(t)] if t == "once"));
+        assert!(matches!(first.as_slice(), [Effect::Message(m)] if m.text() == "once"));
         assert!(
             alice.deliver(&wire).unwrap().is_empty(),
             "the repeat was applied"
@@ -2678,7 +2753,7 @@ mod tests {
             &bob.send("fine").unwrap(),
         );
         assert!(
-            matches!(alice.deliver(&next).unwrap().as_slice(), [Effect::Message(t)] if t == "fine")
+            matches!(alice.deliver(&next).unwrap().as_slice(), [Effect::Message(m)] if m.text() == "fine")
         );
     }
 
@@ -3315,6 +3390,95 @@ mod tests {
             alice.join_requests().unwrap().is_empty(),
             "alice still lists a settled request"
         );
+    }
+
+    /// Every member computes the same MIMI id for a message (#128), bound to
+    /// the sender MLS authenticated, and a message resent after racing a
+    /// commit keeps the id its original had: the transcript and replies
+    /// depend on both.
+    #[test]
+    fn message_ids_are_shared_and_survive_a_resend() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let commit = alice.propose_add(&carol.key_package().unwrap()).unwrap();
+        let Event::Admitted { welcome, .. } = alice.receive(&commit).unwrap() else {
+            panic!("uncontested commit should have been admitted");
+        };
+        bob.receive(&commit).unwrap();
+        carol.join(&welcome).unwrap();
+
+        let wire = bob.send("one id for all").unwrap();
+        let (Event::Message(at_alice), Event::Message(at_carol)) =
+            (alice.receive(&wire).unwrap(), carol.receive(&wire).unwrap())
+        else {
+            panic!("expected the message at both");
+        };
+        assert_eq!(
+            at_alice.id, at_carol.id,
+            "members disagree on the message id"
+        );
+        assert_eq!(at_alice.sender, "bob");
+        let again = bob.send("one id for all").unwrap();
+        let Event::Message(repeat) = alice.receive(&again).unwrap() else {
+            panic!("expected the repeat");
+        };
+        assert_ne!(
+            repeat.id, at_alice.id,
+            "the same text sent twice got one id: is the salt random?"
+        );
+        assert_eq!(
+            at_alice.sender_uri,
+            content::sender_uri(&bob.signer.to_public_vec())
+        );
+
+        // Bob speaks while alice's commit (adding dave) is ordered first.
+        let dave = Member::new("dave").unwrap();
+        let racing = alice.propose_add(&dave.key_package().unwrap()).unwrap();
+        let raced = bob.send("crossed").unwrap();
+        let original = bob.sent.back().unwrap().content.clone();
+        let decoded = content::Content::decode(&original).unwrap();
+        let room = content::room_uri(&alice.channel().unwrap());
+        let original_id = content::message_id(
+            &content::sender_uri(&bob.signer.to_public_vec()),
+            &room,
+            &original,
+            &decoded.salt,
+        );
+        alice.receive(&racing).unwrap();
+        bob.receive(&racing).unwrap();
+        carol.receive(&racing).unwrap();
+        let Event::Resend { message } = bob.receive(&raced).unwrap() else {
+            panic!("the raced message should be resent");
+        };
+        let Event::Message(resent) = carol.receive(&message).unwrap() else {
+            panic!("the resend did not arrive");
+        };
+        assert_eq!(resent.id, original_id, "a resend changed the message id");
+        assert_eq!(resent.text(), "crossed");
+    }
+
+    /// Bare UTF-8 from a client older than #128 is not MIMI content. It is
+    /// refused as a frame fault (stepped over), never shown as garbage.
+    #[test]
+    fn content_that_is_not_mimi_is_refused() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        let provider = bob.db.provider(&bob.crypto);
+        let legacy = bob
+            .group
+            .as_mut()
+            .unwrap()
+            .create_message(&provider, &bob.signer, b"plain old utf-8")
+            .unwrap()
+            .tls_serialize_detached()
+            .unwrap();
+        let refused = alice.receive(&legacy).unwrap_err();
+        assert!(refused.is_frame_fault(), "got {refused:?}");
     }
 
     /// The roster lists everyone, by position, and marks the asker.

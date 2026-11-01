@@ -25,6 +25,10 @@ thiserror = { workspace = true }
 uniffi = "0.32"
 openconv-wire = { path = "../wire" }
 rand = "0.8"
+# MIMI content (draft-ietf-mimi-content-09) is CBOR. Apache-2.0; minicbor
+# would also do, but is BlueOak-1.0.0, which deny.toml does not allow.
+ciborium = "0.2"
+sha2 = "0.10"
 # The MLS store, in SQLite. Patched to the vendored copy in the workspace
 # manifest until upstream releases it on rusqlite 0.40.
 openmls_sqlite_storage = "0.3"

@@ -57,11 +57,19 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 5] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+const MIGRATIONS: [&str; 6] = [
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+];
+
+const SCHEMA_V6: &str = "
+    -- A sent message's MIMI content (#128), salt and all, so a resend reuses
+    -- it and keeps the message id. Rows from before keep only their text.
+    ALTER TABLE sent ADD COLUMN content BLOB;
+";
 
 const SCHEMA_V5: &str = "
     -- Requests to join, waiting for a member to accept or decline them
@@ -525,6 +533,10 @@ impl Database {
     }
 }
 
+/// A sent message as stored: wire bytes, epoch, MIMI content (absent for rows
+/// from before #128), and the text such rows kept instead.
+pub(crate) type SentRow = (Vec<u8>, u64, Option<Vec<u8>>, String);
+
 /// A staged add's `Welcome`, the mailbox it goes to (the joiner's
 /// `KeyPackageRef`), and when that `KeyPackage` expires.
 pub(crate) type Admits = (Vec<u8>, Vec<u8>, u64);
@@ -655,24 +667,32 @@ impl Database {
     }
 
     /// Sent messages awaiting their echo, oldest first.
-    pub(crate) fn sent(&self) -> Result<Vec<(Vec<u8>, u64, String)>> {
+    pub(crate) fn sent(&self) -> Result<Vec<SentRow>> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT wire, epoch, text FROM sent ORDER BY id")
+            .prepare_cached("SELECT wire, epoch, content, text FROM sent ORDER BY id")
             .map_err(store)?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, to_u64(r.get(1)?)?, r.get(2)?)))
+            .query_map([], |r| {
+                Ok((r.get(0)?, to_u64(r.get(1)?)?, r.get(2)?, r.get(3)?))
+            })
             .map_err(store)?;
         rows.collect::<rusqlite::Result<_>>().map_err(store)
     }
 
     /// Record a sent message, keeping only the newest `keep`.
-    pub(crate) fn push_sent(&self, wire: &[u8], epoch: u64, text: &str, keep: usize) -> Result<()> {
+    pub(crate) fn push_sent(
+        &self,
+        wire: &[u8],
+        epoch: u64,
+        content: &[u8],
+        keep: usize,
+    ) -> Result<()> {
         let keep = i64::try_from(keep).unwrap_or(i64::MAX);
         self.conn
             .execute(
-                "INSERT INTO sent (wire, epoch, text) VALUES (?1, ?2, ?3)",
-                params![wire, to_i64(epoch)?, text],
+                "INSERT INTO sent (wire, epoch, content, text) VALUES (?1, ?2, ?3, '')",
+                params![wire, to_i64(epoch)?, content],
             )
             .and_then(|_| {
                 self.conn.execute(

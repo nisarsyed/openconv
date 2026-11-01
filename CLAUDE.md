@@ -123,6 +123,13 @@ who then reads the channel from just after it. A waiting joiner re-sends its
 offer on every reconnect, and members answer requests seen during catch-up
 once live, unless the joiner is already a member.
 
+**Message content is MIMI content** (`crates/core/src/content.rs`, pinned to
+`draft-ietf-mimi-content-09`): deterministic CBOR, with a message id derived
+per §3.3 from provisional sender and room URIs (milestone 3 makes them real).
+The sender URI comes from the key MLS authenticated, never from the content.
+A resend reuses the original bytes, so it keeps its id. The id derivation is
+tested against the draft's own example; change it only with the draft.
+
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.
 

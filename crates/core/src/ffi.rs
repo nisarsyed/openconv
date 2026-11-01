@@ -75,7 +75,9 @@ pub enum ClientEvent {
 impl From<crate::Event> for ClientEvent {
     fn from(e: crate::Event) -> Self {
         match e {
-            crate::Event::Message(text) => Self::Message { text },
+            crate::Event::Message(received) => Self::Message {
+                text: received.text(),
+            },
             crate::Event::Admitted { welcome, mailbox } => Self::Admitted { welcome, mailbox },
             crate::Event::Committed => Self::Committed,
             crate::Event::Superseded => Self::Superseded,
@@ -99,8 +101,12 @@ pub enum ClientEffect {
     },
     /// A decrypted message from another member.
     Message {
-        /// The plaintext.
+        /// The text to show.
         text: String,
+        /// Who sent it: their self-declared name.
+        sender: String,
+        /// Its MIMI message id, stable across resends.
+        id: Vec<u8>,
     },
     /// This client joined the group.
     Joined,
@@ -143,7 +149,11 @@ impl From<Effect> for ClientEffect {
     fn from(e: Effect) -> Self {
         match e {
             Effect::Send(request) => Self::Send { request },
-            Effect::Message(text) => Self::Message { text },
+            Effect::Message(received) => Self::Message {
+                text: received.text(),
+                sender: received.sender.clone(),
+                id: received.id.to_vec(),
+            },
             Effect::Joined => Self::Joined,
             Effect::Admitted => Self::Admitted,
             Effect::Superseded => Self::Superseded,

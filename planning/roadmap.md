@@ -165,10 +165,13 @@ and #106, not after them.
 Cheap once (1) exists, because the frames can be fetched and decrypted. Local
 store keyed by channel, a transcript that survives restart, and pagination.
 
-Decide here whether message content is the MIMI content format
-(`draft-ietf-mimi-content`: CBOR, stable message ids, replies, edits,
-reactions) or deliberately not. Today a message is bare UTF-8. The transcript
-schema is where that choice becomes expensive to change.
+**Decided 2026-11-01: MIMI content** (`draft-ietf-mimi-content-09`), with
+provisional URIs until milestone 3; see `architecture-notes.md`. History
+first: the format carries replies, edits, deletes and reactions from the
+start, and their UI follows.
+
+Tracked as #128 (content), #129 (transcript store), #130 (transcript UI), in
+that order, with #131 (replies, edits, deletes, reactions) after.
 
 Schema carries a channel id from the first version even though it is obvious —
 the point of doing this after (1) is that the shape is already known.
