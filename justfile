@@ -39,6 +39,32 @@ bridge: bindings
 smoke:
     ./scripts/smoke.sh
 
+# Build what the labs drive: the relay and the app.
+lab-build: bindings
+    cargo build -p openconv-server
+    cd clients/macos && swift build
+
+# Create the Python environment the labs use.
+lab-setup:
+    python3 -m venv labs/.venv
+    labs/.venv/bin/pip install --quiet -r labs/requirements.txt
+
+# Run one lab (labs/README.md) against what is built: `just lab catchup`.
+lab name *dir:
+    labs/{{name}}.sh {{dir}}
+
+# Build, then run every lab and report which failed.
+labs: lab-build
+    #!/usr/bin/env bash
+    set -u
+    failed=()
+    for lab in restart catchup membership approval retention abuse durable_relay; do
+        echo "== $lab"
+        labs/$lab.sh || failed+=("$lab")
+    done
+    if [ ${#failed[@]} -gt 0 ]; then echo "failed: ${failed[*]}"; exit 1; fi
+    echo "all labs passed"
+
 # Start the relay on 127.0.0.1:8080.
 relay:
     cargo run -p openconv-server
