@@ -44,6 +44,34 @@ func publishedBody(_ request: Data) throws -> Data {
     return Data(bytes[start...])
 }
 
+/// The messages in a page of history, leaving out notices.
+func messages(_ items: [HistoryItem]) -> [TranscriptMessage] {
+    items.compactMap {
+        if case .message(let message) = $0 { return message }
+        return nil
+    }
+}
+
+/// An entry's place in the conversation.
+func position(_ item: HistoryItem) -> UInt64? {
+    switch item {
+    case .message(let message): message.position
+    case .notice(let notice): notice.position
+    }
+}
+
+/// A delivery as the relay writes one (`Delivery 0x01 len:u8 address seq:u64
+/// accepted:u64`, then the frame: a kind tag and its body), accepted at 7.
+func delivery(to address: Data, seq: UInt64, kind: UInt8, body: Data) -> Data {
+    var wire = Data([0x01, UInt8(address.count)])
+    wire.append(address)
+    wire.append(contentsOf: withUnsafeBytes(of: seq.bigEndian, Array.init))
+    wire.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 7])
+    wire.append(kind)
+    wire.append(body)
+    return wire
+}
+
 var failures = 0
 
 func check(_ label: String, _ condition: @autoclosure () throws -> Bool) {
@@ -263,23 +291,111 @@ do {
 
     _ = try alice.receive(channel: channel, wire: bob.send(channel: channel, text: "from bob"))
     let mine = try alice.send(channel: channel, text: "from alice")
-    let waiting = try alice.history(channel: channel, before: nil, limit: 10)
+    let waiting = messages(try alice.history(channel: channel, before: nil, limit: 10))
     check(
         "history crosses, own message last and unplaced",
         waiting.map { $0.text } == ["from bob", "from alice"] && waiting.last?.position == nil
             && waiting.last?.mine == true)
     _ = try alice.receive(channel: channel, wire: mine)
-    let placed = try alice.history(channel: channel, before: nil, limit: 10)
+    let placed = messages(try alice.history(channel: channel, before: nil, limit: 10))
     check("the echo places it", placed.allSatisfy { $0.position != nil })
     check("ids cross whole", placed.allSatisfy { $0.id.count == 32 })
     guard let newest = placed.last?.position else { throw BridgeError.unexpected("unplaced") }
     check(
         "paging back crosses",
-        try alice.history(channel: channel, before: newest, limit: 10).map { $0.text } == [
-            "from bob"
-        ])
+        messages(try alice.history(channel: channel, before: newest, limit: 10)).map { $0.text }
+            == ["from bob"])
+    guard
+        case .notice(let first) = try alice.history(channel: channel, before: nil, limit: 10)
+            .first,
+        case .joined(let who, let by?) = first.notice
+    else {
+        throw BridgeError.unexpected("no notice of bob joining before the messages")
+    }
+    check(
+        "a notice crosses in place, naming who made the change",
+        who.name == "bob" && !who.me && by.name == "alice" && by.me)
 } catch {
     print("  FAIL transcript — \(error)")
+    failures += 1
+}
+
+print("bridge: who changed what, and conversations in every state")
+do {
+    // Carol hosts, so she reads the channel and the relay's frames reach her
+    // through deliver, effects and all.
+    let carol = try Client(identity: "carol")
+    let alice = try Client(identity: "alice")
+    let bob = try Client(identity: "bob")
+    let dave = try Client(identity: "dave")
+    let channel = try carol.createGroup()
+    try admit(alice, to: channel, by: carol)
+    _ = try alice.receive(channel: channel, wire: admit(bob, to: channel, by: carol))
+
+    do {
+        try carol.deleteConversation(channel: channel)
+        print("  FAIL deleting a conversation while a member should throw")
+        failures += 1
+    } catch ClientError.StillInConversation {
+        print("  ok   deleting a conversation while a member throws a typed error")
+    }
+
+    // Bob lets dave in; carol hears who did it.
+    let add = try bob.proposeAdd(channel: channel, keyPackage: dave.keyPackage())
+    _ = try bob.receive(channel: channel, wire: add)
+    let added = try carol.deliver(wire: delivery(to: channel, seq: 0, kind: 3, body: add))
+    check(
+        "a membership change crosses, credited to whoever made it",
+        added.contains {
+            guard case .membership(_, let changes) = $0,
+                case .joined(let who, let by?) = changes.first
+            else { return false }
+            return who.name == "dave" && by.name == "bob" && !by.me
+        })
+
+    _ = try carol.deliver(
+        wire: delivery(to: channel, seq: 1, kind: 4, body: bob.send(channel: channel, text: "hi")))
+    let listed = try carol.conversations()
+    check("a member's conversation is listed", listed.map { $0.channel } == [channel])
+    check(
+        "a list row carries the members and the unread count",
+        listed.first?.members == ["alice", "bob", "dave"] && listed.first?.unread == 1)
+    guard let read = listed.first?.last.flatMap(position) else {
+        throw BridgeError.unexpected("no last entry to mark read")
+    }
+    try carol.markRead(channel: channel, position: read)
+    check("a read marker clears unread", try carol.conversations().first?.unread == 0)
+    let size = try carol.historySize(channel: channel)
+    check("history size crosses", size.messages == 1 && size.notices == 3 && size.bytes > 0)
+
+    // Bob removes carol. She hears who did it, and keeps her conversation.
+    guard let carolPlace = bob.members(channel: channel).first(where: { $0.name == "carol" })
+    else {
+        throw BridgeError.unexpected("carol missing from the roster")
+    }
+    let removal = try publishedBody(bob.removeMember(channel: channel, index: carolPlace.index))
+    let gone = try carol.deliver(wire: delivery(to: channel, seq: 2, kind: 3, body: removal))
+    guard case .removed(_, .removed(let by?)) = gone.first else {
+        throw BridgeError.unexpected("carol was not told who removed her: \(gone)")
+    }
+    check("a removal crosses, saying who did it", by.name == "bob")
+    guard case .removed(_, let removedBy?) = try carol.conversations().first?.state else {
+        throw BridgeError.unexpected("carol's conversation is not listed as removed")
+    }
+    check("a removed member's conversation stays listed", removedBy.name == "bob")
+    try carol.deleteHistory(channel: channel)
+    check(
+        "history can be deleted", try carol.history(channel: channel, before: nil, limit: 9).isEmpty
+    )
+    try carol.deleteConversation(channel: channel)
+    check("once out, a conversation can be deleted", try carol.conversations().isEmpty)
+
+    check(
+        "names are made safe to show",
+        displayName(name: "Chen\u{202E}gnp.exe") == "Chen\u{FFFD}gnp.exe"
+            && displayName(name: "Aisha") == "Aisha")
+} catch {
+    print("  FAIL conversations — \(error)")
     failures += 1
 }
 

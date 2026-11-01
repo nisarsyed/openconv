@@ -30,7 +30,7 @@ struct ContentView: View {
             Circle()
                 .fill(model.status == .offline ? Color.secondary : Color.green)
                 .frame(width: 8, height: 8)
-            Text(model.identity).fontWeight(.semibold)
+            Text(ChatModel.shown(model.identity)).fontWeight(.semibold)
             Text(model.status.label)
                 .foregroundStyle(.secondary)
                 .font(.callout)
@@ -76,7 +76,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(model.joinRequests) { request in
                 HStack(spacing: 8) {
-                    Text(request.name).fontWeight(.semibold)
+                    Text(ChatModel.shown(request.name)).fontWeight(.semibold)
                     Text(
                         (request.expired
                             ? "asked to join (request ran out; accepting still works)"
@@ -101,9 +101,9 @@ struct ContentView: View {
         Menu("Members") {
             ForEach(model.members) { member in
                 if member.me {
-                    Text("\(member.name) (you)")
+                    Text("\(ChatModel.shown(member.name)) (you)")
                 } else {
-                    Button("Remove \(member.name)") { model.remove(member) }
+                    Button("Remove \(ChatModel.shown(member.name))") { model.remove(member) }
                 }
             }
         }

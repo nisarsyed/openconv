@@ -3,7 +3,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use openconv_core::{
-    Envelope, Event, FrameKind, Member, decode_delivery, encode_publish, encode_subscribe,
+    Envelope, Event, FrameKind, HistoryEntry, Member, Notice, TranscriptEntry, decode_delivery,
+    encode_publish, encode_subscribe,
 };
 use openconv_server::store::Store;
 use openconv_wire::Address;
@@ -508,7 +509,7 @@ async fn catch_up_and_live_traffic_meet_without_a_gap() {
 
 // ---- Catch-up with real members (#105) ----
 
-use openconv_core::{Acceptance, Effect, Rename, Vault};
+use openconv_core::{Acceptance, Departure, Effect, MemberChange, Rename, Vault};
 
 /// A member and its connection, applying what the relay sends the way the
 /// app does: every effect that says to send something is sent.
@@ -525,6 +526,10 @@ struct Peer {
     heard_on: Vec<(Vec<u8>, String)>,
     /// Every rename announced to this member, with its group.
     renames: Vec<(Vec<u8>, Rename)>,
+    /// Every membership change announced to this member.
+    changes: Vec<MemberChange>,
+    /// How this member stopped being one, once it has.
+    departure: Option<Departure>,
     /// Set once this member is no longer in the group.
     removed: bool,
     /// Set if the relay said this member's cursor is gone. Fails the test
@@ -547,6 +552,8 @@ impl Peer {
             heard: Vec::new(),
             heard_on: Vec::new(),
             renames: Vec::new(),
+            changes: Vec::new(),
+            departure: None,
             removed: false,
             stranded: false,
             expect_stranding: false,
@@ -584,7 +591,11 @@ impl Peer {
                         assert!(self.expect_stranding, "cursor unavailable");
                         self.stranded = true;
                     }
-                    Effect::Removed { .. } => self.removed = true,
+                    Effect::Removed { departure, .. } => {
+                        self.removed = true;
+                        self.departure = Some(departure);
+                    }
+                    Effect::Membership { changes, .. } => self.changes.extend(changes),
                     Effect::Renamed { channel, by } => self.renames.push((channel, by)),
                     Effect::JoinRequested { channel } if self.accepts => {
                         for request in self.member.join_requests(&channel).unwrap() {
@@ -958,11 +969,36 @@ async fn an_oversized_message_closes_only_that_connection() {
 
 // ---- The transcript (#129) ----
 
-/// What `peer` has stored of `channel`: `(text, sender, mine, placed)`.
-fn stored(peer: &Peer, channel: &[u8]) -> Vec<(String, String, bool, bool)> {
-    peer.member
+/// The messages in `member`'s history of `channel`, oldest first, leaving
+/// out notices.
+fn messages(member: &Member, channel: &[u8]) -> Vec<TranscriptEntry> {
+    member
         .history(channel, None, u32::MAX)
         .unwrap()
+        .into_iter()
+        .filter_map(|e| match e {
+            HistoryEntry::Message(m) => Some(m),
+            HistoryEntry::Notice(_) => None,
+        })
+        .collect()
+}
+
+/// The notices in `member`'s history of `channel`, oldest first.
+fn notices(member: &Member, channel: &[u8]) -> Vec<Notice> {
+    member
+        .history(channel, None, u32::MAX)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e {
+            HistoryEntry::Notice(n) => Some(n.notice),
+            HistoryEntry::Message(_) => None,
+        })
+        .collect()
+}
+
+/// What `peer` has stored of `channel`: `(text, sender, mine, placed)`.
+fn stored(peer: &Peer, channel: &[u8]) -> Vec<(String, String, bool, bool)> {
+    messages(&peer.member, channel)
         .into_iter()
         .map(|e| (e.text(), e.sender.clone(), e.mine, e.position.is_some()))
         .collect()
@@ -1020,10 +1056,7 @@ async fn reopened_and_caught_up_members_show_the_same_conversation() {
             assert_eq!(*mine, sender == name, "{name}: {text} from {sender}");
             assert_eq!(&text[..1], &sender[..1], "{text} attributed to {sender}");
         }
-        let ids: Vec<_> = peer
-            .member
-            .history(&channel, None, u32::MAX)
-            .unwrap()
+        let ids: Vec<_> = messages(&peer.member, &channel)
             .into_iter()
             .map(|e| e.id)
             .collect();
@@ -1056,8 +1089,50 @@ async fn three(url: &str) -> (Peer, Peer, Peer, Vec<u8>) {
     (alice, bob, carol, channel)
 }
 
-/// A member removed through the relay learns it, keeps nothing of the group,
-/// and the others carry on without it.
+/// Whoever let carol in, through the relay: every member agrees on who it
+/// was, carol included, and it was a member.
+#[tokio::test]
+async fn every_member_agrees_who_let_someone_in() {
+    let url = spawn_relay().await;
+    let (alice, bob, carol, channel) = Box::pin(three(&url)).await;
+    // What carol was told, and what the others noted, of who let her in.
+    let let_in_by = |peer: &Peer| -> Vec<String> {
+        notices(&peer.member, &channel)
+            .into_iter()
+            .filter_map(|n| match n {
+                Notice::Joined { who, by: Some(by) } if who.name == "carol" => Some(by.name),
+                Notice::YouJoined { by: Some(by) } if peer.member.identity() == "carol" => {
+                    Some(by.name)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let agreed = let_in_by(&carol);
+    assert!(
+        agreed == ["alice"] || agreed == ["bob"],
+        "carol was let in by {agreed:?}"
+    );
+    assert_eq!(let_in_by(&alice), agreed);
+    assert_eq!(let_in_by(&bob), agreed);
+    // The one who did it heard it as its own; the other as theirs.
+    for peer in [&alice, &bob] {
+        let me = peer.member.identity() == agreed[0];
+        assert!(
+            peer.changes.iter().any(|c| matches!(
+                c,
+                MemberChange::Joined { who, by: Some(by) } if who.name == "carol" && by.me == me
+            )),
+            "{}: {:?}",
+            peer.member.identity(),
+            peer.changes
+        );
+    }
+}
+
+/// A member removed through the relay learns it, and by whom, keeps nothing
+/// of the group, and the others carry on without it, each told who removed
+/// it.
 #[tokio::test]
 async fn a_member_can_be_removed() {
     let url = spawn_relay().await;
@@ -1068,6 +1143,22 @@ async fn a_member_can_be_removed() {
     alice.remove("carol").await;
     settle(&mut [&mut alice, &mut bob, &mut carol]).await;
     assert!(carol.removed, "carol was not told");
+    assert!(
+        matches!(&carol.departure, Some(Departure::Removed { by: Some(by) }) if by.name == "alice"),
+        "{:?}",
+        carol.departure
+    );
+    for (peer, me) in [(&alice, true), (&bob, false)] {
+        assert!(
+            matches!(
+                peer.changes.last(),
+                Some(MemberChange::Removed { who, by: Some(by) })
+                    if who.name == "carol" && by.name == "alice" && by.me == me
+            ),
+            "{:?}",
+            peer.changes
+        );
+    }
     assert_eq!(carol.member.channel(), None, "carol kept the group");
     assert_eq!(alice.names(), ["alice", "bob"]);
     assert_eq!(bob.names(), alice.names());
@@ -1077,17 +1168,15 @@ async fn a_member_can_be_removed() {
     assert_eq!(alice.heard, ["without carol"]);
     assert_eq!(carol.heard, ["before the removal"]);
     // Removal takes carol's keys, not what she already read (#129).
-    let kept: Vec<String> = carol
-        .member
-        .history(&channel, None, 10)
-        .unwrap()
+    let kept: Vec<String> = messages(&carol.member, &channel)
         .iter()
-        .map(openconv_core::TranscriptEntry::text)
+        .map(TranscriptEntry::text)
         .collect();
     assert_eq!(kept, ["before the removal"]);
 }
 
-/// A member asks to leave, and whoever is online commits it.
+/// A member asks to leave, and whoever is online commits it. Everyone hears
+/// a leave, not a removal by whoever committed it.
 #[tokio::test]
 async fn a_member_can_leave() {
     let url = spawn_relay().await;
@@ -1096,6 +1185,14 @@ async fn a_member_can_leave() {
     carol.leave().await;
     settle(&mut [&mut alice, &mut bob, &mut carol]).await;
     assert!(carol.removed, "carol's leave was never committed");
+    assert_eq!(carol.departure, Some(Departure::Left));
+    for peer in [&alice, &bob] {
+        assert!(
+            matches!(peer.changes.last(), Some(MemberChange::Left { who }) if who.name == "carol"),
+            "{:?}",
+            peer.changes
+        );
+    }
     assert_eq!(alice.names(), ["alice", "bob"]);
     assert_eq!(bob.names(), alice.names());
 }
@@ -1151,10 +1248,39 @@ async fn a_stranded_member_is_readded() {
     let mut dave = Peer::online(dave, &url).await;
     settle(&mut [&mut alice, &mut bob, &mut dave]).await;
     Store::open(&db).unwrap().expire(i64::MAX as u64).unwrap();
+    for peer in [&mut alice, &mut bob, &mut dave] {
+        peer.changes.clear();
+    }
 
     let mut carol = Peer::online(persisted(dir.path(), "carol"), &url).await;
     carol.expect_stranding = true;
     settle(&mut [&mut alice, &mut bob, &mut carol, &mut dave]).await;
+    // Carol's place was replaced, under the same identity: nobody came or
+    // went, so nobody is told so. Carol's history marks the gap, and does
+    // not say she joined a second time.
+    for peer in [&alice, &bob, &dave] {
+        assert!(
+            peer.changes.is_empty(),
+            "{} was told of a change: {:?}",
+            peer.member.identity(),
+            peer.changes
+        );
+    }
+    let carols = notices(&carol.member, &channel);
+    assert!(
+        matches!(
+            carols.as_slice(),
+            [Notice::YouJoined { .. }, .., Notice::Stranded]
+        ),
+        "{carols:?}"
+    );
+    assert_eq!(
+        carols
+            .iter()
+            .filter(|n| matches!(n, Notice::YouJoined { .. }))
+            .count(),
+        1
+    );
 
     assert!(
         carol.stranded,
@@ -1391,11 +1517,9 @@ async fn one_client_talks_in_two_groups_and_catches_up_on_each() {
     assert_eq!(bob.member.name(&red).unwrap(), None);
 
     let texts = |peer: &Peer, channel: &[u8]| -> Vec<String> {
-        peer.member
-            .history(channel, None, 100)
-            .unwrap()
+        messages(&peer.member, channel)
             .iter()
-            .map(openconv_core::TranscriptEntry::text)
+            .map(TranscriptEntry::text)
             .collect()
     };
     assert_eq!(texts(&bob, &red), ["red from bob", "red while away"]);
@@ -1534,9 +1658,7 @@ async fn a_name_is_shared_raced_in_relay_order_and_seen_by_a_later_joiner() {
 /// The provisional URI of `name`, as `peer` stored it beside a message they
 /// sent: what the MLS-authenticated key gives, which a rename must match.
 fn uri_of(peer: &Peer, channel: &[u8], name: &str) -> String {
-    peer.member
-        .history(channel, None, 100)
-        .unwrap()
+    messages(&peer.member, channel)
         .into_iter()
         .find(|e| e.sender == name)
         .unwrap_or_else(|| panic!("no message from {name}"))
@@ -1575,6 +1697,7 @@ async fn a_rename_is_announced_to_the_renamer_and_everyone_else() {
                 by: "alice".to_owned(),
                 by_uri: alice_uri,
                 name: Some("Design crit".to_owned()),
+                beat_mine: false,
             },
         ),
         (
@@ -1583,6 +1706,7 @@ async fn a_rename_is_announced_to_the_renamer_and_everyone_else() {
                 by: "bob".to_owned(),
                 by_uri: bob_uri,
                 name: None,
+                beat_mine: false,
             },
         ),
     ];
@@ -1592,8 +1716,8 @@ async fn a_rename_is_announced_to_the_renamer_and_everyone_else() {
 }
 
 /// Two renames race in one epoch. Only the one the relay ordered first is
-/// announced, to everyone: the loser hears the winner's, and nobody hears
-/// the losing name.
+/// announced, to everyone: the loser hears the winner's, told it beat its
+/// own, and nobody hears the losing name. The notice says the same.
 #[tokio::test]
 async fn in_a_rename_race_only_the_winner_is_announced() {
     let url = spawn_relay().await;
@@ -1604,22 +1728,39 @@ async fn in_a_rename_race_only_the_winner_is_announced() {
     settle(&mut [&mut alice, &mut bob, &mut carol]).await;
 
     let agreed = carol.member.name(&channel).unwrap().unwrap();
-    let winner = if agreed == "From alice" {
-        "alice"
+    let (winner, loser) = if agreed == "From alice" {
+        ("alice", "bob")
     } else {
-        "bob"
+        ("bob", "alice")
     };
-    let expected = [(
-        channel.clone(),
-        Rename {
-            by: winner.to_owned(),
-            by_uri: uri_of(&carol, &channel, winner),
-            name: Some(agreed.clone()),
-        },
-    )];
     for (who, peer) in [("alice", &alice), ("bob", &bob), ("carol", &carol)] {
+        let expected = [(
+            channel.clone(),
+            Rename {
+                by: winner.to_owned(),
+                by_uri: uri_of(&carol, &channel, winner),
+                name: Some(agreed.clone()),
+                beat_mine: who == loser,
+            },
+        )];
         assert_eq!(peer.member.name(&channel).unwrap(), Some(agreed.clone()));
         assert_eq!(peer.renames, expected, "{who}'s announcements");
+        let renamed: Vec<_> = notices(&peer.member, &channel)
+            .into_iter()
+            .filter_map(|n| match n {
+                Notice::Renamed {
+                    by,
+                    name,
+                    beat_mine,
+                } => Some((by.name, name, beat_mine)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            renamed,
+            [(winner.to_owned(), Some(agreed.clone()), who == loser)],
+            "{who}'s notices"
+        );
     }
 }
 
