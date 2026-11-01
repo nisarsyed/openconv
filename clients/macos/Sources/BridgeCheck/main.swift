@@ -231,6 +231,40 @@ do {
     failures += 1
 }
 
+print("bridge: the stored transcript")
+do {
+    let alice = try Client(identity: "alice")
+    let bob = try Client(identity: "bob")
+    try alice.createGroup()
+    let commit = try alice.proposeAdd(keyPackage: bob.keyPackage())
+    guard case .admitted(let welcome, _) = try alice.receive(wire: commit) else {
+        throw BridgeError.unexpected("bob was not admitted")
+    }
+    try bob.join(welcome: welcome)
+    guard let channel = alice.channel() else { throw BridgeError.unexpected("no channel") }
+
+    _ = try alice.receive(wire: bob.send(text: "from bob"))
+    let mine = try alice.send(text: "from alice")
+    let waiting = try alice.history(channel: channel, before: nil, limit: 10)
+    check(
+        "history crosses, own message last and unplaced",
+        waiting.map { $0.text } == ["from bob", "from alice"] && waiting.last?.position == nil
+            && waiting.last?.mine == true)
+    _ = try alice.receive(wire: mine)
+    let placed = try alice.history(channel: channel, before: nil, limit: 10)
+    check("the echo places it", placed.allSatisfy { $0.position != nil })
+    check("ids cross whole", placed.allSatisfy { $0.id.count == 32 })
+    guard let newest = placed.last?.position else { throw BridgeError.unexpected("unplaced") }
+    check(
+        "paging back crosses",
+        try alice.history(channel: channel, before: newest, limit: 10).map { $0.text } == [
+            "from bob"
+        ])
+} catch {
+    print("  FAIL transcript — \(error)")
+    failures += 1
+}
+
 do {
     let lonely = try Client(identity: "lonely")
     // No group yet, so this must throw rather than trap.

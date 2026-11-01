@@ -251,3 +251,6 @@ the product shape is settled.
 - `rust-version` was `1.85`, which could never have built: openmls 0.9
   declares 1.91. Corrected to 1.91; still not verified by CI.
 - The relay's lag-disconnect path has no test.
+- The local transcript (#129) is kept until the user deletes it, and kept
+  after leaving or removal (decided in #133). Deleting a conversation's
+  history is not built yet, and there is no size cap.

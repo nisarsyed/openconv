@@ -57,13 +57,46 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 6] = [
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+const MIGRATIONS: [&str; 7] = [
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
 ];
+
+const SCHEMA_V7: &str = "
+    -- The conversation as this client saw it (#129): every message it
+    -- decrypted and every one it sent, per channel, by MIMI message id.
+    -- Written in the same transaction that decrypts or encrypts the
+    -- message, so a crash can neither lose one nor store it twice.
+    CREATE TABLE transcript (
+        channel     BLOB NOT NULL,
+        id          BLOB NOT NULL,
+        -- The order this client applied it in, which is the relay's order.
+        -- Numbered here rather than taken from the relay, whose numbering
+        -- starts again if its store is reset. NULL for this client's own
+        -- message until the relay's echo shows where it landed.
+        position    INTEGER UNIQUE,
+        -- Where the relay put it and when, if it came through the relay.
+        seq         INTEGER,
+        accepted_ms INTEGER,
+        -- When this client stored it, by its own clock.
+        stored_ms   INTEGER NOT NULL,
+        mine        INTEGER NOT NULL,
+        sender      TEXT NOT NULL,
+        sender_uri  TEXT NOT NULL,
+        -- The MIMI content as it arrived, so a later version can show what
+        -- this one cannot.
+        content     BLOB NOT NULL,
+        -- Copied out of the content for the replies, edits and reactions
+        -- that will look messages up by them (#131).
+        replaces    BLOB,
+        in_reply_to BLOB,
+        PRIMARY KEY (channel, id)
+    );
+    CREATE INDEX transcript_by_position ON transcript (channel, position);
+";
 
 const SCHEMA_V6: &str = "
     -- A sent message's MIMI content (#128), salt and all, so a resend reuses
@@ -402,6 +435,23 @@ impl Database {
                  BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;"
         } else {
             "DROP TRIGGER no_insert; DROP TRIGGER no_update;"
+        };
+        self.conn
+            .execute_batch(sql)
+            .expect("toggle simulated failure");
+    }
+
+    /// Make writes to the transcript fail, or work again, while everything
+    /// else keeps working: a message decrypted but not stored.
+    #[cfg(test)]
+    pub(crate) fn fail_transcript_writes(&self, fail: bool) {
+        let sql = if fail {
+            "CREATE TRIGGER no_log_insert BEFORE INSERT ON transcript
+                 BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;
+             CREATE TRIGGER no_log_update BEFORE UPDATE ON transcript
+                 BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;"
+        } else {
+            "DROP TRIGGER no_log_insert; DROP TRIGGER no_log_update;"
         };
         self.conn
             .execute_batch(sql)
@@ -1027,6 +1077,171 @@ impl Database {
             .map_err(store)?;
         Ok(Some((key_package, rejoin)))
     }
+
+    /// Add a message to the transcript, or place one already there.
+    ///
+    /// A message already placed is left alone, so a duplicate changes
+    /// nothing. This client's own message is written [`Placement::Unsent`]
+    /// when it is encrypted, and placed when its echo comes back: the same
+    /// row, since a resend keeps the message id.
+    pub(crate) fn log_message(
+        &self,
+        entry: &LogEntry<'_>,
+        placement: Placement,
+        now_ms: u64,
+    ) -> Result<()> {
+        let (seq, accepted_ms) = match placement {
+            Placement::Applied(Some(relayed)) => (
+                Some(to_i64(relayed.seq)?),
+                Some(to_i64(relayed.accepted_ms)?),
+            ),
+            Placement::Applied(None) | Placement::Unsent => (None, None),
+        };
+        let now_ms = to_i64(now_ms)?;
+        let sql = match placement {
+            Placement::Unsent => {
+                "INSERT INTO transcript (channel, id, position, seq, accepted_ms, stored_ms,
+                     mine, sender, sender_uri, content, replaces, in_reply_to)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT (channel, id) DO NOTHING"
+            }
+            Placement::Applied(_) => {
+                "INSERT INTO transcript (channel, id, position, seq, accepted_ms, stored_ms,
+                     mine, sender, sender_uri, content, replaces, in_reply_to)
+                 VALUES (?1, ?2, (SELECT coalesce(max(position), 0) + 1 FROM transcript),
+                     ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT (channel, id) DO UPDATE SET
+                     position = excluded.position,
+                     seq = excluded.seq,
+                     accepted_ms = excluded.accepted_ms
+                 WHERE position IS NULL"
+            }
+        };
+        self.conn
+            .prepare_cached(sql)
+            .and_then(|mut stmt| {
+                stmt.execute(params![
+                    entry.channel,
+                    entry.id,
+                    seq,
+                    accepted_ms,
+                    now_ms,
+                    entry.mine,
+                    entry.sender,
+                    entry.sender_uri,
+                    entry.content,
+                    entry.replaces,
+                    entry.in_reply_to,
+                ])
+            })
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Up to `limit` messages on `channel`, oldest first: the latest ones,
+    /// this client's unplaced messages last, or with `before`, the placed
+    /// ones just before that position.
+    pub(crate) fn history(
+        &self,
+        channel: &[u8],
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<LogRow>> {
+        const COLUMNS: &str = "id, position, seq, accepted_ms, stored_ms, mine, sender,
+            sender_uri, content";
+        let row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<LogRow> {
+            let opt = |i| -> rusqlite::Result<Option<u64>> {
+                r.get::<_, Option<i64>>(i)?.map(to_u64).transpose()
+            };
+            Ok(LogRow {
+                id: r.get(0)?,
+                position: opt(1)?,
+                seq: opt(2)?,
+                accepted_ms: opt(3)?,
+                stored_ms: to_u64(r.get(4)?)?,
+                mine: r.get(5)?,
+                sender: r.get(6)?,
+                sender_uri: r.get(7)?,
+                content: r.get(8)?,
+            })
+        };
+        let mut rows = match before {
+            None => {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(&format!(
+                        "SELECT {COLUMNS} FROM transcript WHERE channel = ?1
+                         ORDER BY position IS NULL DESC, position DESC, rowid DESC
+                         LIMIT ?2"
+                    ))
+                    .map_err(store)?;
+                stmt.query_map(params![channel, limit], row)
+                    .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+            }
+            Some(before) => {
+                // Positions are i64 in SQLite: anything larger is "before
+                // everything", which is what a caller passing u64::MAX means.
+                let before = i64::try_from(before).unwrap_or(i64::MAX);
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(&format!(
+                        "SELECT {COLUMNS} FROM transcript WHERE channel = ?1 AND position < ?2
+                         ORDER BY position DESC LIMIT ?3"
+                    ))
+                    .map_err(store)?;
+                stmt.query_map(params![channel, before, limit], row)
+                    .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+            }
+        }
+        .map_err(store)?;
+        rows.reverse();
+        Ok(rows)
+    }
+}
+
+/// A message as written to the transcript.
+pub(crate) struct LogEntry<'a> {
+    pub(crate) channel: &'a [u8],
+    pub(crate) id: &'a [u8],
+    pub(crate) sender: &'a str,
+    pub(crate) sender_uri: &'a str,
+    pub(crate) mine: bool,
+    pub(crate) content: &'a [u8],
+    pub(crate) replaces: Option<&'a [u8]>,
+    pub(crate) in_reply_to: Option<&'a [u8]>,
+}
+
+/// Where a relayed frame landed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Relayed {
+    /// Its sequence number on its address.
+    pub(crate) seq: u64,
+    /// When the relay accepted it, in milliseconds since the Unix epoch.
+    pub(crate) accepted_ms: u64,
+}
+
+/// Whether a message written to the transcript has its place in the
+/// conversation yet.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Placement {
+    /// This client's own, encrypted but not yet seen coming back.
+    Unsent,
+    /// Applied in order: decrypted, or this client's own seen coming back.
+    /// With where the relay put it, when it came through the relay.
+    Applied(Option<Relayed>),
+}
+
+/// A message as read back from the transcript.
+pub(crate) struct LogRow {
+    pub(crate) id: Vec<u8>,
+    pub(crate) position: Option<u64>,
+    pub(crate) seq: Option<u64>,
+    pub(crate) accepted_ms: Option<u64>,
+    pub(crate) stored_ms: u64,
+    pub(crate) mine: bool,
+    pub(crate) sender: String,
+    pub(crate) sender_uri: String,
+    pub(crate) content: Vec<u8>,
 }
 
 fn hex(bytes: &[u8]) -> String {
