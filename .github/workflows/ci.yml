@@ -111,6 +111,11 @@ jobs:
         working-directory: clients/macos
         run: swift run BridgeCheck
 
+      # The theme's tokens are generated from design/tokens.json and checked
+      # in; this fails if they were not regenerated after a change.
+      - name: Theme drift
+        run: ./scripts/check-theme.sh
+
       # Generated bindings are excluded on purpose; only hand-written sources.
       - name: Format lint
         working-directory: clients/macos

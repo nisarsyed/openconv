@@ -1,7 +1,7 @@
 # OpenConv dev tasks.
 
-# Run every check: formatting, lints, tests, bridge, and the real app.
-check: fmt-check lint test bridge smoke
+# Run every check: formatting, lints, tests, theme, bridge, and the real app.
+check: fmt-check lint test theme-check bridge smoke
 
 # Format both languages.
 fmt:
@@ -30,6 +30,14 @@ test:
 # Regenerate the Swift bindings from crates/core/src/ffi.rs.
 bindings:
     ./scripts/gen-bindings.sh
+
+# Regenerate the SwiftUI theme's tokens from design/tokens.json.
+theme:
+    swift scripts/gen-theme.swift design/tokens.json clients/macos/Sources/OpenConv/Theme/Tokens.swift
+
+# Fail if the checked-in theme tokens are not what design/tokens.json generates.
+theme-check:
+    ./scripts/check-theme.sh
 
 # Verify the Rust<->Swift bridge at runtime.
 bridge: bindings

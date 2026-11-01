@@ -12,6 +12,7 @@ just test               # cargo test --workspace
 just lint               # clippy -D warnings, plus swift format lint
 just fmt                # format both languages
 just bindings           # regenerate Swift bindings from crates/core/src/ffi.rs
+just theme              # regenerate the SwiftUI theme from design/tokens.json
 just relay              # start the relay on 127.0.0.1:8080
 just client alice       # launch a client (click Host, or paste a channel id and Join)
 just labs               # real relay and apps through crashes, restarts, retention
@@ -53,6 +54,11 @@ archive and writes generated Swift into `clients/macos/Sources/OpenConvCore/`
 and a C header into `Sources/openconv_coreFFI/include/`. Both are gitignored —
 they are build output, not source. **After changing `crates/core/src/ffi.rs`,
 run `just bindings` or the Swift side silently builds against stale bindings.**
+
+The theme is the other way round: `scripts/gen-theme.swift` writes
+`Sources/OpenConv/Theme/Tokens.swift` from `design/tokens.json`, and that file
+*is* checked in, already formatted. Change the tokens and run `just theme`;
+never edit the Swift. `just check` and CI fail if the two disagree.
 
 **Encryption is MLS** (RFC 9420, via `openmls`), not Signal. One group state
 rather than pairwise sessions per device pair. `Member` in `crates/core/src/lib.rs`
@@ -100,7 +106,8 @@ That is the design, not a bug.
 add, resolved by the relay's order. Leaving is a Remove proposal for oneself
 (`FrameKind::Proposal`), committed by any live member; the leaver never
 commits pending proposals, and re-makes its request in each new epoch because
-a proposal is epoch-bound. A removed member deletes its group state. A member
+a proposal is epoch-bound. A removed member deletes its group state, but
+keeps its conversation (see below). A member
 stranded below the retention floor drops the group and publishes a
 `FrameKind::Rejoin`: a fresh `KeyPackage` plus the key its place holds now,
 signed by its identity key. Members re-add it only while that place still
@@ -143,9 +150,10 @@ sent one is written unplaced when encrypted, and placed when its echo comes
 back in the current epoch (not a stale echo, which nobody could read; the
 resend keeps the id and so the row). Order is a local `position` assigned as
 frames are applied, not the relay's `seq`, which restarts after a relay
-reset. `Member::history` pages by position. It is kept after removal or
-leaving and until the user deletes it (decided in #133); deleting is the
-app's to build.
+reset. Positions come from one counter that only goes up (schema v9), so a
+read marker stays past a deleted history. `Member::history` pages by
+position. It is kept after removal or leaving and until the user deletes it
+(decided in #133).
 
 **Several groups per client (#134).** `Member` holds a map of groups by
 channel, each with its own staged commit, request to leave and sent-message
@@ -160,6 +168,32 @@ could otherwise add its owner to a group of their choosing. Several offers to
 different channels wait at once, each on its own mailbox. The Swift app is
 still a one-conversation harness; its real UI is #130, built to
 `planning/design.md`.
+
+**Who changed what, and notices (#130).** A commit is read before it is
+merged (`settle`, beside `note_commit` and `rename_in`) for who it let in and
+took out, each credited to the MLS-authenticated sender of the proposal:
+`Effect::Membership` with `MemberChange`s, and `Effect::Removed` carries a
+`Departure` saying whether this client left or who removed it. A removal
+proposed by the removed member is a leave, not a removal by whoever committed
+it; a re-add of a stranded member replaces a place and is no change at all.
+The same facts, plus renames, "you joined", a reset relay and a stranding,
+are written as notices in the `notices` table, in the transaction that
+applied them and in the same position sequence as messages, but never as
+messages (the design says so). `history` returns `HistoryEntry`: a message
+or a notice. Whether a notice names this client is worked out on reading,
+from the URI, not stored.
+
+**Conversations (#130)** are the `conversations` table, one row per channel,
+outliving the group: the last name and members seen while a member, the
+state (member, waiting, rejoining, left at T, removed at T by X) and a read
+marker. It is brought up to date whenever group state may have changed (on
+joining, after every merged commit, and on opening), so a removed member's
+row still has what it showed. `Member::conversations` lists every one with
+what a list row needs. `delete_history` keeps the conversation;
+`delete_conversation` is refused with `StillInConversation` until this client
+has left or been removed. Names reach the screen through `display_name`,
+which replaces control and bidirectional characters with U+FFFD rather than
+stripping them, so two names never look alike.
 
 **Conversation names (#134)** live in the group context, as a private-use
 extension (`NAME_EXTENSION`, 0xF0C0): changed by a `GroupContextExtensions`
@@ -252,8 +286,8 @@ with libsignal — is archived at tag `archive/v1-final` and branch `archive/v1`
 and is worth consulting only for prior art, never as a pattern to follow.
 
 CI runs everything `just check` does: `cargo fmt --check`, `clippy -D
-warnings`, `cargo test`, `cargo deny check`, the Swift build, `BridgeCheck`,
-and the three-client smoke test.
+warnings`, `cargo test`, `cargo deny check`, the theme drift check, the Swift
+build, `BridgeCheck`, and the three-client smoke test.
 
 The workflow takes its toolchain from `rust-toolchain.toml`; don't pin a
 version in the workflow as well, or the two will drift.

@@ -33,6 +33,14 @@ pub enum Error {
     /// A `Welcome` would have joined a group this member is already in.
     #[error("already in that group")]
     AlreadyMember,
+    /// An operation named a conversation this client has no record of.
+    #[error("no such conversation")]
+    NoConversation,
+    /// A conversation can only be deleted once this client has left it or
+    /// been removed from it: while it is a member, or waiting to become
+    /// one, the group would carry on without the record of it.
+    #[error("still in that conversation: leave it before deleting it")]
+    StillInConversation,
     /// A conversation name longer than [`MAX_NAME_BYTES`].
     #[error("a conversation name can be at most {max} bytes")]
     NameTooLong {
@@ -478,10 +486,13 @@ pub enum Effect {
         channel: Vec<u8>,
     },
     /// This client was removed from the group, or its request to leave was
-    /// committed. It no longer reads or sends to the channel.
+    /// committed. It no longer reads or sends to the channel. Its
+    /// conversation stays, read-only; see [`Member::conversations`].
     Removed {
         /// The group it is no longer in.
         channel: Vec<u8>,
+        /// Whether it left or was removed, and by whom.
+        departure: Departure,
     },
     /// This client was stranded (see [`Effect::Unavailable`]) and has asked
     /// the group to add it back, with a request only it can make.
@@ -499,6 +510,20 @@ pub enum Effect {
     Advanced {
         /// The group.
         channel: Vec<u8>,
+    },
+    /// A commit that let members in or took them out was applied: this
+    /// client's own once the relay confirmed it, or another member's. Comes
+    /// after the [`Effect::Advanced`], [`Effect::Admitted`] or
+    /// [`Effect::Superseded`] for the same commit, and before any
+    /// [`Effect::Renamed`]. A commit that removes this client yields
+    /// [`Effect::Removed`] instead. Each change is also kept as a notice in
+    /// the conversation's history.
+    Membership {
+        /// The group.
+        channel: Vec<u8>,
+        /// What changed, in the order the commit applied it: removals, then
+        /// additions.
+        changes: Vec<MemberChange>,
     },
     /// A commit that changed the conversation's name was applied: this
     /// client's own once the relay confirmed it, or another member's. Comes
@@ -549,6 +574,267 @@ pub struct Rename {
     pub by_uri: String,
     /// The new name, or `None` if they cleared it.
     pub name: Option<String>,
+    /// Whether it beat a rename of this client's own, made at the same
+    /// time, which was dropped: "Bilal renamed it at the same time as you.
+    /// Theirs went through."
+    pub beat_mine: bool,
+}
+
+/// Someone a notice or a membership change names, as MLS authenticated
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Participant {
+    /// The display name their credential carries. Self-declared until
+    /// milestone 3, so show it through [`display_name`].
+    pub name: String,
+    /// Their provisional URI, from their signature key.
+    pub uri: String,
+    /// Whether it is this client.
+    pub me: bool,
+}
+
+/// One change to who is in a group, as a commit applied it.
+///
+/// The actor is the MLS-authenticated sender of the proposal that made the
+/// change, never anything a member wrote. An add or removal made with
+/// [`Member::propose_add`] or [`Member::remove_member`] is an inline
+/// proposal, so that is the member who committed it. A request to leave is
+/// a proposal by the leaver, committed by whoever came online next, so it is
+/// a leave rather than a removal by them. A re-add of a stranded member
+/// replaces their place with a new one under the same identity; nobody came
+/// or went, so it is not reported.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MemberChange {
+    /// `who` was let in, by `by`.
+    Joined {
+        /// Who joined.
+        who: Participant,
+        /// Who let them in, if the proposal came from a member.
+        by: Option<Participant>,
+    },
+    /// `who` was removed, by `by`.
+    Removed {
+        /// Who was removed.
+        who: Participant,
+        /// Who removed them, if the proposal came from a member.
+        by: Option<Participant>,
+    },
+    /// `who` asked to leave, and another member committed it.
+    Left {
+        /// Who left.
+        who: Participant,
+    },
+}
+
+/// How this client stopped being a member of a group.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum Departure {
+    /// Its request to leave was committed.
+    Left,
+    /// Another member removed it.
+    Removed {
+        /// Who, if the proposal came from a member. Also unknown for a
+        /// removal recorded before #130 kept it.
+        by: Option<Participant>,
+    },
+}
+
+/// Something that happened to a conversation, as opposed to something said
+/// in it. Kept in its history in order with the messages, but never as one
+/// (`planning/design.md`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum Notice {
+    /// Someone joined: "Chen joined · let in by Bilal".
+    Joined {
+        /// Who joined.
+        who: Participant,
+        /// Who let them in, if known.
+        by: Option<Participant>,
+    },
+    /// Someone left: "Farah left". `who` is this client if it left.
+    Left {
+        /// Who left.
+        who: Participant,
+    },
+    /// Someone was removed: "Bilal removed Chen", or "Bilal removed you".
+    Removed {
+        /// Who was removed.
+        who: Participant,
+        /// Who removed them, if known.
+        by: Option<Participant>,
+    },
+    /// The conversation was renamed, or its name cleared.
+    Renamed {
+        /// Who renamed it.
+        by: Participant,
+        /// The new name, or `None` if it was cleared.
+        name: Option<String>,
+        /// Whether it beat a rename of this client's own made at the same
+        /// time: "Bilal renamed it to … at the same time as you. Theirs
+        /// went through."
+        beat_mine: bool,
+    },
+    /// This client joined. Messages from before can't be read: MLS gives a
+    /// new member no keys for them.
+    YouJoined {
+        /// Who let it in, if known.
+        by: Option<Participant>,
+    },
+    /// The relay's history was reset, and this client follows it from its
+    /// start.
+    RelayReset,
+    /// This client was away longer than the relay keeps messages, so
+    /// messages sent while it was away can't be shown. It has asked to be
+    /// added back.
+    Stranded,
+}
+
+/// A notice in a conversation's history.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NoticeEntry {
+    /// Its place in the conversation, in the same sequence as messages'
+    /// [`TranscriptEntry::position`].
+    pub position: u64,
+    /// When it happened, in milliseconds since the Unix epoch: the relay's
+    /// clock if it came through the relay, otherwise this client's.
+    pub at_ms: u64,
+    /// What happened.
+    pub notice: Notice,
+}
+
+/// An entry in a conversation's history: a message, or a notice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryEntry {
+    /// Something said.
+    Message(TranscriptEntry),
+    /// Something that happened.
+    Notice(NoticeEntry),
+}
+
+impl HistoryEntry {
+    /// Its place in the conversation: what [`Member::history`] pages by.
+    /// `None` only for this client's own message the relay has not yet
+    /// echoed back.
+    #[must_use]
+    pub fn position(&self) -> Option<u64> {
+        match self {
+            Self::Message(message) => message.position,
+            Self::Notice(notice) => Some(notice.position),
+        }
+    }
+}
+
+/// Where this client stands in a conversation.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ConversationState {
+    /// A member.
+    Member {
+        /// It has asked to leave, and no member has committed that yet.
+        leaving: bool,
+    },
+    /// Asked to join, and waiting for a member to let it in.
+    Waiting,
+    /// Was away longer than the relay keeps messages, and has asked to be
+    /// added back, which members do without asking anyone.
+    Rejoining,
+    /// Left.
+    Left {
+        /// When, in milliseconds since the Unix epoch.
+        at_ms: u64,
+    },
+    /// Removed by another member.
+    Removed {
+        /// When, in milliseconds since the Unix epoch.
+        at_ms: u64,
+        /// Who removed it, if known.
+        by: Option<Participant>,
+    },
+}
+
+/// A conversation, with what a row in the list shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conversation {
+    /// Its channel: the MLS group id, and the join code.
+    pub channel: Vec<u8>,
+    /// Its name, if a member gave it one: the current one while this client
+    /// is a member, the last one it saw otherwise. Show [`Self::members`]
+    /// when there is none.
+    pub name: Option<String>,
+    /// The names of the other members, by position in the group, as last
+    /// seen while this client was a member.
+    pub members: Vec<String>,
+    /// Where this client stands.
+    pub state: ConversationState,
+    /// The latest entry in its history: a message (with its sender and
+    /// time) or a notice.
+    pub last: Option<HistoryEntry>,
+    /// How many messages from others came after [`Self::read_up_to`].
+    pub unread: u64,
+    /// Read up to and including this position, as [`Member::mark_read`]
+    /// last set it. Where "New since you were away" goes.
+    pub read_up_to: Option<u64>,
+    /// Requests to join waiting for an answer.
+    pub join_requests: u64,
+}
+
+/// How much of a conversation's history this client keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct HistorySize {
+    /// Messages, sent and received.
+    pub messages: u64,
+    /// Notices.
+    pub notices: u64,
+    /// Roughly how many bytes they take: the stored values, not the
+    /// database's own overhead around them.
+    pub bytes: u64,
+}
+
+/// A name made safe to show: a conversation's, or a member's.
+///
+/// Names are chosen by other people, and the relay cannot check them since
+/// it cannot read them. Control characters and Unicode bidirectional
+/// controls (U+202A–U+202E, U+2066–U+2069, U+200E, U+200F, U+061C), and the
+/// line and paragraph separators U+2028 and U+2029, are each replaced with
+/// U+FFFD, the replacement character. An override can make "Chen" from
+/// characters in another order, or reverse the text shown after the name;
+/// a newline can make a name look like a second line in the list.
+///
+/// Replaced rather than stripped. Stripping makes two different names look
+/// the same: "Chen" and "Chen" with an invisible mark in it would both show
+/// as "Chen", which is impersonation made easy. A visible replacement keeps
+/// them apart and shows that the name was tampered with. It also never
+/// joins the characters either side of a removed one into something that
+/// reads differently.
+///
+/// This does not isolate a right-to-left name from the text around it; the
+/// app lays names out as their own runs for that.
+#[must_use]
+#[uniffi::export]
+pub fn display_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if is_unsafe_in_a_name(c) {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Whether [`display_name`] replaces `c`.
+fn is_unsafe_in_a_name(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{061C}'
+                | '\u{2028}'
+                | '\u{2029}'
+        )
 }
 
 /// Redacting by hand rather than deriving: this type holds identity keys and
@@ -642,7 +928,7 @@ impl Member {
             signature_key: signature_public_key.into(),
         };
 
-        Ok(Self {
+        let member = Self {
             crypto,
             db,
             signer,
@@ -651,7 +937,17 @@ impl Member {
             live: HashSet::new(),
             resuming: HashSet::new(),
             offer_lifetime: OFFER_LIFETIME,
-        })
+        };
+        // Brings each conversation's record up to date with its group, which
+        // also fills in the names and members of a store from before
+        // conversations were recorded (schema v9).
+        member.db.atomically(|| {
+            for channel in member.groups.keys() {
+                member.sync_conversation(channel)?;
+            }
+            Ok(())
+        })?;
+        Ok(member)
     }
 
     /// Run `op` as one unit: its writes reach the store together or not at
@@ -702,7 +998,24 @@ impl Member {
                 sent: VecDeque::new(),
             },
         );
+        self.sync_conversation(&channel)?;
         Ok(channel)
+    }
+
+    /// Record in the conversation on `channel` that this client is a member,
+    /// with the group's name and members as they are now. Done whenever they
+    /// may have changed, so the record still has them once the group is
+    /// gone.
+    fn sync_conversation(&self, channel: &[u8]) -> Result<()> {
+        let name = self.name(channel)?;
+        let others: Vec<String> = self
+            .members(channel)
+            .into_iter()
+            .filter(|m| !m.me)
+            .map(|m| m.name)
+            .collect();
+        self.db
+            .set_member_of(channel, name.as_deref(), &others, now_ms())
     }
 
     fn config() -> Result<MlsGroupCreateConfig> {
@@ -1184,12 +1497,22 @@ impl Member {
             });
         };
 
-        self.atomically(|m| m.join_unit(welcome, None))
+        self.atomically(|m| {
+            let (channel, by) = m.join_unit(welcome, None)?;
+            m.db.log_notice(&channel, &Notice::YouJoined { by }.to_row(), now_ms())?;
+            Ok(channel)
+        })
     }
 
     /// [`Member::join`] for a parsed `Welcome`, minus the unit-of-work
     /// wrapper. With `expected`, refuses a `Welcome` to any other group.
-    fn join_unit(&mut self, welcome: Welcome, expected: Option<&[u8]>) -> Result<Vec<u8>> {
+    /// Returns the channel, and the member who let this client in: the one
+    /// who signed the `Welcome`.
+    fn join_unit(
+        &mut self,
+        welcome: Welcome,
+        expected: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, Option<Participant>)> {
         let config = Self::config()?;
         let provider = self.db.provider(&self.crypto);
         // The ratchet tree travels in the Welcome. Its places keep the
@@ -1213,8 +1536,13 @@ impl Member {
                 expected: "a Welcome to the group this client asked to join",
             });
         }
+        let by = staged.welcome_sender().ok().map(|leaf| Participant {
+            name: String::from_utf8_lossy(leaf.credential().serialized_content()).into_owned(),
+            uri: content::sender_uri(leaf.signature_key().as_slice()),
+            me: false,
+        });
         let group = staged.into_group(&provider).map_err(mls)?;
-        self.add_group(group)
+        Ok((self.add_group(group)?, by))
     }
 
     /// Encrypt an application message for the group on `channel`.
@@ -1272,26 +1600,34 @@ impl Member {
 
     /// One of this client's own frames to `channel`, back from the relay:
     /// what it means, or `None` if `wire` is not one of them. Recognised by
-    /// exact bytes, which keeps sender identity off the wire. With it, the
-    /// rename the frame applied, if it was a commit that made one.
+    /// exact bytes, which keeps sender identity off the wire. With it, what
+    /// the frame settled, if it was a commit.
     fn own_frame(
         &mut self,
         channel: &[u8],
         wire: &[u8],
         relayed: Option<Relayed>,
-    ) -> Result<Option<(Event, Option<Rename>)>> {
+    ) -> Result<Option<(Event, Settled)>> {
         let group = self.groups.get_mut(channel).ok_or(Error::NoGroup)?;
         // A staged commit coming back means the relay ordered it first and
         // nothing beat it: apply it and release the Welcome.
         if let Some(pending) = group.pending.take_if(|p| p.commit == wire) {
             self.db.set_pending_commit(channel, None)?;
             let provider = self.db.provider(&self.crypto);
-            let mut renamed = None;
+            let mut settled = Settled::default();
             if let Some(staged) = group.mls.pending_commit() {
-                note_commit(&self.db, &self.crypto, channel, &group.mls, staged)?;
-                renamed = rename_in(&group.mls, staged);
+                settled = settle(
+                    &self.db,
+                    &self.crypto,
+                    channel,
+                    &group.mls,
+                    staged,
+                    false,
+                    relayed.map_or_else(now_ms, |r| r.accepted_ms),
+                )?;
             }
             group.mls.merge_pending_commit(&provider).map_err(mls)?;
+            self.sync_conversation(channel)?;
             let event = match pending.admits {
                 Some((welcome, mailbox, until)) => {
                     self.db
@@ -1300,18 +1636,18 @@ impl Member {
                 }
                 None => Event::Committed,
             };
-            return Ok(Some((event, renamed)));
+            return Ok(Some((event, settled)));
         }
         // This client's own request to leave, coming back. Others queue it;
         // this client already has, when it made it.
         if group.leaving.as_ref().is_some_and(|(p, _)| p == wire) {
-            return Ok(Some((Event::Echo, None)));
+            return Ok(Some((Event::Echo, Settled::default())));
         }
         if let Some(sent) = self.take_sent(channel, wire)? {
             if sent.epoch == self.group(channel)?.mls.epoch().as_u64() {
                 // Everyone else read it here, so this is its place.
                 self.log_own(channel, &sent.content, Placement::Applied(relayed))?;
-                return Ok(Some((Event::Echo, None)));
+                return Ok(Some((Event::Echo, Settled::default())));
             }
             // A commit was ordered between sending this and seeing it come
             // back, so every member has left the epoch it was encrypted in
@@ -1324,21 +1660,21 @@ impl Member {
             // had the old epoch's keys, so some members would see the message
             // and others would not.
             let message = self.send_content(channel, sent.content)?;
-            return Ok(Some((Event::Resend { message }, None)));
+            return Ok(Some((Event::Resend { message }, Settled::default())));
         }
         Ok(None)
     }
 
     /// [`Member::receive`], minus the unit-of-work wrapper. `relayed` is where
     /// the relay put the frame, if it came through the relay; a message is
-    /// written to the transcript with it. With the event, the rename the
-    /// frame applied, if it was a commit that made one.
+    /// written to the transcript with it. With the event, what the frame
+    /// settled, if it was a commit: the notices for it are written here too.
     fn receive_unit(
         &mut self,
         channel: &[u8],
         wire: &[u8],
         relayed: Option<Relayed>,
-    ) -> Result<(Event, Option<Rename>)> {
+    ) -> Result<(Event, Settled)> {
         if let Some(applied) = self.own_frame(channel, wire, relayed)? {
             return Ok(applied);
         }
@@ -1356,6 +1692,8 @@ impl Member {
         let provider = self.db.provider(&self.crypto);
         let group = self.groups.get_mut(channel).ok_or(Error::NoGroup)?;
         let superseded = protocol.content_type() == ContentType::Commit && group.pending.is_some();
+        // Whether what lost was a rename, so a rename that beat it says so.
+        let lost_rename = superseded && group.mls.pending_commit().is_some_and(renames);
         if superseded {
             group.pending = None;
             self.db.set_pending_commit(channel, None)?;
@@ -1374,7 +1712,7 @@ impl Member {
                 ContentType::Application => Event::Stale,
                 ContentType::Commit | ContentType::Proposal => Event::Advanced,
             };
-            return Ok((event, None));
+            return Ok((event, Settled::default()));
         }
         let processed = group
             .mls
@@ -1385,7 +1723,8 @@ impl Member {
             _ => None,
         };
 
-        let mut renamed = None;
+        let mut settled = Settled::default();
+        let mut merged = false;
         let event = match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 let bytes = app.into_bytes();
@@ -1412,12 +1751,20 @@ impl Member {
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 let removed = commit.self_removed();
-                note_commit(&self.db, &self.crypto, channel, &group.mls, &commit)?;
-                renamed = rename_in(&group.mls, &commit);
+                settled = settle(
+                    &self.db,
+                    &self.crypto,
+                    channel,
+                    &group.mls,
+                    &commit,
+                    lost_rename,
+                    relayed.map_or_else(now_ms, |r| r.accepted_ms),
+                )?;
                 group
                     .mls
                     .merge_staged_commit(&provider, *commit)
                     .map_err(mls)?;
+                merged = !removed;
                 if removed {
                     Event::Removed
                 } else if superseded {
@@ -1435,7 +1782,10 @@ impl Member {
             }
             _ => Event::Advanced,
         };
-        Ok((event, renamed))
+        if merged {
+            self.sync_conversation(channel)?;
+        }
+        Ok((event, settled))
     }
 
     /// Write this client's own message to `channel`'s transcript, or place
@@ -1450,9 +1800,9 @@ impl Member {
         log_message(&self.db, channel, &own, bytes, true, placement)
     }
 
-    /// The transcript of `channel`, oldest first: up to `limit` of the latest
-    /// messages, or with `before`, up to `limit` of those just before that
-    /// [`TranscriptEntry::position`].
+    /// The history of `channel`, messages and notices together, oldest
+    /// first: up to `limit` of the latest entries, or with `before`, up to
+    /// `limit` of those just before that [`HistoryEntry::position`].
     ///
     /// The latest page ends with this client's own messages that have not
     /// yet come back from the relay. To page back, pass the smallest
@@ -1472,12 +1822,13 @@ impl Member {
         channel: &[u8],
         before: Option<u64>,
         limit: u32,
-    ) -> Result<Vec<TranscriptEntry>> {
+    ) -> Result<Vec<HistoryEntry>> {
+        let me = self.own_uri();
         self.db
             .history(channel, before, limit)?
             .into_iter()
-            .map(|row| {
-                Ok(TranscriptEntry {
+            .map(|row| match row {
+                store::HistoryRow::Message(row) => Ok(HistoryEntry::Message(TranscriptEntry {
                     id: row
                         .id
                         .try_into()
@@ -1491,9 +1842,150 @@ impl Member {
                     sender_uri: row.sender_uri,
                     content: content::Content::decode(&row.content)
                         .map_err(|_| Error::CorruptState("transcript content does not parse"))?,
-                })
+                })),
+                store::HistoryRow::Notice {
+                    position,
+                    at_ms,
+                    notice,
+                } => Ok(HistoryEntry::Notice(NoticeEntry {
+                    position,
+                    at_ms,
+                    notice: Notice::from_row(notice, &me)?,
+                })),
             })
             .collect()
+    }
+
+    /// Every conversation this client is in, has asked to join, or has left
+    /// or been removed from, with what a row in the list shows. The most
+    /// recently active first: by its latest entry, or by when it was first
+    /// recorded if nothing has happened in it yet.
+    ///
+    /// A conversation stays listed after this client leaves it or is
+    /// removed, with its last name and members, until
+    /// [`Member::delete_conversation`].
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn conversations(&self) -> Result<Vec<Conversation>> {
+        let mut listed = Vec::new();
+        for row in self.db.conversations()? {
+            let state = match row.state.as_str() {
+                CONVERSATION_MEMBER => ConversationState::Member {
+                    leaving: self.is_leaving(&row.channel),
+                },
+                CONVERSATION_WAITING => ConversationState::Waiting,
+                CONVERSATION_REJOINING => ConversationState::Rejoining,
+                CONVERSATION_LEFT => ConversationState::Left {
+                    at_ms: row.state_ms,
+                },
+                CONVERSATION_REMOVED => ConversationState::Removed {
+                    at_ms: row.state_ms,
+                    by: row.by.map(|(name, uri)| Participant {
+                        me: false,
+                        name,
+                        uri,
+                    }),
+                },
+                _ => return Err(Error::CorruptState("a conversation in an unknown state")),
+            };
+            let last = self.history(&row.channel, None, 1)?.pop();
+            // Unplaced means sent just now and not yet back from the relay.
+            let active = last
+                .as_ref()
+                .map_or(row.since, |e| e.position().unwrap_or(u64::MAX))
+                .max(row.since);
+            listed.push((
+                active,
+                Conversation {
+                    unread: self.db.unread(&row.channel, row.read_to)?,
+                    join_requests: self.db.request_count(&row.channel)?,
+                    channel: row.channel,
+                    name: row.name,
+                    members: row.members,
+                    state,
+                    last,
+                    read_up_to: row.read_to,
+                },
+            ));
+        }
+        // Stable, so conversations equally active keep the order they were
+        // first recorded in.
+        listed.sort_by_key(|(active, _)| std::cmp::Reverse(*active));
+        Ok(listed.into_iter().map(|(_, c)| c).collect())
+    }
+
+    /// Mark the conversation on `channel` read up to and including
+    /// `position`. A marker only moves forward: marking an earlier position
+    /// changes nothing.
+    ///
+    /// # Errors
+    /// If there is no such conversation, or the store cannot be written.
+    pub fn mark_read(&mut self, channel: &[u8], position: u64) -> Result<()> {
+        if self
+            .db
+            .atomically(|| self.db.mark_read(channel, position))?
+        {
+            Ok(())
+        } else {
+            Err(Error::NoConversation)
+        }
+    }
+
+    /// How much of the conversation on `channel` this client keeps.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn history_size(&self, channel: &[u8]) -> Result<HistorySize> {
+        let (messages, notices, bytes) = self.db.history_size(channel)?;
+        Ok(HistorySize {
+            messages,
+            notices,
+            bytes,
+        })
+    }
+
+    /// Delete the history of the conversation on `channel`: every message
+    /// and notice. The conversation stays, and so does this client's place
+    /// in it; what arrives from now on is kept as before.
+    ///
+    /// What is deleted cannot be fetched again. The relay's copies are
+    /// encrypted for keys this client has already used up, which is what
+    /// forward secrecy means.
+    ///
+    /// # Errors
+    /// If there is no such conversation, or the store cannot be written.
+    pub fn delete_history(&mut self, channel: &[u8]) -> Result<()> {
+        self.db.atomically(|| {
+            self.db.state_of(channel)?.ok_or(Error::NoConversation)?;
+            self.db.delete_history(channel)
+        })
+    }
+
+    /// Delete the conversation on `channel` entirely: its record, its
+    /// history, and what this client remembered about the group. Only once
+    /// it has left or been removed.
+    ///
+    /// # Errors
+    /// [`Error::StillInConversation`] if this client is a member, or is
+    /// waiting to join or be added back; [`Error::NoConversation`] if there
+    /// is no such conversation; or if the store cannot be written.
+    pub fn delete_conversation(&mut self, channel: &[u8]) -> Result<()> {
+        self.db.atomically(|| {
+            let state = self.db.state_of(channel)?.ok_or(Error::NoConversation)?;
+            if self.groups.contains_key(channel)
+                || !matches!(state.as_str(), CONVERSATION_LEFT | CONVERSATION_REMOVED)
+            {
+                return Err(Error::StillInConversation);
+            }
+            self.db.delete_conversation(channel)
+        })
+    }
+
+    /// This client's provisional URI, from its signature key: what
+    /// [`Participant::uri`] holds when it is this client.
+    fn own_uri(&self) -> String {
+        content::sender_uri(&self.signer.to_public_vec())
     }
 
     /// Record a message sent to `channel` so the relay's echo of it can be
@@ -1667,7 +2159,12 @@ impl Member {
             key_package,
             rejoin: false,
         };
-        self.db.follow(&mailbox, 0, Some(&offer))
+        self.db.follow(&mailbox, 0, Some(&offer))?;
+        if !self.groups.contains_key(channel) {
+            self.db
+                .set_state(channel, CONVERSATION_WAITING, now_ms(), None)?;
+        }
+        Ok(())
     }
 
     /// A request to be re-added, bound to the place it replaces.
@@ -1802,37 +2299,47 @@ impl Member {
                 address,
                 floor,
                 next,
-            } => {
-                let address = address.into_bytes();
-                let Some(cursor) = self.db.cursor(&address)? else {
-                    return Ok(Vec::new());
-                };
-                if cursor <= next {
-                    let stranded = self.groups.contains_key(&address);
-                    let mut effects = vec![Effect::Unavailable {
-                        address: address.clone(),
-                        floor,
-                        next,
-                    }];
-                    if stranded {
-                        effects.extend(self.atomically(|m| m.rejoin_unit(&address))?);
-                    }
-                    return Ok(effects);
-                }
-                // Ahead of everything the relay has: it lost or replaced its
-                // store, and numbering started again. Missing frames are not
-                // the risk here, so follow its numbering from the start.
-                self.db.atomically(|| self.db.advance(&address, floor))?;
-                let resume = Request::Resume {
-                    address: Address::new(address.clone())?,
-                    from: floor,
-                };
-                Ok(vec![
-                    Effect::RelayReset { address },
-                    Effect::Send(resume.encode()?),
-                ])
-            }
+            } => self.unavailable(address.into_bytes(), floor, next),
         }
+    }
+
+    /// The relay cannot serve this client's cursor on `address`: it holds
+    /// `floor` up to `next`.
+    fn unavailable(&mut self, address: Vec<u8>, floor: u64, next: u64) -> Result<Vec<Effect>> {
+        let Some(cursor) = self.db.cursor(&address)? else {
+            return Ok(Vec::new());
+        };
+        let in_group = self.groups.contains_key(&address);
+        if cursor <= next {
+            let mut effects = vec![Effect::Unavailable {
+                address: address.clone(),
+                floor,
+                next,
+            }];
+            if in_group {
+                effects.extend(self.atomically(|m| m.rejoin_unit(&address))?);
+            }
+            return Ok(effects);
+        }
+        // Ahead of everything the relay has: it lost or replaced its store,
+        // and numbering started again. Missing frames are not the risk here,
+        // so follow its numbering from the start.
+        self.db.atomically(|| {
+            self.db.advance(&address, floor)?;
+            if in_group {
+                self.db
+                    .log_notice(&address, &Notice::RelayReset.to_row(), now_ms())?;
+            }
+            Ok(())
+        })?;
+        let resume = Request::Resume {
+            address: Address::new(address.clone())?,
+            from: floor,
+        };
+        Ok(vec![
+            Effect::RelayReset { address },
+            Effect::Send(resume.encode()?),
+        ])
     }
 
     /// Apply one frame from `address`, where the relay put it.
@@ -1849,11 +2356,11 @@ impl Member {
                 self.db.defer(address, &body, true)?;
                 self.answer_requests(address)
             }
-            FrameKind::Welcome => self.welcome(address, &body),
+            FrameKind::Welcome => self.welcome(address, &body, relayed),
             FrameKind::Commit | FrameKind::Application | FrameKind::Proposal if in_group => {
                 let channel = address.to_vec();
                 let mut effects = Vec::new();
-                let (event, renamed) = self.receive_unit(address, &body, Some(relayed))?;
+                let (event, settled) = self.receive_unit(address, &body, Some(relayed))?;
                 match event {
                     Event::Message(message) => effects.push(Effect::Message {
                         channel: channel.clone(),
@@ -1878,7 +2385,19 @@ impl Member {
                     }),
                     Event::Removed => {
                         self.forget_group(address)?;
-                        return Ok(vec![Effect::Removed { channel }]);
+                        // Recorded only by a commit read here. One that took
+                        // this client out without saying how cannot happen,
+                        // but reads as a removal by nobody known.
+                        let departure = settled.departed.unwrap_or(Departure::Removed { by: None });
+                        let (state, by) = match &departure {
+                            Departure::Left => (CONVERSATION_LEFT, None),
+                            Departure::Removed { by } => (
+                                CONVERSATION_REMOVED,
+                                by.as_ref().map(|p| (p.name.as_str(), p.uri.as_str())),
+                            ),
+                        };
+                        self.db.set_state(address, state, relayed.accepted_ms, by)?;
+                        return Ok(vec![Effect::Removed { channel, departure }]);
                     }
                     Event::Resend { message } => effects.push(Effect::Send(encode_publish(
                         address,
@@ -1887,7 +2406,13 @@ impl Member {
                     )?)),
                     Event::Proposed | Event::Echo | Event::Stale => {}
                 }
-                if let Some(by) = renamed {
+                if !settled.changes.is_empty() {
+                    effects.push(Effect::Membership {
+                        channel: channel.clone(),
+                        changes: settled.changes,
+                    });
+                }
+                if let Some(by) = settled.renamed {
                     effects.push(Effect::Renamed {
                         channel: channel.clone(),
                         by,
@@ -1911,8 +2436,8 @@ impl Member {
     /// A `Welcome` to any other group is refused. Whoever has one of this
     /// client's `KeyPackage`s could otherwise put it in a group it never
     /// asked to join.
-    fn welcome(&mut self, mailbox: &[u8], body: &[u8]) -> Result<Vec<Effect>> {
-        let Some(asked) = self.db.offered_to(mailbox)? else {
+    fn welcome(&mut self, mailbox: &[u8], body: &[u8], relayed: Relayed) -> Result<Vec<Effect>> {
+        let Some((asked, rejoin)) = self.db.offered_to(mailbox)? else {
             return Ok(Vec::new()); // not a mailbox of this client's
         };
         if self.groups.contains_key(&asked) {
@@ -1925,7 +2450,14 @@ impl Member {
                 expected: "Welcome",
             });
         };
-        let channel = self.join_unit(welcome, Some(&asked))?;
+        let (channel, by) = self.join_unit(welcome, Some(&asked))?;
+        // Being added back after being stranded is not joining: the notice
+        // about what was missed already stands where the gap is.
+        if !rejoin {
+            let notice = Notice::YouJoined { by };
+            self.db
+                .log_notice(&channel, &notice.to_row(), relayed.accepted_ms)?;
+        }
         // Read the channel from just after the commit that admitted this
         // client. Anything ordered after it, even if it raced the Welcome
         // here, is then applied rather than lost.
@@ -2108,7 +2640,8 @@ impl Member {
 
     /// Drop the group on `channel`: this client was removed, or is starting
     /// over. Deletes its group state, so a removed member keeps no keys for
-    /// it. Its transcript stays (#129), and other groups are not touched.
+    /// it. Its history (#129) and its conversation (#130) stay, and other
+    /// groups are not touched.
     fn forget_group(&mut self, channel: &[u8]) -> Result<()> {
         if let Some(mut group) = self.groups.remove(channel) {
             group
@@ -2134,6 +2667,11 @@ impl Member {
         // Made before the group is dropped: it names this client's place.
         let (request, mailbox) = self.rejoin_request(channel)?;
         self.forget_group(channel)?;
+        let now = now_ms();
+        self.db
+            .set_state(channel, CONVERSATION_REJOINING, now, None)?;
+        self.db
+            .log_notice(channel, &Notice::Stranded.to_row(), now)?;
         let offer = store::Offer {
             to: channel.to_vec(),
             key_package: request.clone(),
@@ -2235,7 +2773,7 @@ fn required_capabilities() -> Extension {
 /// proposal, so that is the committer; one proposed by reference and
 /// committed by someone else is credited to whoever proposed it, not to the
 /// member who happened to commit it.
-fn rename_in(group: &MlsGroup, commit: &StagedCommit) -> Option<Rename> {
+fn rename_in(group: &MlsGroup, commit: &StagedCommit, beat_mine: bool) -> Option<Rename> {
     let (proposal, sender) =
         commit
             .queued_proposals()
@@ -2260,7 +2798,252 @@ fn rename_in(group: &MlsGroup, commit: &StagedCommit) -> Option<Rename> {
         by: String::from_utf8_lossy(renamer.credential.serialized_content()).into_owned(),
         by_uri: content::sender_uri(&renamer.signature_key),
         name,
+        beat_mine,
     })
+}
+
+/// Whether `commit` changes the group context, as a rename does.
+fn renames(commit: &StagedCommit) -> bool {
+    commit
+        .queued_proposals()
+        .any(|queued| matches!(queued.proposal(), Proposal::GroupContextExtensions(_)))
+}
+
+/// What applying a commit settled, read before it was merged.
+#[derive(Debug, Default)]
+struct Settled {
+    /// The rename it made, if it made one.
+    renamed: Option<Rename>,
+    /// Who it let in and took out. Empty if it took this client out, which
+    /// `departed` says instead; the notices keep the rest.
+    changes: Vec<MemberChange>,
+    /// How it took this client out, if it did.
+    departed: Option<Departure>,
+}
+
+/// The member of `group` at `index`, as a [`Participant`].
+fn participant_at(group: &MlsGroup, index: LeafNodeIndex) -> Option<Participant> {
+    group
+        .members()
+        .find(|m| m.index == index)
+        .map(|m| Participant {
+            name: String::from_utf8_lossy(m.credential.serialized_content()).into_owned(),
+            uri: content::sender_uri(&m.signature_key),
+            me: index == group.own_leaf_index(),
+        })
+}
+
+/// The member of `group` who sent a proposal, if a member did.
+fn proposer(group: &MlsGroup, sender: &Sender) -> Option<Participant> {
+    match sender {
+        Sender::Member(index) => participant_at(group, *index),
+        _ => None,
+    }
+}
+
+/// Who `commit` lets into and takes out of `group`, read before it is
+/// merged, while everyone it names is still in the group's tree; see
+/// [`MemberChange`]. With it, how it takes this client out, if it does.
+fn membership_in(
+    group: &MlsGroup,
+    commit: &StagedCommit,
+) -> (Vec<MemberChange>, Option<Departure>) {
+    let me = group.own_leaf_index();
+    let added: HashSet<Vec<u8>> = commit
+        .add_proposals()
+        .map(|add| {
+            add.add_proposal()
+                .key_package()
+                .leaf_node()
+                .signature_key()
+                .as_slice()
+                .to_vec()
+        })
+        .collect();
+    let mut changes = Vec::new();
+    let mut readded: HashSet<Vec<u8>> = HashSet::new();
+    let mut departed = None;
+    for remove in commit.remove_proposals() {
+        let index = remove.remove_proposal().removed();
+        let Some(place) = group.members().find(|m| m.index == index) else {
+            continue;
+        };
+        // A re-add: the same identity, in a new place.
+        if added.contains(&place.signature_key) {
+            readded.insert(place.signature_key);
+            continue;
+        }
+        let Some(who) = participant_at(group, index) else {
+            continue;
+        };
+        let left = matches!(remove.sender(), Sender::Member(by) if *by == index);
+        if index == me {
+            departed = Some(if left {
+                Departure::Left
+            } else {
+                Departure::Removed {
+                    by: proposer(group, remove.sender()),
+                }
+            });
+        }
+        changes.push(if left {
+            MemberChange::Left { who }
+        } else {
+            MemberChange::Removed {
+                who,
+                by: proposer(group, remove.sender()),
+            }
+        });
+    }
+    for add in commit.add_proposals() {
+        let leaf = add.add_proposal().key_package().leaf_node();
+        let key = leaf.signature_key().as_slice();
+        if readded.contains(key) {
+            continue;
+        }
+        changes.push(MemberChange::Joined {
+            who: Participant {
+                name: String::from_utf8_lossy(leaf.credential().serialized_content()).into_owned(),
+                uri: content::sender_uri(key),
+                me: false,
+            },
+            by: proposer(group, add.sender()),
+        });
+    }
+    (changes, departed)
+}
+
+/// Read what `commit` settles in `group` on `channel` before it is merged,
+/// and record it: what [`note_commit`] keeps, and a notice for each change
+/// to the members and for a rename, placed now, at `at_ms`. `beat_mine` if
+/// it beat a rename of this client's own.
+fn settle(
+    db: &Database,
+    crypto: &RustCrypto,
+    channel: &[u8],
+    group: &MlsGroup,
+    commit: &StagedCommit,
+    beat_mine: bool,
+    at_ms: u64,
+) -> Result<Settled> {
+    note_commit(db, crypto, channel, group, commit)?;
+    let (changes, departed) = membership_in(group, commit);
+    let renamed = rename_in(group, commit, beat_mine);
+    for change in &changes {
+        let notice = match change.clone() {
+            MemberChange::Joined { who, by } => Notice::Joined { who, by },
+            MemberChange::Removed { who, by } => Notice::Removed { who, by },
+            MemberChange::Left { who } => Notice::Left { who },
+        };
+        db.log_notice(channel, &notice.to_row(), at_ms)?;
+    }
+    if let Some(rename) = &renamed {
+        let notice = Notice::Renamed {
+            by: Participant {
+                name: rename.by.clone(),
+                uri: rename.by_uri.clone(),
+                me: false,
+            },
+            name: rename.name.clone(),
+            beat_mine,
+        };
+        db.log_notice(channel, &notice.to_row(), at_ms)?;
+    }
+    let changes = if departed.is_some() {
+        Vec::new()
+    } else {
+        changes
+    };
+    Ok(Settled {
+        renamed,
+        changes,
+        departed,
+    })
+}
+
+/// How each [`ConversationState`] is stored. Never change one: stored
+/// conversations say where they stand with it.
+const CONVERSATION_MEMBER: &str = "member";
+const CONVERSATION_WAITING: &str = "waiting";
+const CONVERSATION_REJOINING: &str = "rejoining";
+const CONVERSATION_LEFT: &str = "left";
+const CONVERSATION_REMOVED: &str = "removed";
+
+/// How each kind of notice is stored. Never change one: stored notices say
+/// what they are with it.
+const NOTICE_JOINED: &str = "joined";
+const NOTICE_LEFT: &str = "left";
+const NOTICE_REMOVED: &str = "removed";
+const NOTICE_RENAMED: &str = "renamed";
+const NOTICE_YOU_JOINED: &str = "you joined";
+const NOTICE_RELAY_RESET: &str = "relay reset";
+const NOTICE_STRANDED: &str = "stranded";
+
+impl Notice {
+    /// This notice as stored. Whether a participant is this client is not
+    /// stored: it is worked out again when read, from the URI.
+    fn to_row(&self) -> store::NoticeRow {
+        let pair = |p: &Participant| (p.name.clone(), p.uri.clone());
+        let row =
+            |kind: &str, who: Option<&Participant>, by: Option<&Participant>| store::NoticeRow {
+                kind: kind.to_owned(),
+                who: who.map(pair),
+                by: by.map(pair),
+                name: None,
+                raced: false,
+            };
+        match self {
+            Self::Joined { who, by } => row(NOTICE_JOINED, Some(who), by.as_ref()),
+            Self::Left { who } => row(NOTICE_LEFT, Some(who), None),
+            Self::Removed { who, by } => row(NOTICE_REMOVED, Some(who), by.as_ref()),
+            Self::Renamed {
+                by,
+                name,
+                beat_mine,
+            } => store::NoticeRow {
+                name: name.clone(),
+                raced: *beat_mine,
+                ..row(NOTICE_RENAMED, None, Some(by))
+            },
+            Self::YouJoined { by } => row(NOTICE_YOU_JOINED, None, by.as_ref()),
+            Self::RelayReset => row(NOTICE_RELAY_RESET, None, None),
+            Self::Stranded => row(NOTICE_STRANDED, None, None),
+        }
+    }
+
+    /// A stored notice, read by the client whose URI is `me`.
+    fn from_row(row: store::NoticeRow, me: &str) -> Result<Self> {
+        let person = |(name, uri): (String, String)| Participant {
+            me: uri == me,
+            name,
+            uri,
+        };
+        let who = row.who.map(person);
+        let by = row.by.map(person);
+        let missing = || Error::CorruptState("a notice is missing whom it is about");
+        Ok(match row.kind.as_str() {
+            NOTICE_JOINED => Self::Joined {
+                who: who.ok_or_else(missing)?,
+                by,
+            },
+            NOTICE_LEFT => Self::Left {
+                who: who.ok_or_else(missing)?,
+            },
+            NOTICE_REMOVED => Self::Removed {
+                who: who.ok_or_else(missing)?,
+                by,
+            },
+            NOTICE_RENAMED => Self::Renamed {
+                by: by.ok_or_else(missing)?,
+                name: row.name,
+                beat_mine: row.raced,
+            },
+            NOTICE_YOU_JOINED => Self::YouJoined { by },
+            NOTICE_RELAY_RESET => Self::RelayReset,
+            NOTICE_STRANDED => Self::Stranded,
+            _ => return Err(Error::CorruptState("a notice of an unknown kind")),
+        })
+    }
 }
 
 /// A conversation name as carried in the group context, cut to
@@ -3425,6 +4208,14 @@ mod tests {
         carol.join(&welcome).unwrap();
         let wire = delivery(&channel, 0, FrameKind::Commit, &commit);
 
+        let joins = |alice: &Member| {
+            notices(alice, &channel)
+                .iter()
+                .filter(|n| matches!(n, Notice::Joined { .. }))
+                .count()
+        };
+        assert_eq!(joins(&alice), 1, "bob's join");
+
         alice.db.fail_group_writes(true);
         let failed = alice.deliver(&wire);
         assert!(
@@ -3437,11 +4228,19 @@ mod tests {
             Some(0),
             "the commit was skipped"
         );
+        assert_eq!(joins(&alice), 1, "a commit that failed left a notice");
+        assert_eq!(only_conversation(&alice).members, ["bob"]);
 
+        let effects = alice.deliver(&wire).unwrap();
+        let [Effect::Advanced { .. }, Effect::Membership { changes, .. }] = effects.as_slice()
+        else {
+            panic!("the retried commit did not apply: {effects:?}");
+        };
         assert!(matches!(
-            alice.deliver(&wire).unwrap().as_slice(),
-            [Effect::Advanced { .. }]
+            changes.as_slice(),
+            [MemberChange::Joined { who, by: Some(by) }] if who.name == "carol" && by.name == "bob"
         ));
+        assert_eq!(joins(&alice), 2);
         assert_eq!(alice.count(), 3);
         let hello = carol.send(&carol.only(), "hello").unwrap();
         assert_message(alice.receive(&alice.only(), &hello).unwrap(), "hello");
@@ -3506,6 +4305,7 @@ mod tests {
         };
         assert_eq!(request, &expected.encode().unwrap());
         assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
+        assert_eq!(notices(&alice, &channel), [Notice::RelayReset]);
 
         // The relay holds 50..60 and this client is at 0: frames it never
         // saw are gone, possibly a commit. It cannot follow the group, so it
@@ -3522,6 +4322,15 @@ mod tests {
         ));
         assert_eq!(alice.channel(), None, "a stranded client kept its group");
         assert!(!alice.waiting_to_join().unwrap().is_empty());
+        // The gap is marked where it is, and the conversation stays listed.
+        assert_eq!(
+            notices(&alice, &channel),
+            [Notice::RelayReset, Notice::Stranded]
+        );
+        assert_eq!(
+            only_conversation(&alice).state,
+            ConversationState::Rejoining
+        );
     }
 
     /// A client that restarts between staging an add and seeing its commit
@@ -3875,7 +4684,9 @@ mod tests {
     #[test]
     fn a_waiting_joiner_renews_its_request_before_it_runs_out() {
         let mut joiner = Member::new("joiner").unwrap();
-        joiner.offer_lifetime = 1;
+        // Well inside the day before expiry when a request is renewed. Not
+        // one second: see `SHORT_LIFETIME`, which is why this was flaky.
+        joiner.offer_lifetime = 60;
         joiner.offer(b"channel").unwrap();
         joiner.offer_lifetime = OFFER_LIFETIME;
         let kinds = |requests: &[Vec<u8>]| -> Vec<u8> { requests.iter().map(|r| r[0]).collect() };
@@ -4399,9 +5210,21 @@ mod tests {
         .encode()
     }
 
-    /// Everything in `member`'s transcript of `channel`, oldest first.
+    /// Every message in `member`'s history of `channel`, oldest first,
+    /// leaving out notices.
     fn transcript(member: &Member, channel: &[u8]) -> Vec<TranscriptEntry> {
-        member.history(channel, None, u32::MAX).unwrap()
+        messages(member.history(channel, None, u32::MAX).unwrap())
+    }
+
+    /// The messages among `entries`.
+    fn messages(entries: Vec<HistoryEntry>) -> Vec<TranscriptEntry> {
+        entries
+            .into_iter()
+            .filter_map(|e| match e {
+                HistoryEntry::Message(m) => Some(m),
+                HistoryEntry::Notice(_) => None,
+            })
+            .collect()
     }
 
     fn texts(entries: &[TranscriptEntry]) -> Vec<String> {
@@ -4701,10 +5524,22 @@ mod tests {
         assert_eq!(texts(&seen), ["old one", "old two", "new"]);
         let seqs: Vec<_> = seen.iter().map(|e| e.seq).collect();
         assert_eq!(seqs, [Some(0), Some(1), Some(0)]);
+        // The reset is noted between what came before it and after.
+        let reset_at = alice
+            .history(&channel, None, u32::MAX)
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                HistoryEntry::Notice(n) if n.notice == Notice::RelayReset => Some(n.position),
+                _ => None,
+            })
+            .expect("no notice of the reset");
+        assert!(seen[1].position.unwrap() < reset_at && reset_at < seen[2].position.unwrap());
     }
 
-    /// History pages back from the latest messages without skipping or
+    /// History pages back from the latest entries without skipping or
     /// repeating any. The latest page ends with what is still in flight.
+    /// Notices page with the messages: here, the two joins before them.
     #[test]
     fn history_pages_back_without_gaps_or_overlap() {
         let (mut alice, mut bob, _carol, channel) = trio();
@@ -4719,16 +5554,26 @@ mod tests {
         alice.send(&alice.only(), "in flight").unwrap();
 
         let latest = alice.history(&channel, None, 3).unwrap();
-        assert_eq!(texts(&latest), ["m4", "m5", "in flight"]);
-        let oldest_here = latest.iter().filter_map(|e| e.position).min().unwrap();
-        let older = alice.history(&channel, Some(oldest_here), 3).unwrap();
-        assert_eq!(texts(&older), ["m1", "m2", "m3"]);
-        let start = older[0].position.unwrap();
-        assert!(alice.history(&channel, Some(start), 3).unwrap().is_empty());
+        assert_eq!(texts(&messages(latest.clone())), ["m4", "m5", "in flight"]);
+        let oldest_here = latest.iter().filter_map(HistoryEntry::position).min();
+        let older = alice.history(&channel, oldest_here, 3).unwrap();
+        assert_eq!(texts(&messages(older.clone())), ["m1", "m2", "m3"]);
+        let start = older[0].position();
+        let joins = alice.history(&channel, start, 3).unwrap();
+        assert_eq!(joins.len(), 2, "{joins:?}");
+        assert!(joins.iter().all(
+            |e| matches!(e, HistoryEntry::Notice(n) if matches!(n.notice, Notice::Joined { .. }))
+        ));
+        assert!(
+            alice
+                .history(&channel, joins[0].position(), 3)
+                .unwrap()
+                .is_empty()
+        );
 
         // A page of nothing but messages in flight pages back from the top.
         let placed = alice.history(&channel, Some(u64::MAX), 2).unwrap();
-        assert_eq!(texts(&placed), ["m4", "m5"]);
+        assert_eq!(texts(&messages(placed)), ["m4", "m5"]);
         assert!(
             alice
                 .history(b"another channel", None, 9)
@@ -5038,5 +5883,599 @@ mod tests {
         let cut = decode_name(long.as_bytes());
         assert_eq!(cut.len(), MAX_NAME_BYTES - 1);
         assert!(long.starts_with(&cut));
+    }
+
+    // ---- Who changed what, notices, and conversations (#130) ----
+
+    /// Alice, bob and carol in one group, with `carol` as given, each reading
+    /// the channel from the relay's start, so a frame can be delivered to
+    /// all three as the relay would.
+    fn followed_trio_with(mut carol: Member) -> (Member, Member, Member, Vec<u8>) {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let channel = alice.create_group().unwrap();
+        admit_to(&mut alice, &channel, &mut bob);
+        let commit = admit_to(&mut alice, &channel, &mut carol);
+        bob.receive(&channel, &commit).unwrap();
+        for member in [&alice, &bob, &carol] {
+            member.db.follow(&channel, 0, None).unwrap();
+        }
+        (alice, bob, carol, channel)
+    }
+
+    fn followed_trio() -> (Member, Member, Member, Vec<u8>) {
+        followed_trio_with(Member::new("carol").unwrap())
+    }
+
+    /// A delivery of any kind, accepted by the relay at `at`.
+    fn delivery_of(address: &[u8], seq: u64, at: u64, kind: FrameKind, body: &[u8]) -> Vec<u8> {
+        openconv_wire::Delivery {
+            address: openconv_wire::Address::new(address.to_vec()).unwrap(),
+            seq,
+            accepted_ms: at,
+            payload: encode_frame(kind, body),
+        }
+        .encode()
+    }
+
+    /// Every notice in `member`'s history of `channel`, oldest first.
+    fn notices(member: &Member, channel: &[u8]) -> Vec<Notice> {
+        member
+            .history(channel, None, u32::MAX)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e {
+                HistoryEntry::Notice(n) => Some(n.notice),
+                HistoryEntry::Message(_) => None,
+            })
+            .collect()
+    }
+
+    /// Every membership change among `effects`.
+    fn membership(effects: &[Effect]) -> Vec<MemberChange> {
+        effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Membership { changes, .. } => Some(changes.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// The place of the member named `name` in `member`'s view of `channel`.
+    fn place(member: &Member, channel: &[u8], name: &str) -> u32 {
+        member
+            .members(channel)
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("{name} is not a member"))
+            .index
+    }
+
+    /// `member` as a [`Participant`], as seen by someone who is, or is not,
+    /// that member.
+    fn as_seen(member: &Member, me: bool) -> Participant {
+        Participant {
+            name: member.identity(),
+            uri: member.own_uri(),
+            me,
+        }
+    }
+
+    /// The one conversation `member` has.
+    fn only_conversation(member: &Member) -> Conversation {
+        let mut listed = member.conversations().unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        listed.remove(0)
+    }
+
+    /// An add is credited to the member who let the joiner in, on every
+    /// member: the one who did it sees it as their own, the others as the
+    /// adder's, and it stays in each one's history as a notice. The joiner
+    /// is told who let it in.
+    #[test]
+    fn an_add_is_credited_to_whoever_let_them_in_on_every_member() {
+        let (mut alice, mut bob, mut carol, channel) = followed_trio();
+        let mut dave = Member::new("dave").unwrap();
+        let commit = carol
+            .propose_add(&channel, &dave.key_package().unwrap())
+            .unwrap();
+        let welcome = carol.groups[&channel]
+            .pending
+            .as_ref()
+            .and_then(|p| p.admits.as_ref())
+            .map(|(welcome, _, _)| welcome.clone())
+            .unwrap();
+        let dave_seen = as_seen(&dave, false);
+        for (who, carol_seen, m) in [
+            ("alice", as_seen(&carol, false), &mut alice),
+            ("bob", as_seen(&carol, false), &mut bob),
+            ("carol", as_seen(&carol, true), &mut carol),
+        ] {
+            let effects = m
+                .deliver(&delivery(&channel, 0, FrameKind::Commit, &commit))
+                .unwrap();
+            let joined = MemberChange::Joined {
+                who: dave_seen.clone(),
+                by: Some(carol_seen.clone()),
+            };
+            assert_eq!(membership(&effects), [joined], "{who}'s effects");
+            assert_eq!(
+                notices(m, &channel).last(),
+                Some(&Notice::Joined {
+                    who: dave_seen.clone(),
+                    by: Some(carol_seen),
+                }),
+                "{who}'s notices"
+            );
+            assert_eq!(
+                only_conversation(m).members.len(),
+                3,
+                "{who} did not record dave"
+            );
+        }
+
+        dave.join(&welcome).unwrap();
+        assert_eq!(
+            notices(&dave, &channel),
+            [Notice::YouJoined {
+                by: Some(as_seen(&carol, false))
+            }]
+        );
+        assert_eq!(only_conversation(&dave).members, ["alice", "bob", "carol"]);
+    }
+
+    /// The list puts the most recently active conversation first, by its
+    /// latest entry of either kind; a new one with nothing in it yet counts
+    /// as active when it was made.
+    #[test]
+    fn conversations_are_listed_most_recently_active_first() {
+        let ([mut alice, mut bob, _carol, _dave], red, blue) = two_groups();
+        let order = |m: &Member| -> Vec<Vec<u8>> {
+            m.conversations()
+                .unwrap()
+                .into_iter()
+                .map(|c| c.channel)
+                .collect()
+        };
+        // Dave joining blue is the latest thing bob has seen.
+        assert_eq!(order(&bob), [blue.clone(), red.clone()]);
+        let said = alice.send(&red, "red again").unwrap();
+        bob.receive(&red, &said).unwrap();
+        assert_eq!(order(&bob), [red.clone(), blue.clone()]);
+        let green = bob.create_group().unwrap();
+        assert_eq!(order(&bob), [green, red, blue]);
+    }
+
+    /// A commit is applied, its notices written and its conversation updated
+    /// in one transaction. If the record cannot be saved, none of it
+    /// happened: no notice is left behind, and the commit is retried.
+    #[test]
+    fn a_commit_whose_record_fails_to_save_leaves_no_notice() {
+        let (mut alice, _bob, mut carol, channel) = followed_trio();
+        let dave = Member::new("dave").unwrap();
+        let commit = carol
+            .propose_add(&channel, &dave.key_package().unwrap())
+            .unwrap();
+        let frame = delivery(&channel, 0, FrameKind::Commit, &commit);
+        let before = alice.history(&channel, None, u32::MAX).unwrap();
+
+        alice.db.fail_conversation_writes(true);
+        let failed = alice.deliver(&frame);
+        alice.db.fail_conversation_writes(false);
+        assert!(matches!(failed, Err(Error::Store(_))), "{failed:?}");
+        assert_eq!(
+            alice.history(&channel, None, u32::MAX).unwrap(),
+            before,
+            "a commit that failed left a notice"
+        );
+        assert_eq!(alice.count(), 3, "a commit that failed was applied");
+        assert_eq!(alice.db.cursor(&channel).unwrap(), Some(0));
+
+        let effects = alice.deliver(&frame).unwrap();
+        assert_eq!(membership(&effects).len(), 1);
+        assert_eq!(alice.count(), 4);
+        assert_eq!(notices(&alice, &channel).len(), before.len() + 1);
+    }
+
+    /// A removal is credited to the member who made it, on every member, and
+    /// the removed member is told by whom. Its conversation records it.
+    #[test]
+    fn a_removal_names_who_made_it_on_every_member_and_the_removed() {
+        let (mut alice, mut bob, mut carol, channel) = followed_trio();
+        let removal = bob
+            .remove_member(&channel, place(&bob, &channel, "carol"))
+            .unwrap();
+        let frame = delivery_of(&channel, 0, 1234, FrameKind::Commit, &removal);
+        for (who, bob_seen, m) in [
+            ("alice", as_seen(&bob, false), &mut alice),
+            ("bob", as_seen(&bob, true), &mut bob),
+        ] {
+            let removed = MemberChange::Removed {
+                who: as_seen(&carol, false),
+                by: Some(bob_seen.clone()),
+            };
+            assert_eq!(
+                membership(&m.deliver(&frame).unwrap()),
+                [removed],
+                "{who}'s effects"
+            );
+            assert_eq!(
+                notices(m, &channel).last(),
+                Some(&Notice::Removed {
+                    who: as_seen(&carol, false),
+                    by: Some(bob_seen),
+                }),
+                "{who}'s notices"
+            );
+        }
+
+        let effects = carol.deliver(&frame).unwrap();
+        let by_bob = Some(as_seen(&bob, false));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Removed { departure: Departure::Removed { by }, .. }] if *by == by_bob
+            ),
+            "{effects:?}"
+        );
+        assert!(carol.channels().unwrap().is_empty());
+        assert_eq!(
+            only_conversation(&carol).state,
+            ConversationState::Removed {
+                at_ms: 1234,
+                by: by_bob.clone()
+            }
+        );
+        assert_eq!(
+            notices(&carol, &channel).last(),
+            Some(&Notice::Removed {
+                who: as_seen(&carol, true),
+                by: by_bob,
+            })
+        );
+    }
+
+    /// Leaving is a proposal by the leaver, committed by whoever comes
+    /// online. Everyone, the leaver included, sees a leave, never a removal
+    /// by the member who happened to commit it.
+    #[test]
+    fn a_leave_is_a_leave_not_a_removal_by_whoever_committed_it() {
+        let (mut alice, mut bob, mut carol, channel) = followed_trio();
+        let proposal = carol.leave(&channel).unwrap();
+        for m in [&mut alice, &mut bob, &mut carol] {
+            m.deliver(&delivery(&channel, 0, FrameKind::Proposal, &proposal))
+                .unwrap();
+        }
+        let commit = alice
+            .atomically(|m| m.commit_proposals_unit(&channel))
+            .unwrap();
+        let frame = delivery_of(&channel, 1, 99, FrameKind::Commit, &commit);
+        for (who, m) in [("alice", &mut alice), ("bob", &mut bob)] {
+            let left = MemberChange::Left {
+                who: as_seen(&carol, false),
+            };
+            assert_eq!(
+                membership(&m.deliver(&frame).unwrap()),
+                [left],
+                "{who}'s effects"
+            );
+            assert_eq!(
+                notices(m, &channel).last(),
+                Some(&Notice::Left {
+                    who: as_seen(&carol, false)
+                }),
+                "{who}'s notices"
+            );
+        }
+
+        let effects = carol.deliver(&frame).unwrap();
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Removed {
+                    departure: Departure::Left,
+                    ..
+                }]
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(
+            only_conversation(&carol).state,
+            ConversationState::Left { at_ms: 99 }
+        );
+        assert_eq!(
+            notices(&carol, &channel).last(),
+            Some(&Notice::Left {
+                who: as_seen(&carol, true)
+            })
+        );
+    }
+
+    /// Notices are stored in order with the messages, survive a restart, and
+    /// page back with them without gaps or repeats.
+    #[test]
+    fn notices_survive_a_restart_and_page_in_order_with_messages() {
+        let (path, vault) = test_vault("noticer");
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        let channel = {
+            let mut alice = Member::restore(vault, "noticer").unwrap();
+            let channel = alice.create_group().unwrap();
+            admit_to(&mut alice, &channel, &mut bob);
+            let said = bob.send(&channel, "bob here").unwrap();
+            alice.receive(&channel, &said).unwrap();
+            let commit = admit_to(&mut alice, &channel, &mut carol);
+            bob.receive(&channel, &commit).unwrap();
+            let said = carol.send(&channel, "carol here").unwrap();
+            alice.receive(&channel, &said).unwrap();
+            let rename = bob.set_name(&channel, "Crit").unwrap();
+            alice.receive(&channel, &rename).unwrap();
+            channel
+        };
+
+        let alice = Member::restore(Vault::with_key(&path, [7u8; 32]), "noticer").unwrap();
+        let entries = alice.history(&channel, None, u32::MAX).unwrap();
+        let shown: Vec<String> = entries
+            .iter()
+            .map(|e| match e {
+                HistoryEntry::Message(m) => m.text(),
+                HistoryEntry::Notice(n) => match &n.notice {
+                    Notice::Joined { who, by: Some(by) } => {
+                        format!("{} let {} in", by.name, who.name)
+                    }
+                    Notice::Renamed { by, name, .. } => format!("{} named it {name:?}", by.name),
+                    other => panic!("unexpected {other:?}"),
+                },
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "noticer let bob in",
+                "bob here",
+                "noticer let carol in",
+                "carol here",
+                "bob named it Some(\"Crit\")",
+            ]
+        );
+        let positions: Vec<u64> = entries.iter().filter_map(HistoryEntry::position).collect();
+        assert_eq!(positions.len(), 5);
+        assert!(positions.windows(2).all(|w| w[0] < w[1]));
+
+        let mut paged = Vec::new();
+        let mut before = None;
+        loop {
+            let page = alice.history(&channel, before, 2).unwrap();
+            let Some(first) = page.first() else { break };
+            before = first.position();
+            paged.splice(0..0, page);
+        }
+        assert_eq!(paged, entries, "paging back lost or repeated an entry");
+        drop(alice);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A removed member's group state is gone, but its conversation is
+    /// still listed, after a restart too, with its last name and members,
+    /// what it read, and who removed it.
+    #[test]
+    fn a_removed_members_conversation_stays_listed_with_its_name_and_history() {
+        let (path, vault) = test_vault("removed");
+        let carol = Member::restore(vault, "carol").unwrap();
+        let (mut alice, mut bob, mut carol, channel) = followed_trio_with(carol);
+        let mut everyone = [&mut alice, &mut bob, &mut carol];
+        let rename = everyone[0].set_name(&channel, "Crit").unwrap();
+        for m in &mut everyone {
+            m.deliver(&delivery(&channel, 0, FrameKind::Commit, &rename))
+                .unwrap();
+        }
+        let hello = everyone[1].send(&channel, "hello carol").unwrap();
+        for m in &mut everyone {
+            m.deliver(&delivery(&channel, 1, FrameKind::Application, &hello))
+                .unwrap();
+        }
+        let removal = everyone[1]
+            .remove_member(&channel, place(everyone[1], &channel, "carol"))
+            .unwrap();
+        for m in &mut everyone {
+            m.deliver(&delivery_of(&channel, 2, 777, FrameKind::Commit, &removal))
+                .unwrap();
+        }
+        let bob_seen = as_seen(&bob, false);
+        drop(carol);
+
+        let carol = Member::restore(Vault::with_key(&path, [7u8; 32]), "carol").unwrap();
+        assert!(carol.channels().unwrap().is_empty(), "kept the group");
+        assert!(matches!(carol.name(&channel), Err(Error::NoGroup)));
+        let listed = only_conversation(&carol);
+        assert_eq!(listed.channel, channel);
+        assert_eq!(listed.name.as_deref(), Some("Crit"));
+        assert_eq!(listed.members, ["alice", "bob"]);
+        assert_eq!(
+            listed.state,
+            ConversationState::Removed {
+                at_ms: 777,
+                by: Some(bob_seen.clone())
+            }
+        );
+        let removed_you = Notice::Removed {
+            who: as_seen(&carol, true),
+            by: Some(bob_seen),
+        };
+        assert!(
+            matches!(&listed.last, Some(HistoryEntry::Notice(n)) if n.notice == removed_you),
+            "{:?}",
+            listed.last
+        );
+        assert_eq!(texts(&transcript(&carol, &channel)), ["hello carol"]);
+        drop(carol);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// A read marker sets where unread starts, and counts only messages from
+    /// others. It never moves back, and stays past a deleted history: what
+    /// arrives after a deletion is unread, because positions are never
+    /// handed out again.
+    #[test]
+    fn read_markers_set_where_unread_starts_and_only_move_forward() {
+        let (mut alice, mut bob, _carol, channel) = followed_trio();
+        let mut seq = 0..;
+        let mut hear = |alice: &mut Member, wire: &[u8]| {
+            let at = seq.next().unwrap();
+            alice
+                .deliver(&delivery(&channel, at, FrameKind::Application, wire))
+                .unwrap();
+        };
+        for text in ["one", "two", "three"] {
+            hear(&mut alice, &bob.send(&channel, text).unwrap());
+        }
+        let mine = alice.send(&channel, "mine").unwrap();
+        hear(&mut alice, &mine);
+        let read = |alice: &Member| {
+            let c = only_conversation(alice);
+            (c.unread, c.read_up_to)
+        };
+        assert_eq!(read(&alice), (3, None), "own messages or notices counted");
+
+        let positions: Vec<u64> = transcript(&alice, &channel)
+            .iter()
+            .map(|e| e.position.unwrap())
+            .collect();
+        alice.mark_read(&channel, positions[1]).unwrap();
+        assert_eq!(read(&alice), (1, Some(positions[1])));
+        alice.mark_read(&channel, positions[0]).unwrap();
+        assert_eq!(
+            read(&alice),
+            (1, Some(positions[1])),
+            "the marker moved back"
+        );
+        assert!(matches!(
+            alice.mark_read(b"no such conversation", 1),
+            Err(Error::NoConversation)
+        ));
+
+        alice.mark_read(&channel, positions[3]).unwrap();
+        assert_eq!(read(&alice).0, 0);
+        alice.delete_history(&channel).unwrap();
+        hear(&mut alice, &bob.send(&channel, "after").unwrap());
+        assert_eq!(
+            read(&alice).0,
+            1,
+            "a message after the deletion read as read"
+        );
+    }
+
+    /// History can be deleted while a member, and the conversation carries
+    /// on. The conversation itself can be deleted only once out of it: not
+    /// while a member, nor while waiting to join.
+    #[test]
+    fn history_can_be_deleted_while_a_member_but_the_conversation_only_once_out() {
+        let (mut alice, mut bob, mut carol, channel) = followed_trio();
+        let said = bob.send(&channel, "kept until deleted").unwrap();
+        carol
+            .deliver(&delivery(&channel, 0, FrameKind::Application, &said))
+            .unwrap();
+        let size = carol.history_size(&channel).unwrap();
+        assert_eq!((size.messages, size.notices), (1, 1));
+        assert!(size.bytes > 0);
+
+        assert!(matches!(
+            carol.delete_conversation(&channel),
+            Err(Error::StillInConversation)
+        ));
+        carol.delete_history(&channel).unwrap();
+        assert!(carol.history(&channel, None, 10).unwrap().is_empty());
+        assert_eq!(
+            carol.history_size(&channel).unwrap(),
+            HistorySize {
+                messages: 0,
+                notices: 0,
+                bytes: 0
+            }
+        );
+        assert_eq!(
+            only_conversation(&carol).state,
+            ConversationState::Member { leaving: false }
+        );
+        let said = bob.send(&channel, "after").unwrap();
+        carol
+            .deliver(&delivery(&channel, 1, FrameKind::Application, &said))
+            .unwrap();
+        assert_eq!(texts(&transcript(&carol, &channel)), ["after"]);
+
+        let removal = alice
+            .remove_member(&channel, place(&alice, &channel, "carol"))
+            .unwrap();
+        carol
+            .deliver(&delivery(&channel, 2, FrameKind::Commit, &removal))
+            .unwrap();
+        let carol_key = carol.signer.to_public_vec();
+        assert!(
+            carol
+                .db
+                .removal_of(&channel, &carol_key, "carol")
+                .unwrap()
+                .is_some()
+        );
+        carol.delete_conversation(&channel).unwrap();
+        assert!(carol.conversations().unwrap().is_empty());
+        assert!(carol.history(&channel, None, 10).unwrap().is_empty());
+        assert!(
+            carol
+                .db
+                .removal_of(&channel, &carol_key, "carol")
+                .unwrap()
+                .is_none(),
+            "kept what it knew about the group"
+        );
+        assert!(matches!(
+            carol.delete_conversation(&channel),
+            Err(Error::NoConversation)
+        ));
+
+        let mut erin = Member::new("erin").unwrap();
+        erin.offer(&channel).unwrap();
+        assert_eq!(only_conversation(&erin).state, ConversationState::Waiting);
+        assert!(matches!(
+            erin.delete_conversation(&channel),
+            Err(Error::StillInConversation)
+        ));
+    }
+
+    /// Names are shown with control characters and bidirectional controls
+    /// replaced, each with a visible U+FFFD, so two names that differ only
+    /// by them never look alike. Everything else is left alone.
+    #[test]
+    fn names_are_made_safe_to_show() {
+        // A right-to-left override shows what follows it reversed.
+        assert_eq!(display_name("Chen\u{202E}txt.exe"), "Chen\u{FFFD}txt.exe");
+        for c in ('\u{202A}'..='\u{202E}')
+            .chain('\u{2066}'..='\u{2069}')
+            .chain(['\u{200E}', '\u{200F}', '\u{061C}', '\u{2028}', '\u{2029}'])
+            .chain([
+                '\0', '\n', '\r', '\t', '\u{1B}', '\u{7F}', '\u{85}', '\u{9F}',
+            ])
+        {
+            assert_eq!(
+                display_name(&format!("a{c}b")),
+                "a\u{FFFD}b",
+                "U+{:04X} survived",
+                u32::from(c)
+            );
+        }
+        assert_ne!(display_name("Chen"), display_name("Ch\u{200E}en"));
+        for fine in [
+            "Aisha",
+            "Design crit 🎨",
+            "👩‍👩‍👧 family",
+            "فرح",
+            "שלום",
+            "Zoë Ångström",
+            "",
+        ] {
+            assert_eq!(display_name(fine), fine);
+        }
     }
 }

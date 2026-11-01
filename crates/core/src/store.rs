@@ -57,13 +57,87 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 8] = [
+const MIGRATIONS: [&str; 9] = [
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_V9,
 ];
+
+const SCHEMA_V9: &str = "
+    -- Places in the conversation come from one counter that only goes up
+    -- (#130). They used to be the transcript's largest plus one, which
+    -- deleting a conversation's history would have handed out again, under
+    -- read markers that had already passed them.
+    CREATE TABLE positions (
+        id   INTEGER PRIMARY KEY CHECK (id = 0),
+        next INTEGER NOT NULL
+    );
+    INSERT INTO positions (id, next) SELECT 0, coalesce(max(position), 0) + 1 FROM transcript;
+
+    -- What happened to a conversation, as opposed to what was said in it:
+    -- who joined, left, was removed or renamed it, and what this client
+    -- missed. Kept beside the transcript, never in it, and placed in the
+    -- same order.
+    CREATE TABLE notices (
+        channel  BLOB NOT NULL,
+        position INTEGER NOT NULL UNIQUE,
+        -- When it happened: the relay's clock if it came through the relay,
+        -- otherwise this client's.
+        at_ms    INTEGER NOT NULL,
+        kind     TEXT NOT NULL,
+        -- Whom it is about, and who did it, as MLS authenticated them.
+        who      TEXT,
+        who_uri  TEXT,
+        by       TEXT,
+        by_uri   TEXT,
+        -- For a rename: the new name, NULL if it was cleared.
+        name     TEXT,
+        -- For a rename: it beat one of this client's own.
+        raced    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX notices_by_position ON notices (channel, position);
+
+    -- Every conversation this client is in, has asked to join, or has left
+    -- or been removed from. Outlives the group, whose state is deleted when
+    -- this client stops being a member, so the list can still show it.
+    CREATE TABLE conversations (
+        channel  BLOB PRIMARY KEY,
+        -- The last name and members (others than this client, as a JSON
+        -- array of names) seen while a member.
+        name     TEXT,
+        members  TEXT NOT NULL DEFAULT '[]',
+        -- member, waiting, rejoining, left or removed; since when, and for
+        -- a removal, by whom.
+        state    TEXT NOT NULL,
+        state_ms INTEGER NOT NULL DEFAULT 0,
+        by       TEXT,
+        by_uri   TEXT,
+        -- Read up to and including this position.
+        read_to  INTEGER,
+        -- A position taken when the conversation was first recorded, so a
+        -- new one sorts as recent before anything is said in it.
+        since    INTEGER NOT NULL DEFAULT 0
+    );
+    -- What was read before this is taken as read, so nothing reappears as
+    -- new. Names and members come from group state, filled in on opening.
+    INSERT INTO conversations (channel, state, read_to)
+        SELECT g.channel, 'member',
+            (SELECT max(position) FROM transcript t WHERE t.channel = g.channel)
+        FROM groups g;
+    INSERT OR IGNORE INTO conversations (channel, state)
+        SELECT offer_to, CASE max(rejoin) WHEN 1 THEN 'rejoining' ELSE 'waiting' END
+        FROM follows WHERE offer_to IS NOT NULL AND offer IS NOT NULL GROUP BY offer_to;
+    -- A transcript with neither: this client left or was removed. Which,
+    -- and by whom, was not recorded, so it reads as a removal by nobody
+    -- known, at its last message, among those it heard from.
+    INSERT OR IGNORE INTO conversations (channel, members, state, state_ms, read_to)
+        SELECT channel, json_group_array(DISTINCT sender) FILTER (WHERE mine = 0),
+            'removed', max(stored_ms), max(position)
+        FROM transcript GROUP BY channel;
+";
 
 const SCHEMA_V8: &str = "
     -- Several groups per client (#134). The groups this client is in, in
@@ -557,6 +631,23 @@ impl Database {
             .expect("toggle simulated failure");
     }
 
+    /// Make writes to the conversation records fail, or work again: a commit
+    /// applied, and its notices written, but its record not updated.
+    #[cfg(test)]
+    pub(crate) fn fail_conversation_writes(&self, fail: bool) {
+        let sql = if fail {
+            "CREATE TRIGGER no_record_insert BEFORE INSERT ON conversations
+                 BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;
+             CREATE TRIGGER no_record_update BEFORE UPDATE ON conversations
+                 BEGIN SELECT RAISE(FAIL, 'disk full (simulated)'); END;"
+        } else {
+            "DROP TRIGGER no_record_insert; DROP TRIGGER no_record_update;"
+        };
+        self.conn
+            .execute_batch(sql)
+            .expect("toggle simulated failure");
+    }
+
     /// Whether this database outlives the process.
     pub(crate) fn is_persistent(&self) -> bool {
         self.path.is_some()
@@ -827,10 +918,15 @@ impl Database {
 
     /// The channel an offer made from `mailbox` asked to join, if `mailbox`
     /// is one of this client's mailboxes.
-    pub(crate) fn offered_to(&self, mailbox: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn offered_to(&self, mailbox: &[u8]) -> Result<Option<(Vec<u8>, bool)>> {
         self.conn
-            .prepare_cached("SELECT offer_to FROM follows WHERE address = ?1 AND offer IS NOT NULL")
-            .and_then(|mut stmt| stmt.query_row([mailbox], |r| r.get(0)).optional())
+            .prepare_cached(
+                "SELECT offer_to, rejoin FROM follows WHERE address = ?1 AND offer IS NOT NULL",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_row([mailbox], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()
+            })
             .map_err(store)
     }
 
@@ -1290,14 +1386,13 @@ impl Database {
             Placement::Unsent => {
                 "INSERT INTO transcript (channel, id, position, seq, accepted_ms, stored_ms,
                      mine, sender, sender_uri, content, replaces, in_reply_to)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 VALUES (?1, ?2, ?12, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT (channel, id) DO NOTHING"
             }
             Placement::Applied(_) => {
                 "INSERT INTO transcript (channel, id, position, seq, accepted_ms, stored_ms,
                      mine, sender, sender_uri, content, replaces, in_reply_to)
-                 VALUES (?1, ?2, (SELECT coalesce(max(position), 0) + 1 FROM transcript),
-                     ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 VALUES (?1, ?2, ?12, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT (channel, id) DO UPDATE SET
                      position = excluded.position,
                      seq = excluded.seq,
@@ -1305,7 +1400,14 @@ impl Database {
                  WHERE position IS NULL"
             }
         };
-        self.conn
+        // Only a row that was placed takes the position, and a duplicate
+        // changes nothing.
+        let position = match placement {
+            Placement::Applied(_) => Some(to_i64(self.peek_position()?)?),
+            Placement::Unsent => None,
+        };
+        let changed = self
+            .conn
             .prepare_cached(sql)
             .and_then(|mut stmt| {
                 stmt.execute(params![
@@ -1320,46 +1422,122 @@ impl Database {
                     entry.content,
                     entry.replaces,
                     entry.in_reply_to,
+                    position,
+                ])
+            })
+            .map_err(store)?;
+        if changed > 0 && position.is_some() {
+            self.take_position()?;
+        }
+        Ok(())
+    }
+
+    /// The position the next entry placed in any conversation will take.
+    fn peek_position(&self) -> Result<u64> {
+        self.conn
+            .prepare_cached("SELECT next FROM positions WHERE id = 0")
+            .and_then(|mut stmt| stmt.query_row([], |r| to_u64(r.get(0)?)))
+            .map_err(store)
+    }
+
+    /// Take the next position. No entry is given it again, even after its
+    /// conversation's history is deleted, so a read marker past it stays
+    /// past everything that came before it.
+    pub(crate) fn take_position(&self) -> Result<u64> {
+        self.conn
+            .prepare_cached("UPDATE positions SET next = next + 1 WHERE id = 0 RETURNING next - 1")
+            .and_then(|mut stmt| stmt.query_row([], |r| to_u64(r.get(0)?)))
+            .map_err(store)
+    }
+
+    /// Place a notice in `channel`'s conversation, after everything placed
+    /// so far.
+    pub(crate) fn log_notice(&self, channel: &[u8], notice: &NoticeRow, at_ms: u64) -> Result<()> {
+        let position = to_i64(self.take_position()?)?;
+        let at_ms = to_i64(at_ms)?;
+        self.conn
+            .prepare_cached(
+                "INSERT INTO notices
+                     (channel, position, at_ms, kind, who, who_uri, by, by_uri, name, raced)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )
+            .and_then(|mut stmt| {
+                stmt.execute(params![
+                    channel,
+                    position,
+                    at_ms,
+                    notice.kind,
+                    notice.who.as_ref().map(|p| &p.0),
+                    notice.who.as_ref().map(|p| &p.1),
+                    notice.by.as_ref().map(|p| &p.0),
+                    notice.by.as_ref().map(|p| &p.1),
+                    notice.name,
+                    notice.raced,
                 ])
             })
             .map(drop)
             .map_err(store)
     }
 
-    /// Up to `limit` messages on `channel`, oldest first: the latest ones,
-    /// this client's unplaced messages last, or with `before`, the placed
-    /// ones just before that position.
+    /// Up to `limit` entries on `channel`, messages and notices together,
+    /// oldest first: the latest ones, this client's unplaced messages last,
+    /// or with `before`, the placed ones just before that position.
     pub(crate) fn history(
         &self,
         channel: &[u8],
         before: Option<u64>,
         limit: u32,
-    ) -> Result<Vec<LogRow>> {
-        const COLUMNS: &str = "id, position, seq, accepted_ms, stored_ms, mine, sender,
-            sender_uri, content";
-        let row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<LogRow> {
+    ) -> Result<Vec<HistoryRow>> {
+        // One list from both tables, so a page holds the latest entries of
+        // either kind. Columns past the 11th are a notice's.
+        const ENTRIES: &str = "
+            SELECT 0 AS notice, rowid AS row, id, position, seq, accepted_ms,
+                stored_ms AS at_ms, mine, sender, sender_uri, content,
+                NULL AS kind, NULL AS who, NULL AS who_uri, NULL AS by, NULL AS by_uri,
+                NULL AS name, NULL AS raced
+            FROM transcript WHERE channel = ?1
+            UNION ALL
+            SELECT 1, rowid, NULL, position, NULL, NULL, at_ms, NULL, NULL, NULL, NULL,
+                kind, who, who_uri, by, by_uri, name, raced
+            FROM notices WHERE channel = ?1";
+        let row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<HistoryRow> {
             let opt = |i| -> rusqlite::Result<Option<u64>> {
                 r.get::<_, Option<i64>>(i)?.map(to_u64).transpose()
             };
-            Ok(LogRow {
-                id: r.get(0)?,
-                position: opt(1)?,
-                seq: opt(2)?,
-                accepted_ms: opt(3)?,
-                stored_ms: to_u64(r.get(4)?)?,
-                mine: r.get(5)?,
-                sender: r.get(6)?,
-                sender_uri: r.get(7)?,
-                content: r.get(8)?,
-            })
+            let at_ms = to_u64(r.get(6)?)?;
+            if r.get::<_, bool>(0)? {
+                let pair = |name: Option<String>, uri: Option<String>| name.zip(uri);
+                return Ok(HistoryRow::Notice {
+                    position: to_u64(r.get(3)?)?,
+                    at_ms,
+                    notice: NoticeRow {
+                        kind: r.get(11)?,
+                        who: pair(r.get(12)?, r.get(13)?),
+                        by: pair(r.get(14)?, r.get(15)?),
+                        name: r.get(16)?,
+                        raced: r.get(17)?,
+                    },
+                });
+            }
+            Ok(HistoryRow::Message(LogRow {
+                id: r.get(2)?,
+                position: opt(3)?,
+                seq: opt(4)?,
+                accepted_ms: opt(5)?,
+                stored_ms: at_ms,
+                mine: r.get(7)?,
+                sender: r.get(8)?,
+                sender_uri: r.get(9)?,
+                content: r.get(10)?,
+            }))
         };
         let mut rows = match before {
             None => {
                 let mut stmt = self
                     .conn
                     .prepare_cached(&format!(
-                        "SELECT {COLUMNS} FROM transcript WHERE channel = ?1
-                         ORDER BY position IS NULL DESC, position DESC, rowid DESC
+                        "SELECT * FROM ({ENTRIES})
+                         ORDER BY position IS NULL DESC, position DESC, row DESC
                          LIMIT ?2"
                     ))
                     .map_err(store)?;
@@ -1373,7 +1551,7 @@ impl Database {
                 let mut stmt = self
                     .conn
                     .prepare_cached(&format!(
-                        "SELECT {COLUMNS} FROM transcript WHERE channel = ?1 AND position < ?2
+                        "SELECT * FROM ({ENTRIES}) WHERE position < ?2
                          ORDER BY position DESC LIMIT ?3"
                     ))
                     .map_err(store)?;
@@ -1385,6 +1563,273 @@ impl Database {
         rows.reverse();
         Ok(rows)
     }
+
+    /// How many messages and notices `channel`'s history holds, and roughly
+    /// how many bytes: the stored values, not SQLite's pages around them.
+    pub(crate) fn history_size(&self, channel: &[u8]) -> Result<(u64, u64, u64)> {
+        let size = |sql: &str| -> Result<(u64, u64)> {
+            self.conn
+                .prepare_cached(sql)
+                .and_then(|mut stmt| {
+                    stmt.query_row([channel], |r| Ok((to_u64(r.get(0)?)?, to_u64(r.get(1)?)?)))
+                })
+                .map_err(store)
+        };
+        let (messages, message_bytes) = size(
+            "SELECT count(*), coalesce(sum(length(id) + length(content) + length(sender)
+                 + length(sender_uri) + coalesce(length(replaces), 0)
+                 + coalesce(length(in_reply_to), 0)), 0)
+             FROM transcript WHERE channel = ?1",
+        )?;
+        let (notices, notice_bytes) = size(
+            "SELECT count(*), coalesce(sum(length(kind) + coalesce(length(who), 0)
+                 + coalesce(length(who_uri), 0) + coalesce(length(by), 0)
+                 + coalesce(length(by_uri), 0) + coalesce(length(name), 0)), 0)
+             FROM notices WHERE channel = ?1",
+        )?;
+        Ok((messages, notices, message_bytes + notice_bytes))
+    }
+
+    /// Delete `channel`'s messages and notices. The conversation stays.
+    pub(crate) fn delete_history(&self, channel: &[u8]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM transcript WHERE channel = ?1", [channel])
+            .and_then(|_| {
+                self.conn
+                    .execute("DELETE FROM notices WHERE channel = ?1", [channel])
+            })
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Delete everything kept about `channel`: the conversation, its history,
+    /// and what this client remembered about the group's members.
+    pub(crate) fn delete_conversation(&self, channel: &[u8]) -> Result<()> {
+        self.delete_history(channel)?;
+        for table in [
+            "conversations",
+            "join_requests",
+            "removed",
+            "approved",
+            "admitted",
+            "deferred",
+            "sent",
+            "pending_commit",
+            "leaving",
+        ] {
+            self.conn
+                .execute(
+                    &format!("DELETE FROM {table} WHERE channel = ?1"),
+                    [channel],
+                )
+                .map_err(store)?;
+        }
+        Ok(())
+    }
+
+    // ---- Conversations (#130) ----
+
+    /// Record that this client is a member of the conversation on
+    /// `channel`, with this name and these other members, adding it if it
+    /// is new.
+    pub(crate) fn set_member_of(
+        &self,
+        channel: &[u8],
+        name: Option<&str>,
+        members: &[String],
+        now_ms: u64,
+    ) -> Result<()> {
+        let members = serde_json::to_string(members).map_err(store)?;
+        let since = to_i64(self.peek_position()?)?;
+        let inserted = self
+            .conn
+            .prepare_cached(
+                "INSERT INTO conversations (channel, name, members, state, state_ms, since)
+                 VALUES (?1, ?2, ?3, 'member', ?4, ?5)
+                 ON CONFLICT (channel) DO UPDATE SET
+                     name = excluded.name,
+                     members = excluded.members,
+                     state_ms = CASE state WHEN 'member' THEN state_ms
+                         ELSE excluded.state_ms END,
+                     state = 'member',
+                     by = NULL,
+                     by_uri = NULL
+                 RETURNING since = ?5",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_row(
+                    params![channel, name, members, to_i64(now_ms).unwrap_or(0), since],
+                    |r| r.get::<_, bool>(0),
+                )
+            })
+            .map_err(store)?;
+        if inserted {
+            self.take_position()?;
+        }
+        Ok(())
+    }
+
+    /// Record a conversation's state other than membership: waiting to
+    /// join, being re-added, or left or removed (`by` whom, if known). Adds
+    /// the conversation if it is new; keeps its last name and members.
+    pub(crate) fn set_state(
+        &self,
+        channel: &[u8],
+        state: &str,
+        at_ms: u64,
+        by: Option<(&str, &str)>,
+    ) -> Result<()> {
+        let since = to_i64(self.peek_position()?)?;
+        let inserted = self
+            .conn
+            .prepare_cached(
+                "INSERT INTO conversations (channel, state, state_ms, by, by_uri, since)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (channel) DO UPDATE SET
+                     state = excluded.state,
+                     state_ms = excluded.state_ms,
+                     by = excluded.by,
+                     by_uri = excluded.by_uri
+                 RETURNING since = ?6",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_row(
+                    params![
+                        channel,
+                        state,
+                        to_i64(at_ms).unwrap_or(0),
+                        by.map(|b| b.0),
+                        by.map(|b| b.1),
+                        since
+                    ],
+                    |r| r.get::<_, bool>(0),
+                )
+            })
+            .map_err(store)?;
+        if inserted {
+            self.take_position()?;
+        }
+        Ok(())
+    }
+
+    /// Every conversation this client has a record of, in the order they
+    /// were first recorded.
+    pub(crate) fn conversations(&self) -> Result<Vec<ConversationRow>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT channel, name, members, state, state_ms, by, by_uri, read_to, since
+                 FROM conversations ORDER BY rowid",
+            )
+            .map_err(store)?;
+        let rows = stmt
+            .query_map([], |r| {
+                let opt = |i| -> rusqlite::Result<Option<u64>> {
+                    r.get::<_, Option<i64>>(i)?.map(to_u64).transpose()
+                };
+                let members: String = r.get(2)?;
+                Ok(ConversationRow {
+                    channel: r.get(0)?,
+                    name: r.get(1)?,
+                    members: serde_json::from_str(&members).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
+                    state: r.get(3)?,
+                    state_ms: to_u64(r.get(4)?)?,
+                    by: r.get::<_, Option<String>>(5)?.zip(r.get(6)?),
+                    read_to: opt(7)?,
+                    since: to_u64(r.get(8)?)?,
+                })
+            })
+            .map_err(store)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(store)
+    }
+
+    /// The state the conversation on `channel` is recorded in, if there is
+    /// a record of it.
+    pub(crate) fn state_of(&self, channel: &[u8]) -> Result<Option<String>> {
+        self.conn
+            .prepare_cached("SELECT state FROM conversations WHERE channel = ?1")
+            .and_then(|mut stmt| stmt.query_row([channel], |r| r.get(0)).optional())
+            .map_err(store)
+    }
+
+    /// Mark `channel` read up to and including `position`. A marker never
+    /// moves back. False if there is no such conversation.
+    pub(crate) fn mark_read(&self, channel: &[u8], position: u64) -> Result<bool> {
+        let position = i64::try_from(position).unwrap_or(i64::MAX);
+        self.conn
+            .prepare_cached(
+                "UPDATE conversations SET read_to = max(coalesce(read_to, 0), ?2)
+                 WHERE channel = ?1",
+            )
+            .and_then(|mut stmt| stmt.execute(params![channel, position]))
+            .map(|n| n > 0)
+            .map_err(store)
+    }
+
+    /// Messages from others on `channel` placed after `read_to`.
+    pub(crate) fn unread(&self, channel: &[u8], read_to: Option<u64>) -> Result<u64> {
+        let read_to = read_to.map_or(0, |p| i64::try_from(p).unwrap_or(i64::MAX));
+        self.conn
+            .prepare_cached(
+                "SELECT count(*) FROM transcript
+                 WHERE channel = ?1 AND mine = 0 AND position > ?2",
+            )
+            .and_then(|mut stmt| stmt.query_row(params![channel, read_to], |r| to_u64(r.get(0)?)))
+            .map_err(store)
+    }
+
+    /// Requests to join `channel` that nobody here has accepted or declined.
+    pub(crate) fn request_count(&self, channel: &[u8]) -> Result<u64> {
+        self.conn
+            .prepare_cached(
+                "SELECT count(*) FROM join_requests WHERE channel = ?1 AND declined = 0",
+            )
+            .and_then(|mut stmt| stmt.query_row([channel], |r| to_u64(r.get(0)?)))
+            .map_err(store)
+    }
+}
+
+/// A conversation as recorded.
+pub(crate) struct ConversationRow {
+    pub(crate) channel: Vec<u8>,
+    pub(crate) name: Option<String>,
+    pub(crate) members: Vec<String>,
+    pub(crate) state: String,
+    pub(crate) state_ms: u64,
+    /// Who removed this client, name and URI, if it was removed by someone
+    /// known.
+    pub(crate) by: Option<(String, String)>,
+    pub(crate) read_to: Option<u64>,
+    pub(crate) since: u64,
+}
+
+/// A notice as stored: its kind, whom it is about and who did it (name and
+/// URI each), and for a rename, the new name and whether it beat this
+/// client's own.
+pub(crate) struct NoticeRow {
+    pub(crate) kind: String,
+    pub(crate) who: Option<(String, String)>,
+    pub(crate) by: Option<(String, String)>,
+    pub(crate) name: Option<String>,
+    pub(crate) raced: bool,
+}
+
+/// An entry read back from a conversation's history.
+pub(crate) enum HistoryRow {
+    /// A message.
+    Message(LogRow),
+    /// A notice, and where and when it was placed.
+    Notice {
+        position: u64,
+        at_ms: u64,
+        notice: NoticeRow,
+    },
 }
 
 /// A message as written to the transcript.
@@ -1662,5 +2107,62 @@ mod tests {
         assert!(db.removal_of(&channel, &[0xf0], "eve").unwrap().is_some());
         assert!(db.is_approved(&channel, &[0xf1]).unwrap());
         assert!(db.was_admitted(&channel, &[0xf2]).unwrap());
+    }
+
+    /// A store from before #130 recorded no conversations. It opens with
+    /// one for each group it is in, each channel it is waiting to join or be
+    /// re-added to, and each transcript left behind by a group it left or
+    /// was removed from. What was there is taken as read, and positions go
+    /// on from the last one.
+    #[test]
+    fn a_store_from_before_conversations_lists_every_one_it_knew() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        SqliteStorageProvider::<JsonCodec, &mut Connection>::new(&mut conn)
+            .run_migrations()
+            .unwrap();
+        let tx = conn.transaction().unwrap();
+        for migration in &MIGRATIONS[..8] {
+            tx.execute_batch(migration).unwrap();
+        }
+        tx.pragma_update(None, "user_version", 8).unwrap();
+        tx.execute_batch(
+            "INSERT INTO client (id, identity, signature_public_key) VALUES (0, 'me', x'01');
+             INSERT INTO groups (channel) VALUES (x'aa');
+             INSERT INTO follows (address, next_seq, offer_to, offer, rejoin)
+                 VALUES (x'b1', 0, x'bb', x'00', 0), (x'c1', 0, x'cc', x'00', 1);
+             INSERT INTO transcript
+                 (channel, id, position, stored_ms, mine, sender, sender_uri, content)
+             VALUES (x'aa', x'01', 1, 10, 0, 'bob', 'u', x''),
+                    (x'dd', x'02', 2, 20, 0, 'bob', 'u', x''),
+                    (x'dd', x'03', 3, 30, 1, 'me', 'u', x''),
+                    (x'dd', x'04', 4, 40, 0, 'chen', 'u', x''),
+                    (x'dd', x'05', 5, 50, 0, 'bob', 'u', x'');",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let db = Database::init(conn, None).unwrap();
+        let listed: Vec<_> = db
+            .conversations()
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.channel, c.state, c.members, c.state_ms, c.read_to))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (vec![0xaa], "member".to_owned(), vec![], 0, Some(1)),
+                (vec![0xbb], "waiting".to_owned(), vec![], 0, None),
+                (vec![0xcc], "rejoining".to_owned(), vec![], 0, None),
+                (
+                    vec![0xdd],
+                    "removed".to_owned(),
+                    vec!["bob".to_owned(), "chen".to_owned()],
+                    50,
+                    Some(5)
+                ),
+            ]
+        );
+        assert_eq!(db.take_position().unwrap(), 6);
     }
 }

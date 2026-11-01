@@ -8,11 +8,14 @@
 // UniFFI generates bindings for; borrowing here would not compile.
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::{Effect, FrameKind, Member};
+use crate::{
+    ConversationState, Departure, Effect, FrameKind, HistorySize, Member, MemberChange, NoticeEntry,
+};
 use std::sync::{Arc, Mutex};
 
 /// Flattened error: the core error type holds openmls and codec errors that
-/// have no meaning across the FFI boundary.
+/// have no meaning across the FFI boundary. Failures the app acts on have
+/// their own variants.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum ClientError {
     /// Something went wrong; `message` carries the underlying description.
@@ -21,12 +24,23 @@ pub enum ClientError {
         /// Human-readable description of the failure.
         message: String,
     },
+    /// No conversation on that channel.
+    #[error("no such conversation")]
+    NoConversation,
+    /// The conversation can only be deleted once this client has left it or
+    /// been removed from it.
+    #[error("still in that conversation: leave it before deleting it")]
+    StillInConversation,
 }
 
 impl From<crate::Error> for ClientError {
     fn from(e: crate::Error) -> Self {
-        Self::Failed {
-            message: e.to_string(),
+        match e {
+            crate::Error::NoConversation => Self::NoConversation,
+            crate::Error::StillInConversation => Self::StillInConversation,
+            e => Self::Failed {
+                message: e.to_string(),
+            },
         }
     }
 }
@@ -127,10 +141,12 @@ pub enum ClientEffect {
         channel: Vec<u8>,
     },
     /// This client is no longer in the group: removed, or its leave was
-    /// committed.
+    /// committed. The conversation stays listed, read-only.
     Removed {
         /// The group.
         channel: Vec<u8>,
+        /// Whether it left or was removed, and by whom.
+        departure: Departure,
     },
     /// This client was stranded and has asked to be added back.
     Rejoining {
@@ -147,6 +163,16 @@ pub enum ClientEffect {
         /// The group.
         channel: Vec<u8>,
     },
+    /// Members were let in or taken out, each change naming who made it.
+    /// Comes after the `Advanced`, `Admitted` or `Superseded` for the same
+    /// commit, and before any `Renamed`. Each change is also a notice in
+    /// [`Client::history`].
+    Membership {
+        /// The group.
+        channel: Vec<u8>,
+        /// Removals, then additions.
+        changes: Vec<MemberChange>,
+    },
     /// The conversation was renamed, or its name cleared. Comes after the
     /// `Advanced` or `Superseded` for the same commit. Never sent for a
     /// rename that lost its race, nor to a joiner for the name it joined
@@ -160,6 +186,8 @@ pub enum ClientEffect {
         by_uri: String,
         /// The new name, or none if it was cleared.
         name: Option<String>,
+        /// Whether it beat this client's own rename, made at the same time.
+        beat_mine: bool,
     },
     /// Caught up on `address`; live from here.
     Live {
@@ -196,15 +224,17 @@ impl From<Effect> for ClientEffect {
             Effect::Joined { channel } => Self::Joined { channel },
             Effect::Admitted { channel } => Self::Admitted { channel },
             Effect::Superseded { channel } => Self::Superseded { channel },
-            Effect::Removed { channel } => Self::Removed { channel },
+            Effect::Removed { channel, departure } => Self::Removed { channel, departure },
             Effect::Rejoining { channel } => Self::Rejoining { channel },
             Effect::JoinRequested { channel } => Self::JoinRequested { channel },
             Effect::Advanced { channel } => Self::Advanced { channel },
+            Effect::Membership { channel, changes } => Self::Membership { channel, changes },
             Effect::Renamed { channel, by } => Self::Renamed {
                 channel,
                 by: by.by,
                 by_uri: by.by_uri,
                 name: by.name,
+                beat_mine: by.beat_mine,
             },
             Effect::Live { address } => Self::Live { address },
             Effect::RelayReset { address } => Self::RelayReset { address },
@@ -492,10 +522,10 @@ impl Client {
             .collect())
     }
 
-    /// The stored transcript of `channel`, oldest first: up to `limit` of
-    /// the latest messages, or with `before`, of those just before that
-    /// position. Page back by passing the smallest position you have, or
-    /// `u64::MAX` if nothing you have has one yet.
+    /// The stored history of `channel`, messages and notices together,
+    /// oldest first: up to `limit` of the latest entries, or with `before`,
+    /// of those just before that position. Page back by passing the smallest
+    /// position you have, or `u64::MAX` if nothing you have has one yet.
     ///
     /// # Errors
     /// If the store cannot be read.
@@ -504,25 +534,78 @@ impl Client {
         channel: Vec<u8>,
         before: Option<u64>,
         limit: u32,
-    ) -> Result<Vec<TranscriptMessage>> {
+    ) -> Result<Vec<HistoryItem>> {
         Ok(self
             .lock()
             .history(&channel, before, limit)?
             .into_iter()
-            .map(|e| TranscriptMessage {
-                text: e.text(),
-                id: e.id.to_vec(),
-                position: e.position,
-                seq: e.seq,
-                accepted_ms: e.accepted_ms,
-                stored_ms: e.stored_ms,
-                mine: e.mine,
-                sender: e.sender,
-                sender_uri: e.sender_uri,
-                replaces: e.content.replaces.map(|id| id.to_vec()),
-                in_reply_to: e.content.in_reply_to.map(|id| id.to_vec()),
+            .map(HistoryItem::from)
+            .collect())
+    }
+
+    /// Every conversation this client is in, has asked to join, or has left
+    /// or been removed from, most recently active first, with what a row in
+    /// the list shows.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn conversations(&self) -> Result<Vec<ConversationSummary>> {
+        Ok(self
+            .lock()
+            .conversations()?
+            .into_iter()
+            .map(|c| ConversationSummary {
+                channel: c.channel,
+                name: c.name,
+                members: c.members,
+                state: c.state,
+                last: c.last.map(HistoryItem::from),
+                unread: c.unread,
+                read_up_to: c.read_up_to,
+                join_requests: c.join_requests,
             })
             .collect())
+    }
+
+    /// Mark the conversation on `channel` read up to and including
+    /// `position`. A marker never moves back.
+    ///
+    /// # Errors
+    /// [`ClientError::NoConversation`] if there is no such conversation, or
+    /// if the store cannot be written.
+    pub fn mark_read(&self, channel: Vec<u8>, position: u64) -> Result<()> {
+        Ok(self.lock().mark_read(&channel, position)?)
+    }
+
+    /// How many messages and notices this client keeps for the conversation
+    /// on `channel`, and roughly how many bytes they take.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn history_size(&self, channel: Vec<u8>) -> Result<HistorySize> {
+        Ok(self.lock().history_size(&channel)?)
+    }
+
+    /// Delete the conversation's messages and notices on this Mac. The
+    /// conversation, and this client's place in it, stay. Deleted messages
+    /// cannot be fetched again.
+    ///
+    /// # Errors
+    /// [`ClientError::NoConversation`] if there is no such conversation, or
+    /// if the store cannot be written.
+    pub fn delete_history(&self, channel: Vec<u8>) -> Result<()> {
+        Ok(self.lock().delete_history(&channel)?)
+    }
+
+    /// Delete the conversation entirely: its record and its history. Only
+    /// once this client has left it or been removed from it.
+    ///
+    /// # Errors
+    /// [`ClientError::StillInConversation`] while this client is a member or
+    /// waiting to become one, [`ClientError::NoConversation`] if there is no
+    /// such conversation, or if the store cannot be written.
+    pub fn delete_conversation(&self, channel: Vec<u8>) -> Result<()> {
+        Ok(self.lock().delete_conversation(&channel)?)
     }
 
     /// This client's display name.
@@ -692,6 +775,74 @@ impl std::fmt::Debug for TranscriptMessage {
             .field("mine", &self.mine)
             .finish_non_exhaustive()
     }
+}
+
+impl From<crate::TranscriptEntry> for TranscriptMessage {
+    fn from(e: crate::TranscriptEntry) -> Self {
+        Self {
+            text: e.text(),
+            id: e.id.to_vec(),
+            position: e.position,
+            seq: e.seq,
+            accepted_ms: e.accepted_ms,
+            stored_ms: e.stored_ms,
+            mine: e.mine,
+            sender: e.sender,
+            sender_uri: e.sender_uri,
+            replaces: e.content.replaces.map(|id| id.to_vec()),
+            in_reply_to: e.content.in_reply_to.map(|id| id.to_vec()),
+        }
+    }
+}
+
+/// An entry in a conversation's history: a message or a notice. Notices are
+/// never messages; they sit between messages, in order.
+#[derive(Debug, uniffi::Enum)]
+pub enum HistoryItem {
+    /// Something said.
+    Message {
+        /// The message.
+        message: TranscriptMessage,
+    },
+    /// Something that happened: who joined, left, was removed or renamed
+    /// the conversation, or what this client missed.
+    Notice {
+        /// The notice.
+        notice: NoticeEntry,
+    },
+}
+
+impl From<crate::HistoryEntry> for HistoryItem {
+    fn from(e: crate::HistoryEntry) -> Self {
+        match e {
+            crate::HistoryEntry::Message(message) => Self::Message {
+                message: message.into(),
+            },
+            crate::HistoryEntry::Notice(notice) => Self::Notice { notice },
+        }
+    }
+}
+
+/// A conversation, with what a row in the list shows.
+#[derive(Debug, uniffi::Record)]
+pub struct ConversationSummary {
+    /// Its channel: the join code, as bytes.
+    pub channel: Vec<u8>,
+    /// Its name, if a member gave it one; the last one seen once this client
+    /// is no longer a member. Show `members` when there is none.
+    pub name: Option<String>,
+    /// The other members' names, as last seen while a member.
+    pub members: Vec<String>,
+    /// Where this client stands in it.
+    pub state: ConversationState,
+    /// The latest entry, for the row's preview, sender and time.
+    pub last: Option<HistoryItem>,
+    /// Messages from others after `read_up_to`.
+    pub unread: u64,
+    /// Read up to and including this position: where unread starts.
+    pub read_up_to: Option<u64>,
+    /// Requests to join waiting for an answer.
+    pub join_requests: u64,
 }
 
 /// A delivery split into its parts.

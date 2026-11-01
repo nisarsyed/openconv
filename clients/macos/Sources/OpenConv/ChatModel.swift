@@ -250,7 +250,7 @@ final class ChatModel: ObservableObject {
             // echo lands behind a commit, the core hands back a resend; the
             // text is unchanged, so this line stays as it is.
             print("[\(identity)] sent: \(text)")
-            lines.append(Line(author: identity, text: text, mine: true))
+            lines.append(Line(author: Self.shown(identity), text: text, mine: true))
         } catch {
             fail(error)
         }
@@ -313,12 +313,12 @@ final class ChatModel: ObservableObject {
         case .message(let from, let text, let sender, _):
             guard from == channel else { return }
             print("[\(identity)] received: \(text)")
-            lines.append(Line(author: sender, text: text, mine: false))
+            lines.append(Line(author: Self.shown(sender), text: text, mine: false))
 
         case .joined(let joined):
             guard channel == nil || joined == channel else { return }
             enterJoined(joined)
-            note("joined the group")
+            note("joined the group\(letInBy(joined))")
             sendAutoIfReady()
 
         case .admitted(let group):
@@ -337,11 +337,25 @@ final class ChatModel: ObservableObject {
             guard group == channel else { return }
             refresh()
 
-        case .renamed(let group, let by, _, let name):
+        case .membership(let group, let changes):
             guard group == channel else { return }
-            note(
-                name.map { "\(by) named the conversation \"\($0)\"" }
-                    ?? "\(by) cleared the conversation's name")
+            for change in changes {
+                note(Self.describe(change))
+            }
+
+        case .renamed(let group, let by, _, let name, let beatMine):
+            guard group == channel else { return }
+            let renamer = Self.shown(by)
+            let named = name.map { "\"\(Self.shown($0))\"" }
+            if beatMine {
+                note(
+                    "\(renamer) renamed it to \(named ?? "nothing") at the same time as you. "
+                        + "Theirs went through.")
+            } else {
+                note(
+                    named.map { "\(renamer) named the conversation \($0)" }
+                        ?? "\(renamer) cleared the conversation's name")
+            }
 
         case .joinRequested(let group):
             guard group == channel else { return }
@@ -350,19 +364,24 @@ final class ChatModel: ObservableObject {
                 accept(request)
             }
 
-        case .removed(let group):
+        case .removed(let group, let departure):
             guard group == channel else { return }
-            let wasLeaving = leaving
             status = .removed
             members = []
             leaving = false
-            note(wasLeaving ? "left the group" : "removed from the group")
+            switch departure {
+            case .left:
+                note("left the group")
+            case .removed(let by):
+                note("removed from the group\(by.map { " by \(Self.shown($0.name))" } ?? "")")
+            }
 
         case .rejoining(let group):
             guard group == channel else { return }
             status = .waitingForGroup
             caughtUp = false
             keepRequestFresh()
+            note("messages sent while you were away can't be shown")
             note("asked the group to add this client back")
 
         case .live(let address):
@@ -406,7 +425,7 @@ final class ChatModel: ObservableObject {
             write(try client.removeMember(channel: channel, index: member.index))
             // They can still ask to join again; a member has to accept them,
             // and their request is flagged as coming from someone removed.
-            note("removing \(member.name)")
+            note("removing \(Self.shown(member.name))")
         } catch {
             fail(error)
         }
@@ -426,7 +445,9 @@ final class ChatModel: ObservableObject {
             let before = Set(joinRequests.map(\.id))
             joinRequests = try client.joinRequests(channel: channel)
             for request in joinRequests where !before.contains(request.id) {
-                note("\(request.name) asked to join\(Self.describe(request.removedBefore))")
+                note(
+                    "\(Self.shown(request.name)) asked to join\(Self.describe(request.removedBefore))"
+                )
             }
         } catch {
             fail(error)
@@ -443,12 +464,12 @@ final class ChatModel: ObservableObject {
                 for message in requests {
                     write(message)
                 }
-                note("letting \(request.name) in")
+                note("letting \(Self.shown(request.name)) in")
             case .queued:
-                note("will let \(request.name) in once caught up")
+                note("will let \(Self.shown(request.name)) in once caught up")
             case .whenTheyNextAsk:
                 note(
-                    "\(request.name)'s request has run out; they will be let in when their app next asks"
+                    "\(Self.shown(request.name))'s request has run out; they will be let in when their app next asks"
                 )
             }
             refreshRequests()
@@ -462,7 +483,7 @@ final class ChatModel: ObservableObject {
         do {
             guard let channel else { throw ChatError.noChannel }
             try client.decline(channel: channel, id: request.id)
-            note("declined \(request.name)")
+            note("declined \(Self.shown(request.name))")
             refreshRequests()
         } catch {
             fail(error)
@@ -475,9 +496,49 @@ final class ChatModel: ObservableObject {
         let when = Date(timeIntervalSince1970: TimeInterval(past.at))
             .formatted(date: .abbreviated, time: .shortened)
         let left = past.by == past.name
+        let name = shown(past.name)
+        let by = shown(past.by)
         return past.sameIdentity
-            ? " (they \(left ? "left" : "were removed by \(past.by)") on \(when))"
-            : " (someone else named \(past.name) \(left ? "left" : "was removed by \(past.by)") on \(when))"
+            ? " (they \(left ? "left" : "were removed by \(by)") on \(when))"
+            : " (someone else named \(name) \(left ? "left" : "was removed by \(by)") on \(when))"
+    }
+
+    /// A change to the members, as the design words its notice: "Chen joined
+    /// · let in by Bilal", "Bilal removed Chen", "Farah left".
+    static func describe(_ change: MemberChange) -> String {
+        switch change {
+        case .joined(let who, let by):
+            return "\(person(who)) joined" + (by.map { " · let in by \(person($0))" } ?? "")
+        case .removed(let who, let by):
+            guard let by else { return "\(person(who)) was removed" }
+            return "\(person(by, capitalized: true)) removed \(person(who))"
+        case .left(let who):
+            return "\(person(who, capitalized: true)) left"
+        }
+    }
+
+    /// Someone a change names: "you" for this client, otherwise their name,
+    /// made safe to show.
+    static func person(_ who: Participant, capitalized: Bool = false) -> String {
+        who.me ? (capitalized ? "You" : "you") : shown(who.name)
+    }
+
+    /// A name chosen by someone else, with control and bidirectional
+    /// characters neutralised by the core. Every name shown goes through it.
+    static func shown(_ name: String) -> String {
+        displayName(name: name)
+    }
+
+    /// " · let in by …" for the member who let this client into `joined`, as
+    /// its stored notice says, or nothing if it does not say.
+    private func letInBy(_ joined: Data) -> String {
+        let latest = (try? client.history(channel: joined, before: nil, limit: 8)) ?? []
+        for case .notice(let entry) in latest.reversed() {
+            if case .youJoined(let by?) = entry.notice {
+                return " · let in by \(Self.person(by))"
+            }
+        }
+        return ""
     }
 
     /// The headless `leave` and `remove` launch arguments, once caught up.
