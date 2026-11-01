@@ -486,10 +486,14 @@ async fn catch_up_and_live_traffic_meet_without_a_gap() {
 
 // ---- Catch-up with real members (#105) ----
 
-use openconv_core::{Effect, Vault};
+use openconv_core::{Acceptance, Effect, Vault};
 
 /// A member and its connection, applying what the relay sends the way the
 /// app does: every effect that says to send something is sent.
+// The flags are independent observations and switches (removed, stranded,
+// expecting stranding, accepting joins), not states of one thing, so an enum
+// would not model them.
+#[allow(clippy::struct_excessive_bools)]
 struct Peer {
     member: Member,
     ws: Ws,
@@ -503,6 +507,10 @@ struct Peer {
     expect_stranding: bool,
     /// Every request this member's effects sent, so a test can replay one.
     sent: Vec<Vec<u8>>,
+    /// Accept every join request as it arrives, as a member clicking Accept
+    /// would (#125). On by default so tests about other things can form
+    /// groups; tests about approval turn it off.
+    accepts: bool,
 }
 
 impl Peer {
@@ -515,6 +523,7 @@ impl Peer {
             stranded: false,
             expect_stranding: false,
             sent: Vec::new(),
+            accepts: true,
         };
         for request in peer.member.connect().unwrap() {
             peer.sent.push(request.clone());
@@ -545,6 +554,18 @@ impl Peer {
                         self.stranded = true;
                     }
                     Effect::Removed => self.removed = true,
+                    Effect::JoinRequested if self.accepts => {
+                        for request in self.member.join_requests().unwrap() {
+                            if let Acceptance::Sending(out) =
+                                self.member.accept(&request.id).unwrap()
+                            {
+                                for send_it in out {
+                                    self.sent.push(send_it.clone());
+                                    send(&mut self.ws, send_it).await;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1065,4 +1086,55 @@ async fn a_removed_members_old_request_cannot_put_them_back() {
     settle(&mut [&mut alice, &mut bob]).await;
     assert_eq!(alice.names(), ["alice", "bob"], "the replay put carol back");
     assert_eq!(bob.names(), alice.names());
+}
+
+/// Removal holds once joining needs approval (#125): a removed member who asks
+/// again is shown to the others, flagged, and stays out unless a member
+/// accepts them.
+#[tokio::test]
+async fn a_removed_member_stays_out_unless_accepted() {
+    let url = spawn_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut alice, mut bob, _, channel) = Box::pin(three(&url)).await;
+    // A persisted carol, so she can come back as the same identity.
+    let mut carol = persisted(dir.path(), "carol2");
+    carol.offer(&channel).unwrap();
+    let mut carol = Peer::online(carol, &url).await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    alice.remove("carol2").await;
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert!(carol.removed);
+
+    alice.accepts = false;
+    bob.accepts = false;
+    carol.member.offer(&channel).unwrap();
+    for request in carol.member.connect().unwrap() {
+        send(&mut carol.ws, request).await;
+    }
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert!(
+        !alice.names().contains(&"carol2".to_owned()),
+        "let back in without approval"
+    );
+    let waiting = alice.member.join_requests().unwrap();
+    let past = waiting
+        .iter()
+        .find(|r| r.name == "carol2")
+        .and_then(|r| r.removed_before.clone())
+        .expect("carol's request was not flagged");
+    assert!(past.same_identity);
+    assert_eq!(past.by, "alice");
+
+    // And approval does let her in.
+    let Acceptance::Sending(out) = alice.member.accept(&waiting[0].id).unwrap() else {
+        panic!("accepting a current request sent nothing");
+    };
+    for send_it in out {
+        send(&mut alice.ws, send_it).await;
+    }
+    settle(&mut [&mut alice, &mut bob, &mut carol]).await;
+    assert!(
+        alice.names().contains(&"carol2".to_owned()),
+        "an accepted request did not get in"
+    );
 }

@@ -15,6 +15,8 @@ LOG=$(mktemp -d)
 export OPENCONV_DATA_DIR="$LOG/data"
 # The relay stores frames now; a fresh store per run, for the same reason.
 export OPENCONV_RELAY_DB="$LOG/relay.db"
+# Joins need a member's approval (#125); headless clients accept every request.
+export OPENCONV_AUTO_ACCEPT=1
 MESSAGE="hello from bob"
 # Carol joins last. Bob was already in the group when she was admitted, so he
 # only decrypts her message if he applied the commit that her join produced.

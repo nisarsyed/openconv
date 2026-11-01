@@ -173,6 +173,50 @@ struct PendingCommit {
     admits: Option<store::Admits>,
 }
 
+/// A request to join, waiting for a member to accept or decline it (#125).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinRequest {
+    /// Its signature key: what [`Member::accept`] and [`Member::decline`]
+    /// take. A joiner's renewed requests share it.
+    pub id: Vec<u8>,
+    /// The name it gives. Self-declared until identity exists (milestone 3).
+    pub name: String,
+    /// When this client first saw it, in seconds since the Unix epoch.
+    pub seen_at: u64,
+    /// Whether the latest request has run out. Accepting still works: they
+    /// are let in when their next request arrives.
+    pub expired: bool,
+    /// If this identity, or someone with this name, was removed or left
+    /// before: worth knowing before letting them back in.
+    pub removed_before: Option<PastRemoval>,
+}
+
+/// What accepting a request did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Acceptance {
+    /// The add is staged: send these.
+    Sending(Vec<Vec<u8>>),
+    /// The add will be made as soon as this client can: it is still
+    /// catching up, or another change is in flight.
+    Queued,
+    /// Their request has run out. They are let in automatically when their
+    /// next one arrives, which their app makes when it is next open.
+    WhenTheyNextAsk,
+}
+
+/// A removal this client saw, as shown beside a request to join.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastRemoval {
+    /// True if it was this very identity; false if only the name matches.
+    pub same_identity: bool,
+    /// Who was removed.
+    pub name: String,
+    /// Who removed them: their own name if they left.
+    pub by: String,
+    /// When, in seconds since the Unix epoch.
+    pub at: u64,
+}
+
 /// A member of the group, as the app lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roster {
@@ -189,16 +233,19 @@ pub struct Roster {
 /// trip through the relay.
 const SENT_HISTORY: usize = 32;
 
-/// How long a join request's `KeyPackage` is good for (#123). The relay keeps
-/// every frame and anyone can publish one again, so a request still valid
-/// can be replayed to put back someone who has left or been removed. An hour
-/// keeps that window short; a joiner left waiting makes a new request
-/// before the old one runs out.
-const OFFER_LIFETIME: u64 = 60 * 60;
+/// How long a join request's `KeyPackage` is good for. The relay keeps every
+/// frame and anyone can publish one again, so a request still valid can be
+/// replayed. That used to let someone back in on its own, which is why #123
+/// first set an hour. Since #125 a request only ever reaches a member's list,
+/// and members refuse one they have seen admitted, so a replay gets nobody
+/// in without a person accepting it. A week, then: long enough that someone
+/// who asks and closes their laptop is still answered when a member returns.
+/// A joiner left waiting renews it before it runs out.
+const OFFER_LIFETIME: u64 = 7 * 24 * 60 * 60;
 
 /// Make a new request once the current one has less than this left, so
 /// there is always one a member can still act on.
-const OFFER_RENEW_BEFORE: u64 = 10 * 60;
+const OFFER_RENEW_BEFORE: u64 = 24 * 60 * 60;
 
 /// Seconds since the Unix epoch, the clock `KeyPackage` lifetimes use.
 fn now_secs() -> u64 {
@@ -270,6 +317,9 @@ pub enum Effect {
     /// This client was stranded (see [`Effect::Unavailable`]) and has asked
     /// the group to add it back, with a request only it can make.
     Rejoining,
+    /// Someone asked to join, or a request changed. See
+    /// [`Member::join_requests`].
+    JoinRequested,
     /// Group state moved on, membership possibly with it.
     Advanced,
     /// Caught up on `address`; frames from here on are live.
@@ -663,6 +713,128 @@ impl Member {
         self.leaving.is_some()
     }
 
+    /// Requests to join waiting for an answer, oldest first, each with any
+    /// earlier removal of the same identity or name.
+    ///
+    /// # Errors
+    /// If the store cannot be read.
+    pub fn join_requests(&self) -> Result<Vec<JoinRequest>> {
+        self.db
+            .pending_requests()?
+            .into_iter()
+            .map(|(id, name, seen_at)| {
+                let expired = self
+                    .db
+                    .request_of(&id)?
+                    .is_none_or(|kp| self.validate_key_package(&kp).is_err());
+                let removed_before =
+                    self.db
+                        .removal_of(&id, &name)?
+                        .map(|(same_identity, name, by, at)| PastRemoval {
+                            same_identity,
+                            name,
+                            by,
+                            at,
+                        });
+                Ok(JoinRequest {
+                    id,
+                    name,
+                    seen_at,
+                    expired,
+                    removed_before,
+                })
+            })
+            .collect()
+    }
+
+    /// Let in whoever made the request `id`.
+    ///
+    /// Approves the person, not just this request: if it has run out, they
+    /// are let in when their next one arrives, without anyone accepting
+    /// again. The approval is used up when they are admitted, and cancelled
+    /// if they are removed, so a removed member always needs accepting anew.
+    ///
+    /// The add itself is staged and confirmed by the relay's order like any
+    /// other, so two members accepting at once is resolved as a race.
+    ///
+    /// # Errors
+    /// If `id` is not a pending request, or the add cannot be made.
+    pub fn accept(&mut self, id: &[u8]) -> Result<Acceptance> {
+        self.atomically(|m| {
+            let key_package =
+                m.db.take_request(id)?
+                    .ok_or(Error::Store("no such request to join".into()))?;
+            let kp = m.validate_key_package(&key_package);
+            let name = kp.as_ref().map_or_else(
+                |_| String::new(),
+                |kp| {
+                    String::from_utf8_lossy(kp.leaf_node().credential().serialized_content())
+                        .into_owned()
+                },
+            );
+            m.db.approve(id, &name, now_secs())?;
+            if kp.is_err() {
+                return Ok(Acceptance::WhenTheyNextAsk);
+            }
+            m.db.defer(&key_package, false)?;
+            let sending: Vec<Vec<u8>> = m
+                .answer_requests()?
+                .into_iter()
+                .filter_map(|e| match e {
+                    Effect::Send(request) => Some(request),
+                    _ => None,
+                })
+                .collect();
+            Ok(if sending.is_empty() {
+                Acceptance::Queued
+            } else {
+                Acceptance::Sending(sending)
+            })
+        })
+    }
+
+    /// Turn down the request `id`. Later requests from the same identity are
+    /// ignored too; a new identity gets around that, which only identity
+    /// (milestone 3) can stop.
+    ///
+    /// # Errors
+    /// If `id` is not a pending request.
+    pub fn decline(&mut self, id: &[u8]) -> Result<()> {
+        if self.db.decline_request(id)? {
+            Ok(())
+        } else {
+            Err(Error::Store("no such request to join".into()))
+        }
+    }
+
+    /// Note a request to join for a member to answer, unless it is from a
+    /// member, a replay, expired, or from an identity already declined.
+    fn note_request(&mut self, body: &[u8]) -> Result<Vec<Effect>> {
+        let Ok(kp) = self.validate_key_package(body) else {
+            return Ok(Vec::new()); // expired or malformed
+        };
+        if self.leaf_of(&kp).is_some() || self.was_admitted(&kp)? {
+            return Ok(Vec::new());
+        }
+        let leaf = kp.leaf_node();
+        let key = leaf.signature_key().as_slice().to_vec();
+        // Accepted before, perhaps when an earlier request had run out: let
+        // them in now, without asking again.
+        if self.db.is_approved(&key)? {
+            self.db.defer(body, false)?;
+            return self.answer_requests();
+        }
+        let name = String::from_utf8_lossy(leaf.credential().serialized_content()).into_owned();
+        let noted =
+            self.db
+                .note_request(leaf.signature_key().as_slice(), body, &name, now_secs())?;
+        Ok(if noted {
+            vec![Effect::JoinRequested]
+        } else {
+            Vec::new()
+        })
+    }
+
     /// Everyone in the group, this client included, by position.
     #[must_use]
     pub fn members(&self) -> Vec<Roster> {
@@ -763,6 +935,9 @@ impl Member {
             self.db.set_pending_commit(None)?;
             let provider = self.db.provider(&self.crypto);
             let group = self.group.as_mut().ok_or(Error::NoGroup)?;
+            if let Some(staged) = group.pending_commit() {
+                note_commit(&self.db, &self.crypto, group, staged)?;
+            }
             group.merge_pending_commit(&provider).map_err(mls)?;
             return Ok(match pending.admits {
                 Some((welcome, mailbox, until)) => {
@@ -835,12 +1010,7 @@ impl Member {
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
                 let removed = commit.self_removed();
-                for add in commit.add_proposals() {
-                    let kp = add.add_proposal().key_package();
-                    let reference = kp.hash_ref(provider.crypto()).map_err(mls)?;
-                    self.db
-                        .remember_admitted(reference.as_slice(), expiry(kp), now_secs())?;
-                }
+                note_commit(&self.db, &self.crypto, group, &commit)?;
                 group.merge_staged_commit(&provider, *commit).map_err(mls)?;
                 if removed {
                     Event::Removed
@@ -1189,8 +1359,12 @@ impl Member {
         let channel = self.channel();
         let on_channel = channel.as_deref() == Some(address);
         match kind {
-            FrameKind::KeyPackage | FrameKind::Rejoin if on_channel => {
-                self.db.defer(&body, kind == FrameKind::Rejoin)?;
+            // Join requests wait for a member to accept them (#125). Re-adds
+            // of stranded members do not: they are bound to a place already
+            // in the group and signed by its holder, so they let no one new in.
+            FrameKind::KeyPackage if on_channel => self.note_request(&body),
+            FrameKind::Rejoin if on_channel => {
+                self.db.defer(&body, true)?;
                 self.answer_requests()
             }
             FrameKind::Welcome if self.group.is_none() => {
@@ -1491,6 +1665,46 @@ impl Member {
     pub fn member_count(&self) -> usize {
         self.group.as_ref().map_or(0, |g| g.members().count())
     }
+}
+
+/// What a commit settles, recorded before it is merged, whoever made it:
+/// whom it admits (so a replay of their request is refused, and their
+/// request leaves the list), and whom it removes and by whom (so a later
+/// request from them can be flagged).
+fn note_commit(
+    db: &Database,
+    crypto: &RustCrypto,
+    group: &MlsGroup,
+    commit: &StagedCommit,
+) -> Result<()> {
+    let now = now_secs();
+    let name_at = |index: LeafNodeIndex| {
+        group.members().find(|m| m.index == index).map(|m| {
+            let name = String::from_utf8_lossy(m.credential.serialized_content()).into_owned();
+            (m.signature_key, name)
+        })
+    };
+    for add in commit.add_proposals() {
+        let kp = add.add_proposal().key_package();
+        let reference = kp.hash_ref(crypto).map_err(mls)?;
+        db.remember_admitted(reference.as_slice(), expiry(kp), now)?;
+        db.drop_request(kp.leaf_node().signature_key().as_slice())?;
+        db.unapprove(kp.leaf_node().signature_key().as_slice())?;
+    }
+    for remove in commit.remove_proposals() {
+        let Some((key, name)) = name_at(remove.remove_proposal().removed()) else {
+            continue;
+        };
+        let by = match remove.sender() {
+            Sender::Member(index) => {
+                name_at(*index).map_or_else(|| "a member".to_owned(), |(_, n)| n)
+            }
+            _ => "someone outside the group".to_owned(),
+        };
+        db.note_removed(&key, &name, &by, now)?;
+        db.unapprove(&key)?;
+    }
+    Ok(())
 }
 
 /// When `kp` stops being valid, in seconds since the Unix epoch.
@@ -2768,11 +2982,13 @@ mod tests {
                 .count()
         };
 
-        // Alice admits carol; bob applies the commit.
+        // Carol asks; alice accepts (#125); bob applies the commit.
         let effects = alice
             .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &request))
             .unwrap();
-        assert_eq!(sends(&effects), 1);
+        assert!(matches!(effects.as_slice(), [Effect::JoinRequested]));
+        let id = alice.join_requests().unwrap()[0].id.clone();
+        assert!(matches!(alice.accept(&id).unwrap(), Acceptance::Sending(s) if s.len() == 1));
         let add = alice.pending.as_ref().unwrap().commit.clone();
         let Event::Admitted { welcome, .. } = alice.receive(&add).unwrap() else {
             panic!("alice's add should have been admitted");
@@ -2793,13 +3009,14 @@ mod tests {
         bob.receive(&removal).unwrap();
         assert_eq!(alice.member_count(), 2);
 
-        // Her old request, replayed, puts her back with neither.
+        // Her old request, replayed, is not even shown as a request again.
         for (who, m) in [("alice", &mut alice), ("bob", &mut bob)] {
             let replay = delivery(&channel, 1, FrameKind::KeyPackage, &request);
-            assert_eq!(
-                sends(&m.deliver(&replay).unwrap()),
-                0,
-                "{who} answered a replayed request"
+            let effects = m.deliver(&replay).unwrap();
+            assert_eq!(sends(&effects), 0, "{who} answered a replayed request");
+            assert!(
+                m.join_requests().unwrap().is_empty(),
+                "{who} listed a replayed request"
             );
         }
     }
@@ -2835,6 +3052,268 @@ mod tests {
         assert_eq!(
             on_connect[2], renewed[1],
             "republished something other than the newest request"
+        );
+    }
+
+    /// Alice in a live group of her own, and a channel to deliver on.
+    fn live_host() -> (Member, Vec<u8>) {
+        let mut alice = Member::new("alice").unwrap();
+        alice.create_group().unwrap();
+        let channel = alice.channel().unwrap();
+        let live = openconv_wire::Inbound::Page {
+            address: Address::new(channel.clone()).unwrap(),
+            next: 0,
+            live: true,
+        };
+        alice.deliver(&live.encode()).unwrap();
+        (alice, channel)
+    }
+
+    /// A join request waits for a member to accept it (#125): nobody is let
+    /// in just for having the channel id.
+    #[test]
+    fn a_join_request_waits_for_a_member_to_accept_it() {
+        let (mut alice, channel) = live_host();
+        let mut carol = Member::new("carol").unwrap();
+        let request = carol.key_package().unwrap();
+
+        let effects = alice
+            .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &request))
+            .unwrap();
+        assert!(
+            matches!(effects.as_slice(), [Effect::JoinRequested]),
+            "got {effects:?}"
+        );
+        assert!(
+            alice.pending.is_none(),
+            "a request was answered without approval"
+        );
+        let waiting = alice.join_requests().unwrap();
+        assert_eq!(
+            waiting.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["carol"]
+        );
+
+        let sent = alice.accept(&waiting[0].id).unwrap();
+        assert!(
+            matches!(&sent, Acceptance::Sending(s) if s.len() == 1),
+            "accepting sent no commit"
+        );
+        let add = alice.pending.as_ref().unwrap().commit.clone();
+        let Event::Admitted { welcome, .. } = alice.receive(&add).unwrap() else {
+            panic!("the accepted add was not admitted");
+        };
+        carol.join(&welcome).unwrap();
+        assert_eq!(alice.member_count(), 2);
+        assert!(alice.join_requests().unwrap().is_empty());
+    }
+
+    /// A decline sticks to the identity: its renewed requests are ignored.
+    /// Renewals from an identity not declined collapse into one entry.
+    #[test]
+    fn a_declined_identity_stays_declined_and_renewals_collapse() {
+        let (mut alice, channel) = live_host();
+        let mut carol = Member::new("carol").unwrap();
+        let mut dave = Member::new("dave").unwrap();
+        let mut seq = 0;
+        let mut ask = |alice: &mut Member, who: &mut Member| {
+            let request = who.key_package().unwrap();
+            let effects = alice
+                .deliver(&delivery(&channel, seq, FrameKind::KeyPackage, &request))
+                .unwrap();
+            seq += 1;
+            effects
+        };
+
+        ask(&mut alice, &mut carol);
+        let id = alice.join_requests().unwrap()[0].id.clone();
+        alice.decline(&id).unwrap();
+        assert!(
+            ask(&mut alice, &mut carol).is_empty(),
+            "a declined identity's renewal was noted"
+        );
+
+        ask(&mut alice, &mut dave);
+        ask(&mut alice, &mut dave);
+        let names: Vec<String> = alice
+            .join_requests()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["dave"],
+            "renewals did not collapse, or the decline did not stick"
+        );
+    }
+
+    /// Removal is visible to every member, so a request from someone removed
+    /// is flagged: as that identity, or (since names are self-declared) as
+    /// only a matching name.
+    #[test]
+    fn a_request_from_someone_removed_is_flagged() {
+        let mut alice = Member::new("alice").unwrap();
+        let mut bob = Member::new("bob").unwrap();
+        let mut carol = Member::new("carol").unwrap();
+        alice.create_group().unwrap();
+        admit(&mut alice, &mut bob);
+        admit(&mut alice, &mut carol);
+        let channel = alice.channel().unwrap();
+        let carol_place = alice
+            .members()
+            .into_iter()
+            .find(|m| m.name == "carol")
+            .unwrap()
+            .index;
+        let removal = alice.remove_member(carol_place).unwrap();
+        alice.receive(&removal).unwrap();
+        alice.db.follow(&channel, 0, None).unwrap();
+        let live = openconv_wire::Inbound::Page {
+            address: Address::new(channel.clone()).unwrap(),
+            next: 0,
+            live: true,
+        };
+        alice.deliver(&live.encode()).unwrap();
+
+        let again = carol.key_package().unwrap();
+        alice
+            .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &again))
+            .unwrap();
+        let impostor = Member::new("carol").unwrap();
+        let other = impostor.key_package().unwrap();
+        alice
+            .deliver(&delivery(&channel, 1, FrameKind::KeyPackage, &other))
+            .unwrap();
+
+        let flags: Vec<(bool, String)> = alice
+            .join_requests()
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                let past = r
+                    .removed_before
+                    .expect("an unflagged request from a removed name");
+                (past.same_identity, past.by)
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            [(true, "alice".to_owned()), (false, "alice".to_owned())]
+        );
+    }
+
+    /// Approval is of the person: a request that ran out before anyone got to
+    /// it can still be accepted, and they are let in when their next one
+    /// arrives, without being listed or accepted again.
+    #[test]
+    fn a_late_approval_lets_them_in_when_they_next_ask() {
+        let (mut alice, channel) = live_host();
+        let mut carol = Member::new("carol").unwrap();
+        carol.offer_lifetime = 1;
+        let first = carol.key_package().unwrap();
+        alice
+            .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &first))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2)); // it runs out
+
+        let waiting = alice.join_requests().unwrap();
+        assert!(
+            waiting[0].expired,
+            "an expired request was not shown as such"
+        );
+        assert_eq!(
+            alice.accept(&waiting[0].id).unwrap(),
+            Acceptance::WhenTheyNextAsk
+        );
+        assert!(alice.pending.is_none());
+
+        carol.offer_lifetime = OFFER_LIFETIME;
+        let next = carol.key_package().unwrap();
+        let effects = alice
+            .deliver(&delivery(&channel, 1, FrameKind::KeyPackage, &next))
+            .unwrap();
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::Send(_))),
+            "the approved person's next request was not answered"
+        );
+        assert!(
+            alice.join_requests().unwrap().is_empty(),
+            "they were listed again"
+        );
+        let add = alice.pending.as_ref().unwrap().commit.clone();
+        let Event::Admitted { welcome, .. } = alice.receive(&add).unwrap() else {
+            panic!("the add was not admitted");
+        };
+        carol.join(&welcome).unwrap();
+    }
+
+    /// An approval lets someone in once. Removed afterwards, they need
+    /// accepting anew, or a past approval would undo the removal.
+    #[test]
+    fn an_approval_is_spent_once_used() {
+        let (mut alice, channel) = live_host();
+        let carol = Member::new("carol").unwrap();
+        let request = carol.key_package().unwrap();
+        alice
+            .deliver(&delivery(&channel, 0, FrameKind::KeyPackage, &request))
+            .unwrap();
+        let id = alice.join_requests().unwrap()[0].id.clone();
+        alice.accept(&id).unwrap();
+        let add = alice.pending.as_ref().unwrap().commit.clone();
+        alice.receive(&add).unwrap();
+        let place = alice
+            .members()
+            .into_iter()
+            .find(|m| m.name == "carol")
+            .unwrap()
+            .index;
+        let removal = alice.remove_member(place).unwrap();
+        alice.receive(&removal).unwrap();
+
+        let again = carol.key_package().unwrap();
+        let effects = alice
+            .deliver(&delivery(&channel, 1, FrameKind::KeyPackage, &again))
+            .unwrap();
+        assert!(
+            matches!(effects.as_slice(), [Effect::JoinRequested]),
+            "a spent approval let her back in: {effects:?}"
+        );
+    }
+
+    /// Any member may accept, and once one has, the request is settled for
+    /// everyone: the others see the commit and drop it from their lists.
+    #[test]
+    fn another_members_acceptance_clears_the_request() {
+        let (mut alice, channel) = live_host();
+        let mut bob = Member::new("bob").unwrap();
+        admit(&mut alice, &mut bob);
+        bob.db.follow(&channel, 0, None).unwrap();
+        let live = openconv_wire::Inbound::Page {
+            address: Address::new(channel.clone()).unwrap(),
+            next: 0,
+            live: true,
+        };
+        bob.deliver(&live.encode()).unwrap();
+
+        let carol = Member::new("carol").unwrap();
+        let request = delivery(
+            &channel,
+            0,
+            FrameKind::KeyPackage,
+            &carol.key_package().unwrap(),
+        );
+        alice.deliver(&request).unwrap();
+        bob.deliver(&request).unwrap();
+        let id = bob.join_requests().unwrap()[0].id.clone();
+        assert!(matches!(bob.accept(&id).unwrap(), Acceptance::Sending(_)));
+        let add = bob.pending.as_ref().unwrap().commit.clone();
+        bob.receive(&add).unwrap();
+
+        alice.receive(&add).unwrap();
+        assert!(
+            alice.join_requests().unwrap().is_empty(),
+            "alice still lists a settled request"
         );
     }
 

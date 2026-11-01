@@ -57,11 +57,48 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 4] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+const MIGRATIONS: [&str; 5] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+
+const SCHEMA_V5: &str = "
+    -- Requests to join, waiting for a member to accept or decline them
+    -- (#125). One per identity: a joiner's renewed requests replace its
+    -- earlier ones, and a decline sticks to the identity.
+    CREATE TABLE join_requests (
+        signature_key BLOB PRIMARY KEY,
+        key_package   BLOB NOT NULL,
+        name          TEXT NOT NULL,
+        seen_at       INTEGER NOT NULL,
+        declined      INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- Members this client saw removed, or leave, so a request to join from
+    -- the same identity, or the same name, can be flagged.
+    CREATE TABLE removed (
+        signature_key BLOB PRIMARY KEY,
+        name          TEXT NOT NULL,
+        by            TEXT NOT NULL,
+        at            INTEGER NOT NULL
+    );
+
+    -- Identities a member here has accepted, until they are admitted (an
+    -- approval is used once) or removed. Approval is of the person, not of
+    -- one request: a request can expire before a member gets to it, and the
+    -- joiner's next one is then let in without asking again.
+    CREATE TABLE approved (
+        signature_key BLOB PRIMARY KEY,
+        name          TEXT NOT NULL,
+        at            INTEGER NOT NULL
+    );
+
+    -- Join requests used to be answered automatically. Any still held from
+    -- then were never accepted by anyone, so they go; the joiner's next
+    -- renewal brings them back as requests to approve.
+    DELETE FROM deferred WHERE rejoin = 0;
+";
 
 const SCHEMA_V4: &str = "
     -- Join requests this client has seen admitted, by KeyPackageRef, until
@@ -754,6 +791,180 @@ impl Database {
             )
             .optional()
             .map(|found| found.is_some())
+            .map_err(store)
+    }
+
+    /// Record a request to join, or replace the identity's earlier one.
+    /// Returns false if that identity was declined, in which case nothing
+    /// changes.
+    pub(crate) fn note_request(
+        &self,
+        signature_key: &[u8],
+        key_package: &[u8],
+        name: &str,
+        now: u64,
+    ) -> Result<bool> {
+        let declined: Option<bool> = self
+            .conn
+            .query_row(
+                "SELECT declined FROM join_requests WHERE signature_key = ?1",
+                [signature_key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store)?;
+        if declined == Some(true) {
+            return Ok(false);
+        }
+        self.conn
+            .execute(
+                "INSERT INTO join_requests (signature_key, key_package, name, seen_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (signature_key) DO UPDATE SET
+                     key_package = excluded.key_package,
+                     name = excluded.name",
+                params![signature_key, key_package, name, to_i64(now)?],
+            )
+            .map(|_| true)
+            .map_err(store)
+    }
+
+    /// Requests to join that nobody here has accepted or declined, oldest
+    /// first: `(signature key, name, first seen)`.
+    pub(crate) fn pending_requests(&self) -> Result<Vec<(Vec<u8>, String, u64)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT signature_key, name, seen_at FROM join_requests
+                 WHERE declined = 0 ORDER BY seen_at",
+            )
+            .map_err(store)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, to_u64(r.get(2)?)?)))
+            .map_err(store)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(store)
+    }
+
+    /// The latest `KeyPackage` from a pending request, taking it off the list.
+    pub(crate) fn take_request(&self, signature_key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let key_package: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT key_package FROM join_requests WHERE signature_key = ?1 AND declined = 0",
+                [signature_key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store)?;
+        self.drop_request(signature_key)?;
+        Ok(key_package)
+    }
+
+    /// Decline an identity's request; its later ones are ignored too.
+    pub(crate) fn decline_request(&self, signature_key: &[u8]) -> Result<bool> {
+        self.conn
+            .execute(
+                "UPDATE join_requests SET declined = 1 WHERE signature_key = ?1",
+                [signature_key],
+            )
+            .map(|n| n > 0)
+            .map_err(store)
+    }
+
+    /// Forget an identity's request: it was accepted, by anyone.
+    pub(crate) fn drop_request(&self, signature_key: &[u8]) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM join_requests WHERE signature_key = ?1 AND declined = 0",
+                [signature_key],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Record that this client accepted an identity.
+    pub(crate) fn approve(&self, signature_key: &[u8], name: &str, at: u64) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO approved (signature_key, name, at) VALUES (?1, ?2, ?3)",
+                params![signature_key, name, to_i64(at)?],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Whether this client has accepted an identity it has not yet seen
+    /// admitted.
+    pub(crate) fn is_approved(&self, signature_key: &[u8]) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM approved WHERE signature_key = ?1",
+                [signature_key],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|found| found.is_some())
+            .map_err(store)
+    }
+
+    /// Spend or cancel an approval: the identity was admitted, or removed.
+    pub(crate) fn unapprove(&self, signature_key: &[u8]) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM approved WHERE signature_key = ?1",
+                [signature_key],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The latest `KeyPackage` from an identity's request, if it has one,
+    /// pending or not.
+    pub(crate) fn request_of(&self, signature_key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .query_row(
+                "SELECT key_package FROM join_requests WHERE signature_key = ?1 AND declined = 0",
+                [signature_key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store)
+    }
+
+    /// Record that a member was removed (`by` someone else) or left (`by`
+    /// themselves).
+    pub(crate) fn note_removed(
+        &self,
+        signature_key: &[u8],
+        name: &str,
+        by: &str,
+        at: u64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO removed (signature_key, name, by, at) VALUES (?1, ?2, ?3, ?4)",
+                params![signature_key, name, by, to_i64(at)?],
+            )
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// The latest removal of this identity, or failing that of anyone with
+    /// this name: `(same identity, name, by, at)`.
+    pub(crate) fn removal_of(
+        &self,
+        signature_key: &[u8],
+        name: &str,
+    ) -> Result<Option<(bool, String, String, u64)>> {
+        self.conn
+            .query_row(
+                "SELECT signature_key = ?1, name, by, at FROM removed
+                 WHERE signature_key = ?1 OR name = ?2
+                 ORDER BY signature_key = ?1 DESC, at DESC LIMIT 1",
+                params![signature_key, name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, to_u64(r.get(3)?)?)),
+            )
+            .optional()
             .map_err(store)
     }
 

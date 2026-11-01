@@ -113,6 +113,8 @@ pub enum ClientEffect {
     Removed,
     /// This client was stranded and has asked to be added back.
     Rejoining,
+    /// Someone asked to join; see [`Client::join_requests`].
+    JoinRequested,
     /// Group state moved on; membership may have changed.
     Advanced,
     /// Caught up on `address`; live from here.
@@ -147,6 +149,7 @@ impl From<Effect> for ClientEffect {
             Effect::Superseded => Self::Superseded,
             Effect::Removed => Self::Removed,
             Effect::Rejoining => Self::Rejoining,
+            Effect::JoinRequested => Self::JoinRequested,
             Effect::Advanced => Self::Advanced,
             Effect::Live { address } => Self::Live { address },
             Effect::RelayReset { address } => Self::RelayReset { address },
@@ -341,6 +344,51 @@ impl Client {
         )?)
     }
 
+    /// Requests to join waiting for an answer, oldest first.
+    ///
+    /// # Errors
+    /// If saved state cannot be read.
+    pub fn join_requests(&self) -> Result<Vec<PendingJoin>> {
+        Ok(self
+            .lock()
+            .join_requests()?
+            .into_iter()
+            .map(|r| PendingJoin {
+                id: r.id,
+                name: r.name,
+                seen_at: r.seen_at,
+                expired: r.expired,
+                removed_before: r.removed_before.map(|p| EarlierRemoval {
+                    same_identity: p.same_identity,
+                    name: p.name,
+                    by: p.by,
+                    at: p.at,
+                }),
+            })
+            .collect())
+    }
+
+    /// Let in whoever made request `id`: the person, not just this request,
+    /// so an expired one is answered when their next request arrives.
+    ///
+    /// # Errors
+    /// If `id` is not a pending request, or the add cannot be made.
+    pub fn accept(&self, id: Vec<u8>) -> Result<Accepted> {
+        Ok(match self.lock().accept(&id)? {
+            crate::Acceptance::Sending(requests) => Accepted::Sending { requests },
+            crate::Acceptance::Queued => Accepted::Queued,
+            crate::Acceptance::WhenTheyNextAsk => Accepted::WhenTheyNextAsk,
+        })
+    }
+
+    /// Turn down request `id`, and later ones from the same identity.
+    ///
+    /// # Errors
+    /// If `id` is not a pending request.
+    pub fn decline(&self, id: Vec<u8>) -> Result<()> {
+        Ok(self.lock().decline(&id)?)
+    }
+
     /// Whether this client has asked to leave and is still a member.
     #[must_use]
     pub fn is_leaving(&self) -> bool {
@@ -433,6 +481,49 @@ pub fn format_channel_id(channel: Vec<u8>) -> String {
 #[uniffi::export]
 pub fn parse_channel_id(text: String) -> Result<Vec<u8>> {
     Ok(crate::parse_channel_id(&text)?)
+}
+
+/// A request to join, waiting for an answer.
+#[derive(Debug, uniffi::Record)]
+pub struct PendingJoin {
+    /// What [`Client::accept`] and [`Client::decline`] take.
+    pub id: Vec<u8>,
+    /// The name it gives: self-declared, so unverified.
+    pub name: String,
+    /// When this client first saw it, in seconds since the Unix epoch.
+    pub seen_at: u64,
+    /// Whether the latest request has run out; accepting still works.
+    pub expired: bool,
+    /// An earlier removal of this identity, or of someone with this name.
+    pub removed_before: Option<EarlierRemoval>,
+}
+
+/// What accepting a request did.
+#[derive(Debug, uniffi::Enum)]
+pub enum Accepted {
+    /// The add is staged: send these.
+    Sending {
+        /// Ready to send to the relay.
+        requests: Vec<Vec<u8>>,
+    },
+    /// The add will be made as soon as this client has caught up, or its
+    /// change in flight resolves.
+    Queued,
+    /// Their request has run out; they are let in when their next arrives.
+    WhenTheyNextAsk,
+}
+
+/// A removal shown beside a request to join.
+#[derive(Debug, uniffi::Record)]
+pub struct EarlierRemoval {
+    /// True if it was this very identity; false if only the name matches.
+    pub same_identity: bool,
+    /// Who was removed.
+    pub name: String,
+    /// Who removed them: their own name if they left.
+    pub by: String,
+    /// When, in seconds since the Unix epoch.
+    pub at: u64,
 }
 
 /// A member of the group, as the app lists it.
