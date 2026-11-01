@@ -76,12 +76,14 @@ final class ChatModel: ObservableObject {
     private let client: Client
     private var socket: URLSessionWebSocketTask?
     /// While waiting to be let in, renews the request before it runs out: a
-    /// join request is only good for an hour (#123).
+    /// join request is good for a week (#125), and renewed in its last day.
     private var offerRefresher: Task<Void, Never>?
     private var saidAuto = false
 
-    /// The channel this client publishes to: its group's, or the one it is
-    /// asking to join.
+    /// The channel this client shows and publishes to: its group's, or the
+    /// one it is asking to join. The core can hold several groups (#134);
+    /// this harness shows one, and the design pass (#133) decides how the
+    /// app shows more.
     private var channel: Data?
 
     /// The channel as shareable text, once there is one.
@@ -148,23 +150,25 @@ final class ChatModel: ObservableObject {
         receiveLoop()
 
         do {
-            if client.channel() != nil {
+            if let joined = try client.channels().first {
                 try resume()
-                try enterJoined()
+                enterJoined(joined)
                 note("rejoined the group")
                 sendAutoIfReady()
-            } else if try client.waitingToJoin() {
+            } else if let wanted = try client.waitingToJoin().first {
                 // Asked before quitting and not yet let in. The offer is
                 // re-sent, in case nobody was online to answer it before.
                 try resume()
+                channel = wanted
+                self.channelText = formatChannelId(channel: wanted)
                 status = .waitingForGroup
                 keepRequestFresh()
                 note("still waiting to be admitted; asked again")
             } else if hosting {
                 // Host opens the group and waits for others to ask in.
-                try client.createGroup()
+                let created = try client.createGroup()
                 try resume()
-                try enterJoined()
+                enterJoined(created)
                 note("created the group")
                 sendAutoIfReady()
             } else {
@@ -176,6 +180,7 @@ final class ChatModel: ObservableObject {
                 let wanted = try parseChannelId(text: channelText ?? "")
                 try client.offer(channel: wanted)
                 try resume()
+                channel = wanted
                 self.channelText = formatChannelId(channel: wanted)
                 status = .waitingForGroup
                 keepRequestFresh()
@@ -193,16 +198,15 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// Show the group this client is in.
-    private func enterJoined() throws {
-        guard let joined = client.channel() else { throw ChatError.noChannel }
+    /// Show the group on `joined`, which this client is in.
+    private func enterJoined(_ joined: Data) {
         offerRefresher?.cancel()
         channel = joined
         let text = formatChannelId(channel: joined)
         channelText = text
-        status = .joined(members: Int(client.memberCount()))
-        members = client.members()
-        leaving = client.isLeaving()
+        status = .joined(members: Int(client.memberCount(channel: joined)))
+        members = client.members(channel: joined)
+        leaving = client.isLeaving(channel: joined)
         // Logged so the headless smoke test can hand it to the next client.
         print("[\(identity)] channel \(text)")
     }
@@ -240,7 +244,8 @@ final class ChatModel: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespaces)
         draft = ""
         do {
-            try send(kind: .application, body: client.send(text: text))
+            guard let channel else { throw ChatError.noChannel }
+            try send(kind: .application, body: client.send(channel: channel, text: text))
             // Shown now rather than when the relay echoes it back. If that
             // echo lands behind a commit, the core hands back a resend; the
             // text is unchanged, so this line stays as it is.
@@ -305,43 +310,56 @@ final class ChatModel: ObservableObject {
         case .send(let request):
             write(request)
 
-        case .message(let text, let sender, _):
+        case .message(let from, let text, let sender, _):
+            guard from == channel else { return }
             print("[\(identity)] received: \(text)")
             lines.append(Line(author: sender, text: text, mine: false))
 
-        case .joined:
-            try enterJoined()
+        case .joined(let joined):
+            guard channel == nil || joined == channel else { return }
+            enterJoined(joined)
             note("joined the group")
             sendAutoIfReady()
 
-        case .admitted:
+        case .admitted(let group):
+            guard group == channel else { return }
             refresh()
             note("admitted a new member")
 
-        case .superseded:
+        case .superseded(let group):
             // Someone else's commit was ordered first, and very likely did
             // the same thing. A notice, not something to retry.
+            guard group == channel else { return }
             refresh()
             note("another member's change landed first")
 
-        case .advanced:
+        case .advanced(let group):
+            guard group == channel else { return }
             refresh()
 
-        case .joinRequested:
+        case .renamed(let group, let by, _, let name):
+            guard group == channel else { return }
+            note(
+                name.map { "\(by) named the conversation \"\($0)\"" }
+                    ?? "\(by) cleared the conversation's name")
+
+        case .joinRequested(let group):
+            guard group == channel else { return }
             refreshRequests()
             for request in joinRequests where acceptEveryone || request.name == autoAccept {
                 accept(request)
             }
 
-        case .removed:
+        case .removed(let group):
+            guard group == channel else { return }
             let wasLeaving = leaving
             status = .removed
             members = []
             leaving = false
-            channel = nil
             note(wasLeaving ? "left the group" : "removed from the group")
 
-        case .rejoining:
+        case .rejoining(let group):
+            guard group == channel else { return }
             status = .waitingForGroup
             caughtUp = false
             keepRequestFresh()
@@ -372,7 +390,8 @@ final class ChatModel: ObservableObject {
     /// still in the group, and asks again if the group moves on first.
     func leave() {
         do {
-            write(try client.leave())
+            guard let channel else { throw ChatError.noChannel }
+            write(try client.leave(channel: channel))
             leaving = true
             note("asked to leave")
         } catch {
@@ -383,7 +402,8 @@ final class ChatModel: ObservableObject {
     /// Remove another member.
     func remove(_ member: GroupMember) {
         do {
-            write(try client.removeMember(index: member.index))
+            guard let channel else { throw ChatError.noChannel }
+            write(try client.removeMember(channel: channel, index: member.index))
             // They can still ask to join again; a member has to accept them,
             // and their request is flagged as coming from someone removed.
             note("removing \(member.name)")
@@ -394,16 +414,17 @@ final class ChatModel: ObservableObject {
 
     /// Bring the status, member list and requests in line with the core.
     private func refresh() {
-        guard client.channel() != nil else { return }
-        status = .joined(members: Int(client.memberCount()))
-        members = client.members()
+        guard let channel, case .joined = status else { return }
+        status = .joined(members: Int(client.memberCount(channel: channel)))
+        members = client.members(channel: channel)
         refreshRequests()
     }
 
     private func refreshRequests() {
+        guard let channel else { return }
         do {
             let before = Set(joinRequests.map(\.id))
-            joinRequests = try client.joinRequests()
+            joinRequests = try client.joinRequests(channel: channel)
             for request in joinRequests where !before.contains(request.id) {
                 note("\(request.name) asked to join\(Self.describe(request.removedBefore))")
             }
@@ -416,7 +437,8 @@ final class ChatModel: ObservableObject {
     /// run out lets them in when their app next asks.
     func accept(_ request: PendingJoin) {
         do {
-            switch try client.accept(id: request.id) {
+            guard let channel else { throw ChatError.noChannel }
+            switch try client.accept(channel: channel, id: request.id) {
             case .sending(let requests):
                 for message in requests {
                     write(message)
@@ -438,7 +460,8 @@ final class ChatModel: ObservableObject {
     /// Turn someone down. Their later requests are ignored too.
     func decline(_ request: PendingJoin) {
         do {
-            try client.decline(id: request.id)
+            guard let channel else { throw ChatError.noChannel }
+            try client.decline(channel: channel, id: request.id)
             note("declined \(request.name)")
             refreshRequests()
         } catch {

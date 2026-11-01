@@ -17,6 +17,33 @@ func messageText(_ event: ClientEvent) -> String? {
     return nil
 }
 
+/// Admit `joiner` to `host`'s group on `channel` the way the relay would when
+/// nothing competes, returning the commit for the group's other members.
+@discardableResult
+func admit(_ joiner: Client, to channel: Data, by host: Client) throws -> Data {
+    let commit = try host.proposeAdd(channel: channel, keyPackage: joiner.keyPackage())
+    guard case .admitted(let welcome, _) = try host.receive(channel: channel, wire: commit) else {
+        throw BridgeError.unexpected("uncontested commit should have been admitted")
+    }
+    guard try joiner.join(welcome: welcome) == channel else {
+        throw BridgeError.unexpected("joined a different group")
+    }
+    return commit
+}
+
+/// The frame body inside a publish request: past its tag, its address and
+/// the frame's kind (`Publish 0x02 len:u8 address payload`, the payload
+/// being a kind tag and then the body).
+func publishedBody(_ request: Data) throws -> Data {
+    let bytes = [UInt8](request)
+    guard bytes.count > 2, bytes[0] == 0x02 else {
+        throw BridgeError.unexpected("not a publish request")
+    }
+    let start = 2 + Int(bytes[1]) + 1
+    guard bytes.count > start else { throw BridgeError.unexpected("an empty publish") }
+    return Data(bytes[start...])
+}
+
 var failures = 0
 
 func check(_ label: String, _ condition: @autoclosure () throws -> Bool) {
@@ -38,36 +65,38 @@ do {
     let alice = try Client(identity: "alice")
     let bob = try Client(identity: "bob")
 
-    try alice.createGroup()
-    check("group starts with one member", alice.memberCount() == 1)
+    let channel = try alice.createGroup()
+    check("group starts with one member", alice.memberCount(channel: channel) == 1)
 
     // Two-phase add: stage the commit, then confirm it the way the relay
     // would when nothing competes.
-    let commit = try alice.proposeAdd(keyPackage: bob.keyPackage())
-    guard case .admitted(let welcome, _) = try alice.receive(wire: commit) else {
-        throw BridgeError.unexpected("uncontested commit should have been admitted")
-    }
-    try bob.join(welcome: welcome)
+    try admit(bob, to: channel, by: alice)
 
-    check("alice sees two members", alice.memberCount() == 2)
-    check("bob sees two members", bob.memberCount() == 2)
+    check("alice sees two members", alice.memberCount(channel: channel) == 2)
+    check("bob sees two members", bob.memberCount(channel: channel) == 2)
 
-    let ciphertext = try alice.send(text: "hello from swift")
+    let ciphertext = try alice.send(channel: channel, text: "hello from swift")
     check(
-        "bob decrypts alice", messageText(try bob.receive(wire: ciphertext)) == "hello from swift")
+        "bob decrypts alice",
+        messageText(try bob.receive(channel: channel, wire: ciphertext)) == "hello from swift")
 
-    let reply = try bob.send(text: "hi back")
-    check("alice decrypts bob", messageText(try alice.receive(wire: reply)) == "hi back")
+    let reply = try bob.send(channel: channel, text: "hi back")
+    check(
+        "alice decrypts bob",
+        messageText(try alice.receive(channel: channel, wire: reply)) == "hi back")
 
     // The relay echoes senders their own frames; they must be recognised.
-    let mine = try alice.send(text: "talking to myself")
-    check("own frames are recognised as echoes", try alice.receive(wire: mine) == .echo)
+    let mine = try alice.send(channel: channel, text: "talking to myself")
+    check(
+        "own frames are recognised as echoes",
+        try alice.receive(channel: channel, wire: mine) == .echo)
 
     check(
-        "both are on the same channel", alice.channel() != nil && alice.channel() == bob.channel())
+        "both are on the same channel",
+        try alice.channels() == [channel] && bob.channels() == [channel])
 
     let secret = "seahorse battery"
-    let sealed = try alice.send(text: secret)
+    let sealed = try alice.send(channel: channel, text: secret)
     check("plaintext never reaches the wire", sealed.range(of: Data(secret.utf8)) == nil)
 } catch {
     print("  FAIL setup — \(error)")
@@ -79,29 +108,28 @@ do {
     let alice = try Client(identity: "alice")
     let bob = try Client(identity: "bob")
     let carol = try Client(identity: "carol")
-    try alice.createGroup()
-    let first = try alice.proposeAdd(keyPackage: bob.keyPackage())
-    guard case .admitted(let welcome, _) = try alice.receive(wire: first) else {
-        throw BridgeError.unexpected("uncontested commit should have been admitted")
-    }
-    try bob.join(welcome: welcome)
+    let channel = try alice.createGroup()
+    try admit(bob, to: channel, by: alice)
 
     // Alice admits Carol while Bob speaks; the commit is ordered first.
-    let commit = try alice.proposeAdd(keyPackage: carol.keyPackage())
-    let raced = try bob.send(text: "crossed in the post")
-    guard case .admitted(let welcome, _) = try alice.receive(wire: commit) else {
+    let commit = try alice.proposeAdd(channel: channel, keyPackage: carol.keyPackage())
+    let raced = try bob.send(channel: channel, text: "crossed in the post")
+    guard case .admitted(let welcome, _) = try alice.receive(channel: channel, wire: commit)
+    else {
         throw BridgeError.unexpected("alice's commit was ordered first")
     }
-    try carol.join(welcome: welcome)
-    _ = try bob.receive(wire: commit)
+    _ = try carol.join(welcome: welcome)
+    _ = try bob.receive(channel: channel, wire: commit)
 
-    check("receivers report the stale copy", try alice.receive(wire: raced) == .stale)
-    guard case .resend(let again) = try bob.receive(wire: raced) else {
+    check(
+        "receivers report the stale copy",
+        try alice.receive(channel: channel, wire: raced) == .stale)
+    guard case .resend(let again) = try bob.receive(channel: channel, wire: raced) else {
         throw BridgeError.unexpected("bob's stale message should come back as a resend")
     }
     check(
         "the resend reaches the new member",
-        messageText(try carol.receive(wire: again)) == "crossed in the post")
+        messageText(try carol.receive(channel: channel, wire: again)) == "crossed in the post")
 } catch {
     print("  FAIL setup — \(error)")
     failures += 1
@@ -111,20 +139,17 @@ print("bridge: addressing")
 do {
     let host = try Client(identity: "host")
     let joiner = try Client(identity: "joiner")
-    try host.createGroup()
+    let channel = try host.createGroup()
 
     // The Welcome must be addressed to the mailbox the joiner subscribed to.
     let offer = try joiner.keyPackage()
     let mailbox = try joiner.mailbox(keyPackage: offer)
-    let commit = try host.proposeAdd(keyPackage: offer)
-    guard case .admitted(_, let to) = try host.receive(wire: commit) else {
+    let commit = try host.proposeAdd(channel: channel, keyPackage: offer)
+    guard case .admitted(_, let to) = try host.receive(channel: channel, wire: commit) else {
         throw BridgeError.unexpected("uncontested commit should have been admitted")
     }
     check("welcome is addressed to the joiner's mailbox", to == mailbox)
 
-    guard let channel = host.channel() else {
-        throw BridgeError.unexpected("a host has a channel")
-    }
     let text = formatChannelId(channel: channel)
     check("channel ids round trip as text", try parseChannelId(text: text) == channel)
     do {
@@ -171,14 +196,13 @@ print("bridge: errors cross as swift errors")
 // Catch-up crosses the bridge: requests out, notices in, effects back.
 do {
     let host = try Client(identity: "host")
-    try host.createGroup()
-    guard let channel = host.channel() else { throw BridgeError.unexpected("no channel") }
+    let channel = try host.createGroup()
     let requests = try host.connect()
     check("a member resumes its channel on connect", requests.map { $0.first } == [0x03])
 
     let joiner = try Client(identity: "joiner")
     try joiner.offer(channel: channel)
-    check("an offer leaves the joiner waiting", try joiner.waitingToJoin())
+    check("an offer leaves the joiner waiting", try joiner.waitingToJoin() == [channel])
     check(
         "a waiting joiner resumes its mailbox, then re-offers",
         try joiner.connect().map { $0.first } == [0x03, 0x02])
@@ -208,24 +232,23 @@ do {
 do {
     let alice = try Client(identity: "alice")
     let bob = try Client(identity: "bob")
-    try alice.createGroup()
-    let commit = try alice.proposeAdd(keyPackage: bob.keyPackage())
-    guard case .admitted(let welcome, _) = try alice.receive(wire: commit) else {
-        throw BridgeError.unexpected("bob was not admitted")
-    }
-    try bob.join(welcome: welcome)
-    let roster = bob.members().map { "\($0.name)\($0.me ? "*" : "")" }
+    let channel = try alice.createGroup()
+    try admit(bob, to: channel, by: alice)
+    let roster = bob.members(channel: channel).map { "\($0.name)\($0.me ? "*" : "")" }
     check("the roster crosses, marking the asker", roster == ["alice", "bob*"])
-    guard let alicePlace = bob.members().first(where: { $0.name == "alice" }) else {
+    guard let alicePlace = bob.members(channel: channel).first(where: { $0.name == "alice" })
+    else {
         throw BridgeError.unexpected("alice missing from the roster")
     }
     check(
         "a removal is a publish request",
-        try bob.removeMember(index: alicePlace.index).first == 0x02)
+        try bob.removeMember(channel: channel, index: alicePlace.index).first == 0x02)
     let leaving = try Client(identity: "leaver")
-    check("leaving without a group throws", (try? leaving.leave()) == nil)
-    check("a new group has no join requests", try alice.joinRequests().isEmpty)
-    check("accepting an unknown request throws", (try? alice.accept(id: Data([1, 2, 3]))) == nil)
+    check("leaving a group it is not in throws", (try? leaving.leave(channel: channel)) == nil)
+    check("a new group has no join requests", try alice.joinRequests(channel: channel).isEmpty)
+    check(
+        "accepting an unknown request throws",
+        (try? alice.accept(channel: channel, id: Data([1, 2, 3]))) == nil)
 } catch {
     print("  FAIL membership — \(error)")
     failures += 1
@@ -235,22 +258,17 @@ print("bridge: the stored transcript")
 do {
     let alice = try Client(identity: "alice")
     let bob = try Client(identity: "bob")
-    try alice.createGroup()
-    let commit = try alice.proposeAdd(keyPackage: bob.keyPackage())
-    guard case .admitted(let welcome, _) = try alice.receive(wire: commit) else {
-        throw BridgeError.unexpected("bob was not admitted")
-    }
-    try bob.join(welcome: welcome)
-    guard let channel = alice.channel() else { throw BridgeError.unexpected("no channel") }
+    let channel = try alice.createGroup()
+    try admit(bob, to: channel, by: alice)
 
-    _ = try alice.receive(wire: bob.send(text: "from bob"))
-    let mine = try alice.send(text: "from alice")
+    _ = try alice.receive(channel: channel, wire: bob.send(channel: channel, text: "from bob"))
+    let mine = try alice.send(channel: channel, text: "from alice")
     let waiting = try alice.history(channel: channel, before: nil, limit: 10)
     check(
         "history crosses, own message last and unplaced",
         waiting.map { $0.text } == ["from bob", "from alice"] && waiting.last?.position == nil
             && waiting.last?.mine == true)
-    _ = try alice.receive(wire: mine)
+    _ = try alice.receive(channel: channel, wire: mine)
     let placed = try alice.history(channel: channel, before: nil, limit: 10)
     check("the echo places it", placed.allSatisfy { $0.position != nil })
     check("ids cross whole", placed.allSatisfy { $0.id.count == 32 })
@@ -265,11 +283,53 @@ do {
     failures += 1
 }
 
+print("bridge: several groups, and their names")
+do {
+    let alice = try Client(identity: "alice")
+    let bob = try Client(identity: "bob")
+    let carol = try Client(identity: "carol")
+    let red = try alice.createGroup()
+    let blue = try carol.createGroup()
+    try admit(bob, to: red, by: alice)
+    try admit(bob, to: blue, by: carol)
+    check("one client is in both groups", try bob.channels() == [red, blue])
+
+    let toRed = try bob.send(channel: red, text: "for red")
+    let toBlue = try bob.send(channel: blue, text: "for blue")
+    check(
+        "red reads its own", messageText(try alice.receive(channel: red, wire: toRed)) == "for red")
+    check(
+        "blue reads its own",
+        messageText(try carol.receive(channel: blue, wire: toBlue)) == "for blue")
+    check(
+        "a frame for one group does not open in the other",
+        (try? carol.receive(channel: blue, wire: toRed)) == nil)
+
+    check("a new group has no name", try alice.name(channel: red) == nil)
+    let request = try alice.setName(channel: red, name: "Red room")
+    check("a rename is a publish request", request.first == 0x02)
+    let commit = try publishedBody(request)
+    check(
+        "the rename is confirmed by its echo",
+        try alice.receive(channel: red, wire: commit) == .committed)
+    _ = try bob.receive(channel: red, wire: commit)
+    check(
+        "every member reads the name",
+        try alice.name(channel: red) == "Red room" && bob.name(channel: red) == "Red room")
+    check("the other group keeps none", try bob.name(channel: blue) == nil)
+    check(
+        "a name past the limit throws",
+        (try? alice.setName(channel: red, name: String(repeating: "x", count: 129))) == nil)
+} catch {
+    print("  FAIL several groups — \(error)")
+    failures += 1
+}
+
 do {
     let lonely = try Client(identity: "lonely")
     // No group yet, so this must throw rather than trap.
     do {
-        _ = try lonely.send(text: "nobody there")
+        _ = try lonely.send(channel: Data([1, 2, 3]), text: "nobody there")
         print("  FAIL sending without a group should throw")
         failures += 1
     } catch {

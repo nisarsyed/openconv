@@ -13,9 +13,11 @@
 use openconv_core::{Event, Member, Vault};
 use std::time::Instant;
 
-fn admit(host: &mut Member, joiner: &mut Member) -> Vec<u8> {
-    let commit = host.propose_add(&joiner.key_package().unwrap()).unwrap();
-    let Event::Admitted { welcome, .. } = host.receive(&commit).unwrap() else {
+fn admit(host: &mut Member, joiner: &mut Member, channel: &[u8]) -> Vec<u8> {
+    let commit = host
+        .propose_add(channel, &joiner.key_package().unwrap())
+        .unwrap();
+    let Event::Admitted { welcome, .. } = host.receive(channel, &commit).unwrap() else {
         panic!("should have been admitted");
     };
     joiner.join(&welcome).unwrap();
@@ -37,14 +39,14 @@ fn main() {
     println!("== send/receive cost, in-memory (no vault) ==");
     let mut alice = Member::new("alice").unwrap();
     let mut bob = Member::new("bob").unwrap();
-    alice.create_group().unwrap();
-    admit(&mut alice, &mut bob);
+    let channel = alice.create_group().unwrap();
+    admit(&mut alice, &mut bob, &channel);
 
     let n = 500;
     let t = Instant::now();
     for i in 0..n {
-        let wire = alice.send(&format!("message {i}")).unwrap();
-        bob.receive(&wire).unwrap();
+        let wire = alice.send(&channel, &format!("message {i}")).unwrap();
+        bob.receive(&channel, &wire).unwrap();
     }
     let memory = t.elapsed();
     println!("  {n} round trips: {memory:?}  ({:?}/msg)", memory / n);
@@ -53,13 +55,13 @@ fn main() {
     let dir = tmp("persisted");
     let mut alice = Member::restore(Vault::with_key(dir.join("a.db"), [1u8; 32]), "alice").unwrap();
     let mut bob = Member::restore(Vault::with_key(dir.join("b.db"), [2u8; 32]), "bob").unwrap();
-    alice.create_group().unwrap();
-    admit(&mut alice, &mut bob);
+    let channel = alice.create_group().unwrap();
+    admit(&mut alice, &mut bob, &channel);
 
     let t = Instant::now();
     for i in 0..n {
-        let wire = alice.send(&format!("message {i}")).unwrap();
-        bob.receive(&wire).unwrap();
+        let wire = alice.send(&channel, &format!("message {i}")).unwrap();
+        bob.receive(&channel, &wire).unwrap();
     }
     let persisted = t.elapsed();
     let size = store_kib(&dir.join("a.db"));
@@ -85,7 +87,7 @@ fn main() {
         let dir = tmp(&format!("n{target}"));
         let mut host =
             Member::restore(Vault::with_key(dir.join("h.db"), [3u8; 32]), "host").unwrap();
-        host.create_group().unwrap();
+        let channel = host.create_group().unwrap();
 
         let mut others = Vec::new();
         let mut last_add = std::time::Duration::ZERO;
@@ -94,24 +96,24 @@ fn main() {
         for i in 1..target {
             let mut m = Member::new(&format!("m{i}")).unwrap();
             let t = Instant::now();
-            let commit = admit(&mut host, &mut m);
+            let commit = admit(&mut host, &mut m, &channel);
             last_add = t.elapsed();
             commit_size = commit.len();
             // Existing members must apply the commit.
             for other in &mut others {
                 let _: &mut Member = other;
-                other.receive(&commit).ok();
+                other.receive(&channel, &commit).ok();
             }
             others.push(m);
         }
 
         let t = Instant::now();
-        let wire = host.send("hello everyone").unwrap();
+        let wire = host.send(&channel, "hello everyone").unwrap();
         let send = t.elapsed();
 
         let t = Instant::now();
         for other in &mut others {
-            other.receive(&wire).unwrap();
+            other.receive(&channel, &wire).unwrap();
         }
         let fanout = t.elapsed();
 

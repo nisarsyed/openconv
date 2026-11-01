@@ -147,6 +147,35 @@ reset. `Member::history` pages by position. It is kept after removal or
 leaving and until the user deletes it (decided in #133); deleting is the
 app's to build.
 
+**Several groups per client (#134).** `Member` holds a map of groups by
+channel, each with its own staged commit, request to leave and sent-message
+record, and every group-level call takes the channel (`send`, `members`,
+`accept`, `leave`, …). The store keys everything about a group by channel
+(schema v8), and `Effect`s name the channel they are about. A failed
+operation rebuilds every group from the store, which is safe because each
+in-memory change is written alongside it; a failure in one group leaves the
+others as they were. A `Welcome` is joined only if it is for the channel the
+mailbox's offer asked to join, since anyone holding a published `KeyPackage`
+could otherwise add its owner to a group of their choosing. Several offers to
+different channels wait at once, each on its own mailbox. The Swift app is
+still a one-conversation harness; its real UI follows the design (#133).
+
+**Conversation names (#134)** live in the group context, as a private-use
+extension (`NAME_EXTENSION`, 0xF0C0): changed by a `GroupContextExtensions`
+commit staged and resolved by the relay's order like any other change, and
+delivered to joiners in the `Welcome`. Commits are `PrivateMessage`s, so the
+relay never sees a name. Applying a commit that changes the name, one's own or
+another member's, yields `Effect::Renamed` after the `Advanced` or
+`Superseded` for it, crediting the MLS-authenticated sender of the proposal.
+A rename that lost its race is never applied, so never announced, and a
+joiner reads the name rather than being told of it. openmls accepts such an extension only if the group
+requires every member to support it, so groups are created with a
+`RequiredCapabilities` extension, every `KeyPackage` lists the capability,
+and a `KeyPackage` without it is refused as a request: adding it would fail
+every time, and a held request that fails takes the frame that tried it with
+it. Consequences: groups made before #134 cannot be named, and clients built
+before it cannot join groups made after.
+
 Frame tags (`FrameKind`) are a client-side concern defined once in Rust and
 exported through UniFFI — Swift does not get its own copy.
 
