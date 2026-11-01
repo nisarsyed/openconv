@@ -170,8 +170,26 @@ provisional URIs until milestone 3; see `architecture-notes.md`. History
 first: the format carries replies, edits, deletes and reactions from the
 start, and their UI follows.
 
-Tracked as #128 (content), #129 (transcript store), #130 (transcript UI), in
-that order, with #131 (replies, edits, deletes, reactions) after.
+Tracked as #128 (content, done), #129 (transcript store), #133 (design
+pass), #134 (several groups per client), #130 (transcript UI) and #131
+(replies, edits, deletes, reactions).
+
+**Order: 128 → 129, and alongside it 133 → 134 → 130 → 131.**
+
+- **#133 was added on 2026-11-01.** No UI design existed anywhere in this
+  roadmap, and #130 and #131 are mostly UI. Building them on the current
+  harness would mean building them twice. Agreed for the pass: two panes
+  (conversation list and transcript) with room for a server rail at milestone
+  4; native macOS with a light identity of its own; OpenConv's own design
+  system, sharing nothing with an existing one; clickable mockups on a Design
+  canvas; three review rounds (structure and flows, core screens, every
+  state), each signed off before the next.
+- **#134 comes from the design.** A conversation list needs a client that
+  holds more than one group, and `Member` holds one. It starts once round 1
+  settles what the list needs, and lands before #130.
+- **#129 doesn't depend on the design,** and the design doesn't depend on it.
+  It is core only, and its schema already carries the channel id, so #134
+  doesn't break it. It has to land before #130.
 
 Schema carries a channel id from the first version even though it is obvious —
 the point of doing this after (1) is that the shape is already known.
