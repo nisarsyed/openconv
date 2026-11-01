@@ -91,6 +91,17 @@ away; it does not give a new member history. MLS forward secrecy means a
 member cannot read frames from before it joined, however long they are kept.
 That is the design, not a bug.
 
+**Membership (#112).** Any member may remove another: a commit staged like an
+add, resolved by the relay's order. Leaving is a Remove proposal for oneself
+(`FrameKind::Proposal`), committed by any live member; the leaver never
+commits pending proposals, and re-makes its request in each new epoch because
+a proposal is epoch-bound. A removed member deletes its group state. A member
+stranded below the retention floor drops the group and publishes a
+`FrameKind::Rejoin`: a fresh `KeyPackage` plus the key its place holds now,
+signed by its identity key. Members re-add it only while that place still
+holds that key, so a request is spent once acted on and cannot be replayed.
+The app sends nothing until caught up on its channel.
+
 Joining: learn the channel id out of band, then `offer(channel)` and send
 `connect()`'s requests: `Resume` on the mailbox, then the `KeyPackage`
 published to the channel. The order matters: the relay handles a connection's

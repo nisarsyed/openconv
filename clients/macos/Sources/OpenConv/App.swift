@@ -18,6 +18,8 @@ struct OpenConvApp: App {
         // driveable without a human clicking:
         //   OpenConv alice host [message]
         //   OpenConv bob join <channel> [message]
+        //   OpenConv carol leave          (rejoin, then leave once caught up)
+        //   OpenConv alice remove <name>  (rejoin, then remove them)
         let args = Array(CommandLine.arguments.dropFirst())
         let name = args.first ?? "me"
         let autoConnect = args.dropFirst().first
@@ -30,12 +32,22 @@ struct OpenConvApp: App {
         }
         _model = StateObject(wrappedValue: model)
         if let autoConnect, let url = URL(string: Self.defaultRelay) {
-            let hosting = autoConnect == "host"
+            // `leave` and `remove` act on a group this client is already in,
+            // which connecting rejoins whatever is asked; host is the path.
+            model.autoLeave = autoConnect == "leave"
+            if autoConnect == "remove" {
+                model.autoRemove = args.dropFirst(2).first
+            }
+            let hosting = autoConnect != "join"
             // A joiner names the channel next; then, for either, an optional
             // message to send once in the group.
             let rest = Array(args.dropFirst(2))
             let channel = hosting ? nil : rest.first
-            model.autoSay = hosting ? rest.first : rest.dropFirst().first
+            switch autoConnect {
+            case "host": model.autoSay = rest.first
+            case "join": model.autoSay = rest.dropFirst().first
+            default: model.autoSay = nil  // leave and remove take no message
+            }
             // Defer until the run loop is up so the socket has somewhere to live.
             Task { @MainActor in
                 model.connect(to: url, hosting: hosting, channelText: channel)

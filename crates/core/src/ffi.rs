@@ -48,9 +48,15 @@ pub enum ClientEvent {
         /// Publish it to this address: the new member's mailbox.
         mailbox: Vec<u8>,
     },
-    /// A staged add lost its epoch to another member's commit, which has been
-    /// applied instead.
-    AddSuperseded,
+    /// A staged commit that adds nobody (a removal) won its epoch.
+    Committed,
+    /// A staged commit lost its epoch to another member's commit, which has
+    /// been applied instead.
+    Superseded,
+    /// Another member's proposal was queued for the next commit.
+    Proposed,
+    /// A commit removed this client.
+    Removed,
     /// Group state moved forward; nothing to display.
     Advanced,
     /// This client's own frame, echoed back by the relay.
@@ -71,7 +77,10 @@ impl From<crate::Event> for ClientEvent {
         match e {
             crate::Event::Message(text) => Self::Message { text },
             crate::Event::Admitted { welcome, mailbox } => Self::Admitted { welcome, mailbox },
-            crate::Event::AddSuperseded => Self::AddSuperseded,
+            crate::Event::Committed => Self::Committed,
+            crate::Event::Superseded => Self::Superseded,
+            crate::Event::Proposed => Self::Proposed,
+            crate::Event::Removed => Self::Removed,
             crate::Event::Advanced => Self::Advanced,
             crate::Event::Echo => Self::Echo,
             crate::Event::Resend { message } => Self::Resend { message },
@@ -97,8 +106,13 @@ pub enum ClientEffect {
     Joined,
     /// This client let a new member in.
     Admitted,
-    /// Another member let the joiner in first.
-    AddSuperseded,
+    /// Another member's change to the group landed first.
+    Superseded,
+    /// This client is no longer in the group: removed, or its leave was
+    /// committed.
+    Removed,
+    /// This client was stranded and has asked to be added back.
+    Rejoining,
     /// Group state moved on; membership may have changed.
     Advanced,
     /// Caught up on `address`; live from here.
@@ -130,7 +144,9 @@ impl From<Effect> for ClientEffect {
             Effect::Message(text) => Self::Message { text },
             Effect::Joined => Self::Joined,
             Effect::Admitted => Self::Admitted,
-            Effect::AddSuperseded => Self::AddSuperseded,
+            Effect::Superseded => Self::Superseded,
+            Effect::Removed => Self::Removed,
+            Effect::Rejoining => Self::Rejoining,
             Effect::Advanced => Self::Advanced,
             Effect::Live { address } => Self::Live { address },
             Effect::RelayReset { address } => Self::RelayReset { address },
@@ -275,6 +291,53 @@ impl Client {
         Ok(self.lock().waiting_to_join()?)
     }
 
+    /// Everyone in the group, this client included.
+    #[must_use]
+    pub fn members(&self) -> Vec<GroupMember> {
+        self.lock()
+            .members()
+            .into_iter()
+            .map(|r| GroupMember {
+                index: r.index,
+                name: r.name,
+                me: r.me,
+            })
+            .collect()
+    }
+
+    /// Remove the member at `index`, returning the request to send.
+    ///
+    /// # Errors
+    /// If there is no group, another change is in flight, or `index` is not
+    /// another member's.
+    pub fn remove_member(&self, index: u32) -> Result<Vec<u8>> {
+        let mut member = self.lock();
+        let commit = member.remove_member(index)?;
+        let channel = member.channel().ok_or(crate::Error::NoGroup)?;
+        Ok(crate::encode_publish(&channel, FrameKind::Commit, &commit)?)
+    }
+
+    /// Ask to leave the group, returning the request to send.
+    ///
+    /// # Errors
+    /// If there is no group.
+    pub fn leave(&self) -> Result<Vec<u8>> {
+        let mut member = self.lock();
+        let proposal = member.leave()?;
+        let channel = member.channel().ok_or(crate::Error::NoGroup)?;
+        Ok(crate::encode_publish(
+            &channel,
+            FrameKind::Proposal,
+            &proposal,
+        )?)
+    }
+
+    /// Whether this client has asked to leave and is still a member.
+    #[must_use]
+    pub fn is_leaving(&self) -> bool {
+        self.lock().is_leaving()
+    }
+
     /// Process anything the relay sent, returning what to do about it.
     ///
     /// # Errors
@@ -361,6 +424,17 @@ pub fn format_channel_id(channel: Vec<u8>) -> String {
 #[uniffi::export]
 pub fn parse_channel_id(text: String) -> Result<Vec<u8>> {
     Ok(crate::parse_channel_id(&text)?)
+}
+
+/// A member of the group, as the app lists it.
+#[derive(Debug, uniffi::Record)]
+pub struct GroupMember {
+    /// What [`Client::remove_member`] takes.
+    pub index: u32,
+    /// The display name its credential carries.
+    pub name: String,
+    /// Whether this is the client asking.
+    pub me: bool,
 }
 
 /// A delivery split into its parts.

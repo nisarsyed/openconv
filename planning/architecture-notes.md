@@ -471,10 +471,15 @@ member is stranded, not merely behind. So #105/#106 need two things:
   now forecloses it.
 - **Federation** — deliberately deferred. Nothing above assumes it; nothing
   above prevents it.
-- **Leaving a group.** The client core exposes `propose_add` and no removal at
-  all. Once you are in a group you cannot leave and cannot be removed. A real
-  protocol hole, noticed 2026-09-28, not yet tracked as an issue. MIMI's leave
-  flow (`SelfRemove` proposals, committed by the next committer) is the model.
+- **Leaving a group** — resolved in #112 (2026-11-01). Any member may remove
+  another (two-phase, like adds). A leaver sends the standard RFC 9420 Remove
+  proposal for itself rather than MIMI's draft `SelfRemove`; any live member
+  commits it. A proposal is bound to its epoch and cannot be verified after,
+  so members cannot honour a lapsed one (anyone could forge "bob wants out");
+  the leaver makes it again in each new epoch until removed. A member
+  stranded by retention asks to be re-added with a request signed by its
+  identity key and naming the key its place holds now, so it is spent once
+  acted on and cannot be replayed to push the member out.
 
 ---
 

@@ -57,11 +57,37 @@ const KEY_LEN: usize = 32;
 
 /// Bumped whenever this module's own tables change. openmls's tables are
 /// versioned separately, by the storage crate's migrations.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Each version's changes, applied in order from the store's own version.
 /// Never edit one that has shipped; add the next.
-const MIGRATIONS: [&str; 2] = [SCHEMA_V1, SCHEMA_V2];
+const MIGRATIONS: [&str; 3] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+
+const SCHEMA_V3: &str = "
+    -- A staged commit of any kind (#112): an add carries a Welcome and the
+    -- mailbox it goes to, a removal does not.
+    CREATE TABLE pending_commit (
+        id      INTEGER PRIMARY KEY CHECK (id = 0),
+        commit_ BLOB NOT NULL,
+        welcome BLOB,
+        mailbox BLOB
+    );
+    INSERT INTO pending_commit SELECT id, commit_, welcome, mailbox FROM pending_add;
+    DROP TABLE pending_add;
+
+    -- Whether a held request, or this client's own offer, asks to be re-added
+    -- (replacing a leaf the same identity already has) rather than added.
+    ALTER TABLE deferred ADD COLUMN rejoin INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE follows ADD COLUMN rejoin INTEGER NOT NULL DEFAULT 0;
+
+    -- This client's request to leave, until a member commits it: the
+    -- proposal, and the epoch it was made in. Re-made in each new epoch.
+    CREATE TABLE leaving (
+        id       INTEGER PRIMARY KEY CHECK (id = 0),
+        proposal BLOB NOT NULL,
+        epoch    INTEGER NOT NULL
+    );
+";
 
 const SCHEMA_V2: &str = "
     -- Addresses this client reads from the relay, and the first sequence
@@ -450,15 +476,29 @@ impl Database {
     }
 }
 
-/// A staged add as stored: `(commit, welcome, mailbox)`.
-pub(crate) type StagedAdd = (Vec<u8>, Vec<u8>, Vec<u8>);
+/// A staged commit as stored: the commit, and for an add, the `Welcome` and
+/// the mailbox it goes to.
+pub(crate) type Staged = (Vec<u8>, Option<(Vec<u8>, Vec<u8>)>);
+
+/// [`Staged`], borrowed: the commit, and for an add its `Welcome` and mailbox.
+pub(crate) type StagedRef<'a> = (&'a [u8], Option<(&'a [u8], &'a [u8])>);
+
+/// An offer to join, as made from a mailbox.
+pub(crate) struct Offer {
+    /// The channel it was published to.
+    pub(crate) to: Vec<u8>,
+    /// The `KeyPackage`.
+    pub(crate) key_package: Vec<u8>,
+    /// Whether it asks to be re-added rather than added.
+    pub(crate) rejoin: bool,
+}
 
 /// An address this client reads from the relay. See the `follows` table.
 pub(crate) struct Follow {
     pub(crate) address: Vec<u8>,
     pub(crate) next_seq: u64,
-    /// For a mailbox: the channel the offer went to, and the offer.
-    pub(crate) offer: Option<(Vec<u8>, Vec<u8>)>,
+    /// For a mailbox: the offer that was made from it.
+    pub(crate) offer: Option<Offer>,
 }
 
 fn to_i64(n: u64) -> Result<i64> {
@@ -476,12 +516,16 @@ impl Database {
     pub(crate) fn follows(&self) -> Result<Vec<Follow>> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT address, next_seq, offer_to, offer FROM follows")
+            .prepare_cached("SELECT address, next_seq, offer_to, offer, rejoin FROM follows")
             .map_err(store)?;
         let rows = stmt
             .query_map([], |r| {
                 let offer = match (r.get(2)?, r.get(3)?) {
-                    (Some(to), Some(offer)) => Some((to, offer)),
+                    (Some(to), Some(key_package)) => Some(Offer {
+                        to,
+                        key_package,
+                        rejoin: r.get(4)?,
+                    }),
                     _ => None,
                 };
                 Ok(Follow {
@@ -499,16 +543,31 @@ impl Database {
         &self,
         address: &[u8],
         next_seq: u64,
-        offer: Option<(&[u8], &[u8])>,
+        offer: Option<&Offer>,
     ) -> Result<()> {
-        let (to, offer) = offer.unzip();
         let next_seq = to_i64(next_seq)?;
         self.conn
             .prepare_cached(
-                "INSERT OR REPLACE INTO follows (address, next_seq, offer_to, offer)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR REPLACE INTO follows (address, next_seq, offer_to, offer, rejoin)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             )
-            .and_then(|mut stmt| stmt.execute(params![address, next_seq, to, offer]))
+            .and_then(|mut stmt| {
+                stmt.execute(params![
+                    address,
+                    next_seq,
+                    offer.map(|o| &o.to),
+                    offer.map(|o| &o.key_package),
+                    offer.is_some_and(|o| o.rejoin),
+                ])
+            })
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Stop reading `address`.
+    pub(crate) fn unfollow(&self, address: &[u8]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM follows WHERE address = ?1", [address])
             .map(drop)
             .map_err(store)
     }
@@ -581,27 +640,35 @@ impl Database {
             .map_err(store)
     }
 
-    /// The staged add, as `(commit, welcome, mailbox)`.
-    pub(crate) fn pending_add(&self) -> Result<Option<StagedAdd>> {
+    /// The staged commit, if there is one.
+    pub(crate) fn pending_commit(&self) -> Result<Option<Staged>> {
         self.conn
             .query_row(
-                "SELECT commit_, welcome, mailbox FROM pending_add WHERE id = 0",
+                "SELECT commit_, welcome, mailbox FROM pending_commit WHERE id = 0",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| {
+                    let welcome = match (r.get(1)?, r.get(2)?) {
+                        (Some(welcome), Some(mailbox)) => Some((welcome, mailbox)),
+                        _ => None,
+                    };
+                    Ok((r.get(0)?, welcome))
+                },
             )
             .optional()
             .map_err(store)
     }
 
-    /// Record the staged add, or clear it.
-    pub(crate) fn set_pending_add(&self, pending: Option<(&[u8], &[u8], &[u8])>) -> Result<()> {
+    /// Record the staged commit, or clear it.
+    pub(crate) fn set_pending_commit(&self, pending: Option<StagedRef<'_>>) -> Result<()> {
         self.conn
-            .execute("DELETE FROM pending_add", [])
+            .execute("DELETE FROM pending_commit", [])
             .map_err(store)?;
-        if let Some((commit, welcome, mailbox)) = pending {
+        if let Some((commit, welcome)) = pending {
+            let (welcome, mailbox) = welcome.unzip();
             self.conn
                 .execute(
-                    "INSERT INTO pending_add (id, commit_, welcome, mailbox) VALUES (0, ?1, ?2, ?3)",
+                    "INSERT INTO pending_commit (id, commit_, welcome, mailbox)
+                     VALUES (0, ?1, ?2, ?3)",
                     params![commit, welcome, mailbox],
                 )
                 .map_err(store)?;
@@ -609,35 +676,72 @@ impl Database {
         Ok(())
     }
 
-    /// Hold a join request to answer later.
-    pub(crate) fn defer(&self, key_package: &[u8]) -> Result<()> {
+    /// This client's standing request to leave, and the epoch it was made in.
+    pub(crate) fn leaving(&self) -> Result<Option<(Vec<u8>, u64)>> {
+        self.conn
+            .query_row(
+                "SELECT proposal, epoch FROM leaving WHERE id = 0",
+                [],
+                |r| Ok((r.get(0)?, to_u64(r.get(1)?)?)),
+            )
+            .optional()
+            .map_err(store)
+    }
+
+    /// Record a request to leave, or clear it.
+    pub(crate) fn set_leaving(&self, leaving: Option<(&[u8], u64)>) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM leaving", [])
+            .map_err(store)?;
+        if let Some((proposal, epoch)) = leaving {
+            self.conn
+                .execute(
+                    "INSERT INTO leaving (id, proposal, epoch) VALUES (0, ?1, ?2)",
+                    params![proposal, to_i64(epoch)?],
+                )
+                .map_err(store)?;
+        }
+        Ok(())
+    }
+
+    /// Forget every held request.
+    pub(crate) fn clear_deferred(&self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM deferred", [])
+            .map(drop)
+            .map_err(store)
+    }
+
+    /// Hold a request to join, or to be re-added, to answer later.
+    pub(crate) fn defer(&self, key_package: &[u8], rejoin: bool) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO deferred (key_package) VALUES (?1)",
-                [key_package],
+                "INSERT INTO deferred (key_package, rejoin) VALUES (?1, ?2)",
+                params![key_package, rejoin],
             )
             .map(drop)
             .map_err(store)
     }
 
-    /// The oldest held join request, removed from the list.
-    pub(crate) fn take_deferred(&self) -> Result<Option<Vec<u8>>> {
-        let oldest: Option<(i64, Vec<u8>)> = self
+    /// The oldest held request, removed from the list, and whether it asks to
+    /// be re-added.
+    pub(crate) fn take_deferred(&self) -> Result<Option<(Vec<u8>, bool)>> {
+        let oldest: Option<(i64, Vec<u8>, bool)> = self
             .conn
             .query_row(
-                "SELECT id, key_package FROM deferred ORDER BY id LIMIT 1",
+                "SELECT id, key_package, rejoin FROM deferred ORDER BY id LIMIT 1",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(store)?;
-        let Some((id, key_package)) = oldest else {
+        let Some((id, key_package, rejoin)) = oldest else {
             return Ok(None);
         };
         self.conn
             .execute("DELETE FROM deferred WHERE id = ?1", [id])
             .map_err(store)?;
-        Ok(Some(key_package))
+        Ok(Some((key_package, rejoin)))
     }
 }
 

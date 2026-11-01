@@ -12,6 +12,8 @@ final class ChatModel: ObservableObject {
         case connecting
         case waitingForGroup
         case joined(members: Int)
+        /// Removed from the group, or this client's leave was committed.
+        case removed
 
         var label: String {
             switch self {
@@ -19,6 +21,7 @@ final class ChatModel: ObservableObject {
             case .connecting: "connecting…"
             case .waitingForGroup: "waiting to be admitted"
             case .joined(let n): "in group · \(n) member\(n == 1 ? "" : "s")"
+            case .removed: "not in the group"
             }
         }
     }
@@ -38,12 +41,28 @@ final class ChatModel: ObservableObject {
 
     @Published private(set) var status: Status = .offline
     @Published private(set) var lines: [Line] = []
+    /// Everyone in the group, this client included.
+    @Published private(set) var members: [GroupMember] = []
+    /// Asked to leave, and not yet removed.
+    @Published private(set) var leaving = false
+    /// Caught up on the group's channel since connecting. Nothing is sent
+    /// before then: until it has caught up, this client does not know which
+    /// epoch the group is in, or whether it is still a member at all. A
+    /// message sent from stale state is normally resent once its echo comes
+    /// back behind the commit, but a client that turns out to be stranded
+    /// starts the group over and never sees that echo, so the message would
+    /// be lost.
+    @Published private(set) var caughtUp = false
     @Published var draft: String = ""
 
     let identity: String
     /// Sent automatically once this client is in the group. Used to drive the
     /// app headlessly; nil for normal interactive use.
     var autoSay: String?
+    /// Leave once caught up. For driving the app headlessly.
+    var autoLeave = false
+    /// Remove the member with this name once caught up. Likewise.
+    var autoRemove: String?
 
     private let client: Client
     private var socket: URLSessionWebSocketTask?
@@ -85,16 +104,18 @@ final class ChatModel: ObservableObject {
         return base.appendingPathComponent("\(identity).db")
     }
 
-    /// Fires `autoSay` the first time we reach a joined state.
+    /// Fires `autoSay` the first time this client is in the group and caught up.
     private func sendAutoIfReady() {
-        guard !saidAuto, let text = autoSay, case .joined = status else { return }
+        guard !saidAuto, caughtUp, let text = autoSay, case .joined = status else { return }
         saidAuto = true
         draft = text
         sendDraft()
     }
 
     var canSend: Bool {
-        if case .joined = status { return !draft.trimmingCharacters(in: .whitespaces).isEmpty }
+        if case .joined = status, caughtUp {
+            return !draft.trimmingCharacters(in: .whitespaces).isEmpty
+        }
         return false
     }
 
@@ -108,6 +129,7 @@ final class ChatModel: ObservableObject {
     /// requests catch it up on whatever it missed before going live.
     func connect(to url: URL, hosting: Bool, channelText: String? = nil) {
         status = .connecting
+        caughtUp = false
         let task = URLSession.shared.webSocketTask(with: url)
         socket = task
         task.resume()
@@ -164,6 +186,8 @@ final class ChatModel: ObservableObject {
         let text = formatChannelId(channel: joined)
         channelText = text
         status = .joined(members: Int(client.memberCount()))
+        members = client.members()
+        leaving = client.isLeaving()
         // Logged so the headless smoke test can hand it to the next client.
         print("[\(identity)] channel \(text)")
     }
@@ -177,8 +201,9 @@ final class ChatModel: ObservableObject {
     // MARK: - Sending
 
     func sendDraft() {
+        // Enter submits whether or not the Send button is enabled.
+        guard canSend else { return }
         let text = draft.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return }
         draft = ""
         do {
             try send(kind: .application, body: client.send(text: text))
@@ -256,21 +281,39 @@ final class ChatModel: ObservableObject {
             sendAutoIfReady()
 
         case .admitted:
-            status = .joined(members: Int(client.memberCount()))
+            refresh()
             note("admitted a new member")
 
-        case .addSuperseded:
-            // Someone else's commit was ordered first, and the joiner was
-            // very likely admitted by it. A notice, not something to retry.
-            status = .joined(members: Int(client.memberCount()))
-            note("another member admitted them first")
+        case .superseded:
+            // Someone else's commit was ordered first, and very likely did
+            // the same thing. A notice, not something to retry.
+            refresh()
+            note("another member's change landed first")
 
         case .advanced:
-            status = .joined(members: Int(client.memberCount()))
+            refresh()
 
-        case .live:
+        case .removed:
+            let wasLeaving = leaving
+            status = .removed
+            members = []
+            leaving = false
+            channel = nil
+            note(wasLeaving ? "left the group" : "removed from the group")
+
+        case .rejoining:
+            status = .waitingForGroup
+            caughtUp = false
+            note("asked the group to add this client back")
+
+        case .live(let address):
             // Logged, not shown: tells a headless run catch-up finished.
             print("[\(identity)] caught up")
+            if address == channel {
+                caughtUp = true
+                sendAutoIfReady()
+                runAutoMembership()
+            }
 
         case .relayReset:
             note("the relay's history was reset; following it from its start")
@@ -279,6 +322,51 @@ final class ChatModel: ObservableObject {
             note(
                 "the relay no longer holds what this client missed (it starts at \(floor)); "
                     + "another member has to add it again")
+        }
+    }
+
+    // MARK: - Membership
+
+    /// Ask to leave. Another member commits it; until then this client is
+    /// still in the group, and asks again if the group moves on first.
+    func leave() {
+        do {
+            write(try client.leave())
+            leaving = true
+            note("asked to leave")
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// Remove another member.
+    func remove(_ member: GroupMember) {
+        do {
+            write(try client.removeMember(index: member.index))
+            note("removing \(member.name)")
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// Bring the status and member list in line with the core.
+    private func refresh() {
+        guard client.channel() != nil else { return }
+        status = .joined(members: Int(client.memberCount()))
+        members = client.members()
+    }
+
+    /// The headless `leave` and `remove` launch arguments, once caught up.
+    private func runAutoMembership() {
+        guard case .joined = status else { return }
+        refresh()
+        if autoLeave {
+            autoLeave = false
+            leave()
+        }
+        if let name = autoRemove, let member = members.first(where: { $0.name == name && !$0.me }) {
+            autoRemove = nil
+            remove(member)
         }
     }
 
@@ -293,4 +381,8 @@ final class ChatModel: ObservableObject {
         print("[\(identity)] error: \(error)")
         lines.append(Line(author: "!", text: "\(error)", mine: false))
     }
+}
+
+extension GroupMember: Identifiable {
+    public var id: UInt32 { index }
 }
