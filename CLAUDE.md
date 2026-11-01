@@ -158,7 +158,8 @@ others as they were. A `Welcome` is joined only if it is for the channel the
 mailbox's offer asked to join, since anyone holding a published `KeyPackage`
 could otherwise add its owner to a group of their choosing. Several offers to
 different channels wait at once, each on its own mailbox. The Swift app is
-still a one-conversation harness; its real UI follows the design (#133).
+still a one-conversation harness; its real UI is #130, built to
+`planning/design.md`.
 
 **Conversation names (#134)** live in the group context, as a private-use
 extension (`NAME_EXTENSION`, 0xF0C0): changed by a `GroupContextExtensions`
@@ -236,6 +237,10 @@ they were argued, not assumed.
 `planning/roadmap.md` is the milestone order and why. Check it before
 proposing what to build next — it exists because that decision was previously
 made per-session and drifted.
+
+`planning/design.md` is the agreed design for the macOS app (#133): structure,
+decisions, every state and its wording, and the tokens. Build UI from it and
+the canvas it links, and don't reopen a decision recorded there without asking.
 
 `planning/v2-design-requirements.md` carries forward findings from an audit of
 the previous implementation, tagged by the milestone where each applies.

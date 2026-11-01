@@ -43,8 +43,11 @@ operator-configurable (#106). Members can be removed and can leave, and one
 away longer than the relay keeps frames is re-added automatically (#112).
 Milestone 1 is done.
 
-What that is not yet: **one implicit conversation**, and no identity beyond a
-self-declared name.
+Milestone 2 is under way. The core keeps a local transcript (#129) and holds
+several conversations with shared names (#134), and the app's design is
+agreed (#133, `planning/design.md`). What that is not yet: an app to match.
+The macOS client is still a one-conversation harness until #130, and there is
+no identity beyond a self-declared name.
 
 ## The ordering principle
 
@@ -170,12 +173,19 @@ provisional URIs until milestone 3; see `architecture-notes.md`. History
 first: the format carries replies, edits, deletes and reactions from the
 start, and their UI follows.
 
-Tracked as #128 (content, done), #129 (transcript store), #133 (design
-pass), #134 (several groups per client), #130 (transcript UI) and #131
-(replies, edits, deletes, reactions).
+Tracked as #128 (content), #129 (transcript store), #133 (design pass) and
+#134 (several groups per client), all done; then #130 (the main window),
+#141 (first run, starting and joining, requests and members), #142 (the
+Settings window) and #131 (replies, edits, deletes, reactions).
 
-**Order: 128 → 129, and alongside it 133 → 134 → 130 → 131.**
+**Order: 130, then 141 and 142, then 131.** #141 and #142 build on #130's
+window and theme, and don't depend on each other.
 
+- **The design was signed off on 2026-11-01** after three rounds. It is
+  recorded in `planning/design.md`: structure, every decision, the states
+  and their wording, and the tokens. The canvas is linked from there. The
+  design was bigger than the old #130 ("show the stored transcript"), so
+  #130 was rewritten as the main window and #141 and #142 were split from it.
 - **#133 was added on 2026-11-01.** No UI design existed anywhere in this
   roadmap, and #130 and #131 are mostly UI. Building them on the current
   harness would mean building them twice. Agreed for the pass: two panes
@@ -253,4 +263,5 @@ the product shape is settled.
 - The relay's lag-disconnect path has no test.
 - The local transcript (#129) is kept until the user deletes it, and kept
   after leaving or removal (decided in #133). Deleting a conversation's
-  history is not built yet, and there is no size cap.
+  history is planned in #130 (core and the Info tab) and #142 (Settings ›
+  Storage); there is no size cap.
